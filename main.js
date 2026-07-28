@@ -1,15 +1,14 @@
 // --- Config ---------------------------------------------------------------
 
 // Capped at 2x: beyond that, extra device pixels cost real GPU/CPU time
-// (the WebGL render target and 2D blit below both scale with this) for a
-// sharpness difference nobody presenting on a laptop/projector/TV can
-// actually perceive — only very high-DPR phones/tablets (3x) hit the cap.
+// (the WebGL canvas's backing store scales with this) for a sharpness
+// difference nobody presenting on a laptop/projector/TV can actually
+// perceive — only very high-DPR phones/tablets (3x) hit the cap.
 const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
 // --- DOM --------------------------------------------------------------
 
 const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
 
 // The control panel (src/panel.tsx) is a React/coss-ui component tree that
 // owns the panel's own UI state (including show/hide + the H-key shortcut).
@@ -117,18 +116,20 @@ function setBlueprintEnabled(value) {
 
 // --- Rotating cube, rendered with plain WebGL --------------------------
 
-// Initial size before the first resize() call sets the real, DPR/viewport
-// -matched resolution (see resize() and CUBE_CANVAS_MAX_SIZE) — otherwise
-// this stayed fixed at 512x512 while the visible canvas scaled with the
-// viewport and DPR, so cover-fitting it in renderLoop blew the render up
-// well past its native resolution and read as blurry, especially with
-// blueprint mode's thin wireframe lines.
-const CUBE_CANVAS_SIZE = 512;
-const CUBE_CANVAS_MAX_SIZE = 4096;
-const cubeCanvas = document.createElement('canvas');
-cubeCanvas.width = CUBE_CANVAS_SIZE;
-cubeCanvas.height = CUBE_CANVAS_SIZE;
-const gl = cubeCanvas.getContext('webgl', { antialias: true });
+// Renders directly into the visible <canvas> (WebGL's own backing store,
+// set from `renderScale` — see applyCanvasSize/resize far below — takes the
+// place of a fixed on-screen resolution). An earlier version of this file
+// rendered into a separate square offscreen canvas and 2D-blitted
+// (cover-fit crop) it onto this one every frame; that extra full-frame
+// resample was the actual per-frame cost, independent of both scene
+// complexity and the WebGL resolution — measuring it (see the FPS/ms
+// monitor below) is what surfaced it. Rendering straight into `canvas`
+// removes that pass entirely: the browser's own (effectively free,
+// hardware-composited) canvas-to-CSS-box scaling does what the manual
+// blit used to. The tradeoff is that "cover fit" now has to happen in the
+// projection matrix (see updateCubeProjection) instead of a pixel crop,
+// since there's no longer a separate square source to crop from.
+const gl = canvas.getContext('webgl', { antialias: true });
 // Needed for fwidth() in CUBE_FRAGMENT_SHADER's hatch-line anti-aliasing —
 // must be enabled before that shader compiles (see below). Universally
 // supported (core in WebGL2, a ubiquitous extension in WebGL1) so no
@@ -604,9 +605,31 @@ function mat4Scale(s) {
 // Orthographic frustum half-size chosen to match how big the cube read
 // under the old 45°-fov perspective projection at the same camera distance
 // (distance * tan(fovy/2)), so switching to isometric didn't also change
-// the cube's apparent size on screen.
+// the cube's apparent size on screen. This is the reference half-size for
+// a square viewport; updateCubeProjection derives the actual per-axis
+// half-extents (cubeProjectionHalfX/Y) from it below.
 const CUBE_ORTHO_HALF_SIZE = (5 * Math.tan(Math.PI / 8)) / 10;
-const cubeProjection = mat4Ortho(-CUBE_ORTHO_HALF_SIZE, CUBE_ORTHO_HALF_SIZE, -CUBE_ORTHO_HALF_SIZE, CUBE_ORTHO_HALF_SIZE, 0.1, 100);
+let cubeProjectionHalfX = CUBE_ORTHO_HALF_SIZE;
+let cubeProjectionHalfY = CUBE_ORTHO_HALF_SIZE;
+let cubeProjection = mat4Ortho(-cubeProjectionHalfX, cubeProjectionHalfX, -cubeProjectionHalfY, cubeProjectionHalfY, 0.1, 100);
+
+// Replicates the "cover fit" a 2D-crop blit used to give for free: the
+// shorter display axis keeps the full reference half-size (nothing is
+// ever clipped on that axis), while the longer axis's half-extent shrinks
+// in proportion to the aspect ratio, so panning/framing looks identical to
+// the old square-render-then-crop pipeline without an extra pixel crop —
+// see raycastGreenMesh below, which must read back these exact half-extents
+// (not the fixed reference one) to unproject a pointer position correctly.
+function updateCubeProjection(aspect) {
+  if (aspect >= 1) {
+    cubeProjectionHalfX = CUBE_ORTHO_HALF_SIZE;
+    cubeProjectionHalfY = CUBE_ORTHO_HALF_SIZE / aspect;
+  } else {
+    cubeProjectionHalfY = CUBE_ORTHO_HALF_SIZE;
+    cubeProjectionHalfX = CUBE_ORTHO_HALF_SIZE * aspect;
+  }
+  cubeProjection = mat4Ortho(-cubeProjectionHalfX, cubeProjectionHalfX, -cubeProjectionHalfY, cubeProjectionHalfY, 0.1, 100);
+}
 
 // 10% of the original size (which was itself "300% smaller", i.e. a third
 // the size) — applies equally to the built-in cube and any uploaded custom
@@ -1178,18 +1201,17 @@ function rayTriangleIntersect(origin, dir, tris, offset) {
 function raycastGreenMesh(clientX, clientY) {
   if (!greenTriPositionsCache || greenTriPositionsCache.length === 0) return null;
 
+  // CSS-space rect: with rendering now going straight into `canvas` (no
+  // separate offscreen source/crop to map through — see updateCubeProjection
+  // above), a pointer position converts to NDC directly, independent of
+  // DPR or the canvas's actual backing-store resolution (renderScale).
   const rect = canvas.getBoundingClientRect();
-  const dx = (clientX - rect.left) * DPR;
-  const dy = (clientY - rect.top) * DPR;
-  const { sx, sy, sw, sh } = coverRect(cubeCanvas.width, cubeCanvas.height, canvas.width, canvas.height);
-  const cubePxX = sx + (dx / canvas.width) * sw;
-  const cubePxY = sy + (dy / canvas.height) * sh;
-  const ndcX = (cubePxX / cubeCanvas.width) * 2 - 1;
-  const ndcY = 1 - (cubePxY / cubeCanvas.height) * 2; // canvas Y is down, NDC Y is up
+  const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2; // canvas Y is down, NDC Y is up
 
   const rx = cubeRotX + cubeParallaxX, ry = cubeRotY + cubeParallaxY, s = CUBE_SCALE * cubeSizeScale;
   const [ox, oy] = getModelViewOffset();
-  const originView = [ndcX * CUBE_ORTHO_HALF_SIZE, ndcY * CUBE_ORTHO_HALF_SIZE, -0.1];
+  const originView = [ndcX * cubeProjectionHalfX, ndcY * cubeProjectionHalfY, -0.1];
   const farView = [originView[0], originView[1], -50];
   const originObj = unprojectViewPointToObject(originView, rx, ry, s, ox, oy);
   const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy);
@@ -1325,7 +1347,7 @@ window.addEventListener('pointerup', () => {
 });
 
 function renderCubeFrame() {
-  gl.viewport(0, 0, cubeCanvas.width, cubeCanvas.height);
+  gl.viewport(0, 0, canvas.width, canvas.height);
   if (blueprintEnabled) {
     gl.clearColor(BLUEPRINT_BG_COLOR[0], BLUEPRINT_BG_COLOR[1], BLUEPRINT_BG_COLOR[2], 1);
   } else {
@@ -1476,47 +1498,43 @@ function renderCubeFrame() {
   }
 }
 
-// Dynamic resolution scaling: cubeCanvas renders at up to full native
-// resolution (sharpest) by default, but the frame-time monitor (see
-// updateDynamicRenderScale, driven from recordAndDisplayFrameTiming below)
-// steps `renderScale` down when sustained frame time runs over the 60fps
-// budget, and back up once there's sustained headroom — so quality only
-// ever drops when the hardware genuinely can't keep up, never
-// preemptively, and recovers automatically once it can again.
+// Dynamic resolution scaling: canvas's WebGL backing store renders at up to
+// full native resolution (sharpest) by default, but the frame-time monitor
+// (see updateDynamicRenderScale, driven from recordAndDisplayFrameTiming
+// below) steps `renderScale` down when sustained frame time runs over the
+// 60fps budget, and back up once there's sustained recovery — so quality
+// only ever drops when the hardware genuinely can't keep up, never
+// preemptively, and recovers automatically once it can again. Applied
+// uniformly to both dimensions (see applyCanvasSize/resize) so it can never
+// distort the aspect ratio updateCubeProjection is relying on.
 const RENDER_SCALE_MIN = 0.5;
+// Safety ceiling on the larger backing-store axis (e.g. a very large
+// display at full DPR) — re-renders every frame, so an unbounded backing
+// store costs real GPU time regardless of scene complexity. Scales both
+// dimensions by the same factor when hit (see resize), so it can't distort
+// aspect ratio the way clamping each axis independently would.
+const CANVAS_MAX_DIMENSION = 4096;
 let renderScale = 1;
-let cubeCanvasBaseSize = CUBE_CANVAS_SIZE;
+let canvasBaseWidth = 0;
+let canvasBaseHeight = 0;
 
-function applyCubeCanvasSize() {
-  const size = Math.max(1, Math.round(cubeCanvasBaseSize * renderScale));
-  cubeCanvas.width = size;
-  cubeCanvas.height = size;
+function applyCanvasSize() {
+  canvas.width = Math.max(1, Math.round(canvasBaseWidth * renderScale));
+  canvas.height = Math.max(1, Math.round(canvasBaseHeight * renderScale));
 }
 
 function resize() {
-  canvas.width = Math.round(window.innerWidth * DPR);
-  canvas.height = Math.round(window.innerHeight * DPR);
-  ctx.imageSmoothingQuality = 'high'; // resizing the canvas resets context state
-
-  // Kept square (matching its own orthographic frustum) but sized to the
-  // larger of the two display dimensions so the cover-fit below never has to
-  // upscale it past native resolution; capped since cube mode re-renders
-  // this every frame and a huge backing store costs real GPU time.
-  cubeCanvasBaseSize = Math.min(CUBE_CANVAS_MAX_SIZE, Math.max(canvas.width, canvas.height));
-  applyCubeCanvasSize();
-}
-
-// Crop rect that scales a sw0 x sh0 source to cover a destW x destH area,
-// centered (same math CSS background-size: cover uses).
-function coverRect(sw0, sh0, destW, destH) {
-  const sourceRatio = sw0 / sh0;
-  const destRatio = destW / destH;
-  if (sourceRatio > destRatio) {
-    const sh = sh0, sw = sh0 * destRatio;
-    return { sx: (sw0 - sw) / 2, sy: 0, sw, sh };
-  }
-  const sw = sw0, sh = sw0 / destRatio;
-  return { sx: 0, sy: (sh0 - sh) / 2, sw, sh };
+  const rawWidth = Math.round(window.innerWidth * DPR);
+  const rawHeight = Math.round(window.innerHeight * DPR);
+  const capScale = Math.min(1, CANVAS_MAX_DIMENSION / Math.max(rawWidth, rawHeight));
+  canvasBaseWidth = Math.round(rawWidth * capScale);
+  canvasBaseHeight = Math.round(rawHeight * capScale);
+  applyCanvasSize();
+  // Aspect comes from the CSS/display size, not the (possibly capped or
+  // render-scaled) backing store — capScale and renderScale both apply
+  // uniformly to width and height, so the backing store's aspect always
+  // matches this regardless of either one.
+  updateCubeProjection(window.innerWidth / window.innerHeight);
 }
 
 // A pixel counts as "mainly green" if that channel is dominant by a clear
@@ -1558,7 +1576,7 @@ let perfMaxFps = -Infinity;
 let perfMinMs = Infinity;
 let perfMaxMs = -Infinity;
 
-// Drives renderScale (see applyCubeCanvasSize/resize above): steps
+// Drives renderScale (see applyCanvasSize/resize above): steps
 // resolution down after a sustained run of over-budget display windows,
 // steps it back up after a longer sustained run of meeting-or-beating the
 // 60fps target (recovering more cautiously than it drops — a longer
@@ -1597,11 +1615,11 @@ function updateDynamicRenderScale(avgFrameMs) {
 
   if (overBudgetWindows >= RENDER_SCALE_DOWN_WINDOWS && renderScale > RENDER_SCALE_MIN) {
     renderScale = Math.max(RENDER_SCALE_MIN, renderScale - RENDER_SCALE_STEP);
-    applyCubeCanvasSize();
+    applyCanvasSize();
     overBudgetWindows = 0;
   } else if (underBudgetWindows >= RENDER_SCALE_UP_WINDOWS && renderScale < 1) {
     renderScale = Math.min(1, renderScale + RENDER_SCALE_STEP);
-    applyCubeCanvasSize();
+    applyCanvasSize();
     underBudgetWindows = 0;
   }
 }
@@ -1636,8 +1654,6 @@ function recordAndDisplayFrameTiming(now) {
 
 function renderLoop(now) {
   renderCubeFrame();
-  const { sx, sy, sw, sh } = coverRect(cubeCanvas.width, cubeCanvas.height, canvas.width, canvas.height);
-  ctx.drawImage(cubeCanvas, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   recordAndDisplayFrameTiming(now);
   requestAnimationFrame(renderLoop);
 }
