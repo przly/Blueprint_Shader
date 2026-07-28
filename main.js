@@ -61,6 +61,22 @@ function setCubeSizePercent(percent) {
   return clamped;
 }
 
+// Blueprint mode's hatch fill (see aHatch / hatchLineMask): how many stripe
+// periods per object-space unit, i.e. how tightly packed the diagonal lines
+// are on a hatch-flagged face. Needs to be user-adjustable since a custom
+// model's object-space scale (and therefore how dense a given frequency
+// reads) varies per model — see parseObj's per-model extent normalization.
+const HATCH_FREQUENCY_MIN = 2;
+const HATCH_FREQUENCY_MAX = 60;
+let hatchFrequencyValue = restoreNumber('hatchFrequency', 12);
+
+function setHatchFrequency(value) {
+  const clamped = Math.max(HATCH_FREQUENCY_MIN, Math.min(HATCH_FREQUENCY_MAX, value));
+  hatchFrequencyValue = clamped;
+  persistNumber('hatchFrequency', clamped);
+  return clamped;
+}
+
 // Directional light angle, as azimuth (rotation around the vertical Y axis)
 // and elevation (above/below the horizontal plane), both in degrees — see
 // renderCubeFrame, which converts these to the uLightDir vector each frame.
@@ -109,6 +125,12 @@ const cubeCanvas = document.createElement('canvas');
 cubeCanvas.width = CUBE_CANVAS_SIZE;
 cubeCanvas.height = CUBE_CANVAS_SIZE;
 const gl = cubeCanvas.getContext('webgl', { antialias: true });
+// Needed for fwidth() in CUBE_FRAGMENT_SHADER's hatch-line anti-aliasing —
+// must be enabled before that shader compiles (see below). Universally
+// supported (core in WebGL2, a ubiquitous extension in WebGL1) so no
+// fallback path if it's somehow missing; the shader would just fail to
+// compile, same as any other compile error here.
+gl.getExtension('OES_standard_derivatives');
 
 function compileShader(type, source) {
   const shader = gl.createShader(type);
@@ -126,12 +148,15 @@ const CUBE_VERTEX_SHADER = `
   attribute vec3 aColor;
   attribute float aIsGreen;
   attribute float aFlowCoord;
+  attribute float aHatch;
   uniform mat4 uModelView;
   uniform mat4 uProjection;
   varying vec3 vNormal;
   varying vec3 vColor;
   varying float vIsGreen;
   varying float vFlowCoord;
+  varying vec3 vPosition;
+  varying float vHatch;
   void main() {
     gl_Position = uProjection * uModelView * vec4(aPosition, 1.0);
     // Object-space normal (no model rotation applied) so the light stays
@@ -140,15 +165,23 @@ const CUBE_VERTEX_SHADER = `
     vColor = aColor;
     vIsGreen = aIsGreen;
     vFlowCoord = aFlowCoord;
+    // Object-space position, same reasoning as vNormal above: the hatch
+    // pattern it drives (see CUBE_FRAGMENT_SHADER) needs to stay fixed to
+    // the model rather than swim as the camera orbits.
+    vPosition = aPosition;
+    vHatch = aHatch;
   }
 `;
 
 const CUBE_FRAGMENT_SHADER = `
+  #extension GL_OES_standard_derivatives : enable
   precision mediump float;
   varying vec3 vNormal;
   varying vec3 vColor;
   varying float vIsGreen;
   varying float vFlowCoord;
+  varying vec3 vPosition;
+  varying float vHatch;
   uniform vec3 uLightDir;
   uniform bool uBlueprint;
   uniform vec3 uBlueprintFillColor;
@@ -157,6 +190,30 @@ const CUBE_FRAGMENT_SHADER = `
   uniform float uFlowPulseCenter;
   uniform float uFlowSigma;
   uniform vec3 uFlowColor;
+  uniform float uHatchFrequency;
+  // Diagonal hatch lines, sampled in object space so they stay put on the
+  // face as the model rotates instead of swimming (screen-space would be
+  // simpler but reads as "wrong" the moment the camera moves). Projects
+  // onto the two axes spanning the face (dropping whichever axis the
+  // normal points along) so the stripe spacing is consistent regardless of
+  // which cube face — or which arbitrary custom-model face — is hatched.
+  // Line thickness is derived from fwidth (screen-space derivative of the
+  // stripe coordinate) rather than a fixed fraction of the period, so it
+  // renders at a constant ~1 device pixel — matching the wireframe overlay,
+  // which is drawn with gl.LINES at the (unset, so default) 1px width.
+  const float HATCH_LINE_HALF_WIDTH_PX = 0.5;
+  float hatchLineMask(vec3 pos, vec3 normal) {
+    vec3 an = abs(normal);
+    float u, v;
+    if (an.x >= an.y && an.x >= an.z) { u = pos.y; v = pos.z; }
+    else if (an.y >= an.x && an.y >= an.z) { u = pos.x; v = pos.z; }
+    else { u = pos.x; v = pos.y; }
+    float diag = (u + v) * uHatchFrequency;
+    float pixelWidth = fwidth(diag);
+    float phase = fract(diag);
+    float distToLine = min(phase, 1.0 - phase);
+    return 1.0 - smoothstep(0.0, pixelWidth * HATCH_LINE_HALF_WIDTH_PX, distToLine);
+  }
   void main() {
     float diff = max(dot(normalize(vNormal), normalize(uLightDir)), 0.0);
     float brightness = 0.2 + diff * 0.8;
@@ -178,6 +235,13 @@ const CUBE_FRAGMENT_SHADER = `
       float d = vFlowCoord - uFlowPulseCenter;
       float intensity = exp(-(d * d) / (2.0 * uFlowSigma * uFlowSigma));
       color += uFlowColor * intensity;
+    }
+    // Hatch-flagged faces (see aHatch / isHatchMaterial) get white diagonal
+    // lines drawn on top of everything above, so it reads on top of
+    // blueprint fill, shaded-mode lighting, and the flow glow alike.
+    if (vHatch > 0.5) {
+      float h = hatchLineMask(vPosition, vNormal);
+      color = mix(color, vec3(1.0), h);
     }
     gl_FragColor = vec4(color, 1.0);
   }
@@ -301,6 +365,14 @@ const cubeIsGreenBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, cubeIsGreenBuffer);
 gl.bufferData(gl.ARRAY_BUFFER, CUBE_IS_GREEN, gl.STATIC_DRAW);
 
+// Same reasoning as CUBE_IS_GREEN: the built-in cube has no materials, so
+// it's never hatched — only a loaded custom model's "Hatch"-named
+// materials are (see isHatchMaterial).
+const CUBE_IS_HATCH = new Float32Array(24).fill(0);
+const cubeHatchBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, cubeHatchBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, CUBE_IS_HATCH, gl.STATIC_DRAW);
+
 const cubeIndexBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, CUBE_INDICES, gl.STATIC_DRAW);
@@ -414,6 +486,7 @@ const aNormal = gl.getAttribLocation(cubeProgram, 'aNormal');
 const aColor = gl.getAttribLocation(cubeProgram, 'aColor');
 const aIsGreen = gl.getAttribLocation(cubeProgram, 'aIsGreen');
 const aFlowCoord = gl.getAttribLocation(cubeProgram, 'aFlowCoord');
+const aHatch = gl.getAttribLocation(cubeProgram, 'aHatch');
 const uModelView = gl.getUniformLocation(cubeProgram, 'uModelView');
 const uProjection = gl.getUniformLocation(cubeProgram, 'uProjection');
 const uLightDir = gl.getUniformLocation(cubeProgram, 'uLightDir');
@@ -424,6 +497,7 @@ const uFlowActive = gl.getUniformLocation(cubeProgram, 'uFlowActive');
 const uFlowPulseCenter = gl.getUniformLocation(cubeProgram, 'uFlowPulseCenter');
 const uFlowSigma = gl.getUniformLocation(cubeProgram, 'uFlowSigma');
 const uFlowColor = gl.getUniformLocation(cubeProgram, 'uFlowColor');
+const uHatchFrequency = gl.getUniformLocation(cubeProgram, 'uHatchFrequency');
 
 const aLinePosition = gl.getAttribLocation(lineProgram, 'aLinePosition');
 const aLineColor = gl.getAttribLocation(lineProgram, 'aLineColor');
@@ -702,10 +776,12 @@ function parseObj(text, materials) {
   const outNormals = [];
   const outColors = [];
   const outIsGreen = []; // one entry per emitted vertex — blueprint mode's green-fill flag
+  const outIsHatch = []; // one entry per emitted vertex — hatch-fill flag (see isHatchMaterial)
   const outTriVertIdx = []; // one entry per emitted vertex, the original `v` index it came from — used only for crease-edge detection below
   const outTriIsGreen = []; // one entry per emitted triangle — feeds the wireframe's green-edge coloring
   let activeColor = [1, 1, 1]; // no usemtl seen yet (or an unrecognized name) == plain white, same as the built-in cube
   let activeIsGreen = false;
+  let activeIsHatch = false;
 
   const lines = text.split('\n');
   for (const line of lines) {
@@ -717,8 +793,10 @@ function parseObj(text, materials) {
       const parts = trimmed.split(/\s+/);
       normals.push([parseFloat(parts[1]), parseFloat(parts[2]), parseFloat(parts[3])]);
     } else if (trimmed.startsWith('usemtl ')) {
-      activeColor = materials[trimmed.slice(7).trim()] || [1, 1, 1];
+      const materialName = trimmed.slice(7).trim();
+      activeColor = materials[materialName] || [1, 1, 1];
       activeIsGreen = isGreenDominant(activeColor[0] * 255, activeColor[1] * 255, activeColor[2] * 255);
+      activeIsHatch = isHatchMaterial(materialName);
     } else if (trimmed[0] === 'f' && trimmed[1] === ' ') {
       const faceVerts = trimmed.split(/\s+/).slice(1).map((part) => {
         const [vStr, , vnStr] = part.split('/'); // v[/vt][/vn]
@@ -750,6 +828,7 @@ function parseObj(text, materials) {
           outNormals.push(n[k][0], n[k][1], n[k][2]);
           outColors.push(activeColor[0], activeColor[1], activeColor[2]);
           outIsGreen.push(activeIsGreen ? 1 : 0);
+          outIsHatch.push(activeIsHatch ? 1 : 0);
           outTriVertIdx.push(tri[k].vIdx);
         }
       }
@@ -827,6 +906,7 @@ function parseObj(text, materials) {
     normals: new Float32Array(outNormals),
     colors: new Float32Array(outColors),
     isGreen: new Float32Array(outIsGreen),
+    isHatch: new Float32Array(outIsHatch),
     linePositions: lineData.positions,
     lineColors: lineData.colors,
     lineIsGreen: lineData.isGreen,
@@ -847,6 +927,7 @@ const customModelPositionBuffer = gl.createBuffer();
 const customModelNormalBuffer = gl.createBuffer();
 const customModelColorBuffer = gl.createBuffer();
 const customModelIsGreenBuffer = gl.createBuffer();
+const customModelHatchBuffer = gl.createBuffer();
 const customModelFlowCoordBuffer = gl.createBuffer();
 const customModelLineBuffer = gl.createBuffer();
 const customModelLineColorBuffer = gl.createBuffer();
@@ -898,6 +979,8 @@ function applyParsedModel(parsed, objName, mtlName) {
   gl.bufferData(gl.ARRAY_BUFFER, parsed.colors, gl.STATIC_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelIsGreenBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, parsed.isGreen, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelHatchBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, parsed.isHatch, gl.STATIC_DRAW);
   customModelVertexCount = parsed.positions.length / 3;
 
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineBuffer);
@@ -1242,6 +1325,7 @@ function renderCubeFrame() {
   gl.uniform1i(uBlueprint, blueprintEnabled ? 1 : 0);
   gl.uniform3f(uBlueprintFillColor, BLUEPRINT_FILL_COLOR[0], BLUEPRINT_FILL_COLOR[1], BLUEPRINT_FILL_COLOR[2]);
   gl.uniform3f(uBlueprintFillColorGreen, BLUEPRINT_FILL_COLOR_GREEN[0], BLUEPRINT_FILL_COLOR_GREEN[1], BLUEPRINT_FILL_COLOR_GREEN[2]);
+  gl.uniform1f(uHatchFrequency, hatchFrequencyValue);
 
   const showCustomModel = useCustomModel && customModelReady;
 
@@ -1260,6 +1344,10 @@ function renderCubeFrame() {
   gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelIsGreenBuffer : cubeIsGreenBuffer);
   gl.enableVertexAttribArray(aIsGreen);
   gl.vertexAttribPointer(aIsGreen, 1, gl.FLOAT, false, 0, 0);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelHatchBuffer : cubeHatchBuffer);
+  gl.enableVertexAttribArray(aHatch);
+  gl.vertexAttribPointer(aHatch, 1, gl.FLOAT, false, 0, 0);
 
   gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelFlowCoordBuffer : cubeFlowCoordBuffer);
   gl.enableVertexAttribArray(aFlowCoord);
@@ -1398,6 +1486,14 @@ function isGreenDominant(r, g, b) {
   return g - r > GREEN_DOMINANCE_MARGIN && g - b > GREEN_DOMINANCE_MARGIN;
 }
 
+// Flags a material for the shader's hatch fill (see aHatch / hatchMask) by
+// name rather than by color, so it doesn't collide with GREEN_DOMINANCE_MARGIN
+// or any other color-based rule — in Blender, assign the target face(s) a
+// material named "Hatch" (case-insensitive) and it'll come through here.
+function isHatchMaterial(name) {
+  return name.trim().toLowerCase() === 'hatch';
+}
+
 function renderLoop() {
   renderCubeFrame();
   const { sx, sy, sw, sh } = coverRect(cubeCanvas.width, cubeCanvas.height, canvas.width, canvas.height);
@@ -1437,6 +1533,9 @@ export const controls = {
       lightElevationMin: LIGHT_ELEVATION_MIN,
       lightElevationMax: LIGHT_ELEVATION_MAX,
       blueprintEnabled,
+      hatchFrequency: hatchFrequencyValue,
+      hatchFrequencyMin: HATCH_FREQUENCY_MIN,
+      hatchFrequencyMax: HATCH_FREQUENCY_MAX,
       showModelFlowArrow,
       hoverMovementPaused,
       rotationDisabled,
@@ -1458,6 +1557,7 @@ export const controls = {
   setLightAzimuth,
   setLightElevation,
   setBlueprintEnabled,
+  setHatchFrequency,
   setUseCustomModel,
   loadModelFiles: (files) => loadModelFromFiles(files),
   setModelFlowDraw,

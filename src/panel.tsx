@@ -185,6 +185,24 @@ export function Panel() {
           <div className="flex items-center gap-4">
             <Field className="flex-1">
               <div className="flex w-full items-center justify-between gap-1">
+                <FieldLabel className="text-xs">Hatch frequency</FieldLabel>
+                <span className="text-muted-foreground text-xs tabular-nums">{state.hatchFrequency}</span>
+              </div>
+              <Slider
+                max={state.hatchFrequencyMax}
+                min={state.hatchFrequencyMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const clamped = controls.setHatchFrequency(value as number);
+                  setState((s) => ({ ...s, hatchFrequency: clamped }));
+                }}
+                value={state.hatchFrequency}
+              />
+            </Field>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <Field className="flex-1">
+              <div className="flex w-full items-center justify-between gap-1">
                 <FieldLabel className="text-xs">Model size</FieldLabel>
                 <span className="text-muted-foreground text-xs tabular-nums">{state.cubeSize}%</span>
               </div>
