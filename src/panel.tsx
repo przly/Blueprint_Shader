@@ -200,6 +200,95 @@ export function Panel() {
             </Field>
           </div>
 
+          <div className="flex items-center gap-4">
+            <Field className="flex-1">
+              <div className="flex w-full items-center justify-between gap-1">
+                <FieldLabel className="text-xs">Model X position</FieldLabel>
+                <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetX}</span>
+              </div>
+              <Slider
+                max={state.modelOffsetMax}
+                min={state.modelOffsetMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const clamped = controls.setModelOffsetXPercent(value as number);
+                  setState((s) => ({ ...s, modelOffsetX: clamped }));
+                }}
+                value={state.modelOffsetX}
+              />
+            </Field>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <Field className="flex-1">
+              <div className="flex w-full items-center justify-between gap-1">
+                <FieldLabel className="text-xs">Model Y position</FieldLabel>
+                <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetY}</span>
+              </div>
+              <Slider
+                max={state.modelOffsetMax}
+                min={state.modelOffsetMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const clamped = controls.setModelOffsetYPercent(value as number);
+                  setState((s) => ({ ...s, modelOffsetY: clamped }));
+                }}
+                value={state.modelOffsetY}
+              />
+            </Field>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <Button
+              className="ml-auto"
+              onClick={() => { controls.resetModelPosition(); setState((s) => ({ ...s, modelOffsetX: 0, modelOffsetY: 0 })); }}
+              size="xs"
+              variant="outline"
+            >
+              Reset position
+            </Button>
+          </div>
+
+          <Separator />
+
+          <h2 className="font-semibold text-base text-foreground">Light controls</h2>
+
+          <div className="flex items-center gap-4">
+            <Field className="flex-1">
+              <div className="flex w-full items-center justify-between gap-1">
+                <FieldLabel className="text-xs">Light azimuth</FieldLabel>
+                <span className="text-muted-foreground text-xs tabular-nums">{state.lightAzimuth}°</span>
+              </div>
+              <Slider
+                max={state.lightAzimuthMax}
+                min={state.lightAzimuthMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const azimuth = value as number;
+                  controls.setLightAzimuth(azimuth);
+                  setState((s) => ({ ...s, lightAzimuth: azimuth }));
+                }}
+                value={state.lightAzimuth}
+              />
+            </Field>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <Field className="flex-1">
+              <div className="flex w-full items-center justify-between gap-1">
+                <FieldLabel className="text-xs">Light elevation</FieldLabel>
+                <span className="text-muted-foreground text-xs tabular-nums">{state.lightElevation}°</span>
+              </div>
+              <Slider
+                max={state.lightElevationMax}
+                min={state.lightElevationMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const elevation = value as number;
+                  controls.setLightElevation(elevation);
+                  setState((s) => ({ ...s, lightElevation: elevation }));
+                }}
+                value={state.lightElevation}
+              />
+            </Field>
+          </div>
+
           <Separator />
 
           <h2 className="font-semibold text-base text-foreground">Interaction Controls</h2>

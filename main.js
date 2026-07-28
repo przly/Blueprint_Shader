@@ -61,6 +61,26 @@ function setCubeSizePercent(percent) {
   return clamped;
 }
 
+// Directional light angle, as azimuth (rotation around the vertical Y axis)
+// and elevation (above/below the horizontal plane), both in degrees — see
+// renderCubeFrame, which converts these to the uLightDir vector each frame.
+const LIGHT_AZIMUTH_MIN = 0;
+const LIGHT_AZIMUTH_MAX = 360;
+const LIGHT_ELEVATION_MIN = -90;
+const LIGHT_ELEVATION_MAX = 90;
+let lightAzimuthValue = restoreNumber('lightAzimuth', 170);
+let lightElevationValue = restoreNumber('lightElevation', 30);
+
+function setLightAzimuth(value) {
+  lightAzimuthValue = value;
+  persistNumber('lightAzimuth', value);
+}
+
+function setLightElevation(value) {
+  lightElevationValue = value;
+  persistNumber('lightElevation', value);
+}
+
 // Cube mode's "Blueprint mode" checkbox: dims the model to a flat navy fill
 // and overlays a crease/boundary-edge wireframe in bright cyan, on a navy
 // background — see renderCubeFrame and buildCreaseEdgeLines.
@@ -492,6 +512,48 @@ const cubeProjection = mat4Ortho(-CUBE_ORTHO_HALF_SIZE, CUBE_ORTHO_HALF_SIZE, -C
 // the size) — applies equally to the built-in cube and any uploaded custom
 // model; the "Model size" slider (cubeSizeScale) multiplies on top of this.
 const CUBE_SCALE = (1 / 3) * 0.1;
+
+// Model's on-canvas X/Y position, as a slider value from -300 to 300 applied
+// as a view-space translate in renderCubeFrame (i.e. after rotation, so
+// panning always moves the model along screen axes regardless of its
+// current rotation). MODEL_POSITION_RANGE converts that value into
+// view-space units (divided by 100, so ±100 — a third of the slider's
+// travel — is where the offset just carries the model past the ortho
+// frustum's edge, i.e. CUBE_ORTHO_HALF_SIZE plus roughly the default-size
+// model's own half-extent); the rest of the range up to ±300 keeps panning
+// it well off-canvas.
+const MODEL_POSITION_MIN = -300;
+const MODEL_POSITION_MAX = 300;
+const MODEL_POSITION_RANGE = CUBE_ORTHO_HALF_SIZE * 1.2;
+let modelOffsetXPercent = restoreNumber('modelOffsetX', 0);
+let modelOffsetYPercent = restoreNumber('modelOffsetY', 0);
+
+function setModelOffsetXPercent(percent) {
+  const clamped = Math.max(MODEL_POSITION_MIN, Math.min(MODEL_POSITION_MAX, percent));
+  modelOffsetXPercent = clamped;
+  persistNumber('modelOffsetX', clamped);
+  return clamped;
+}
+
+function setModelOffsetYPercent(percent) {
+  const clamped = Math.max(MODEL_POSITION_MIN, Math.min(MODEL_POSITION_MAX, percent));
+  modelOffsetYPercent = clamped;
+  persistNumber('modelOffsetY', clamped);
+  return clamped;
+}
+
+function resetModelPosition() {
+  setModelOffsetXPercent(0);
+  setModelOffsetYPercent(0);
+}
+
+// Shared by renderCubeFrame and raycastGreenMesh's unprojection so the two
+// stay in sync — the raycast has to undo the exact same view-space
+// translate the render pass applies, or drawing on a panned model would hit
+// the wrong spot.
+function getModelViewOffset() {
+  return [(modelOffsetXPercent / 100) * MODEL_POSITION_RANGE, (modelOffsetYPercent / 100) * MODEL_POSITION_RANGE];
+}
 
 // Classic isometric angles: 45° yaw so all three visible faces read as
 // equally foreshortened, and a ~35.264° (arctan(1/sqrt(2))) downward pitch
@@ -963,8 +1025,8 @@ function rotateYVec3(v, theta) {
 // Inverse of renderCubeFrame's modelView build (translate * rotateX(rx) *
 // rotateY(ry) * scale(s)) applied to a single view-space point, undone in
 // reverse order: un-translate, un-rotateX, un-rotateY, un-scale.
-function unprojectViewPointToObject(pv, rx, ry, s) {
-  const untranslated = [pv[0], pv[1], pv[2] + 5]; // inverse of mat4Translate(0, 0, -5)
+function unprojectViewPointToObject(pv, rx, ry, s, ox, oy) {
+  const untranslated = [pv[0] - ox, pv[1] - oy, pv[2] + 5]; // inverse of mat4Translate(ox, oy, -5)
   const unrotatedX = rotateXVec3(untranslated, -rx);
   const unrotatedY = rotateYVec3(unrotatedX, -ry);
   return [unrotatedY[0] / s, unrotatedY[1] / s, unrotatedY[2] / s];
@@ -1017,10 +1079,11 @@ function raycastGreenMesh(clientX, clientY) {
   const ndcY = 1 - (cubePxY / cubeCanvas.height) * 2; // canvas Y is down, NDC Y is up
 
   const rx = cubeRotX + cubeParallaxX, ry = cubeRotY + cubeParallaxY, s = CUBE_SCALE * cubeSizeScale;
+  const [ox, oy] = getModelViewOffset();
   const originView = [ndcX * CUBE_ORTHO_HALF_SIZE, ndcY * CUBE_ORTHO_HALF_SIZE, -0.1];
   const farView = [originView[0], originView[1], -50];
-  const originObj = unprojectViewPointToObject(originView, rx, ry, s);
-  const farObj = unprojectViewPointToObject(farView, rx, ry, s);
+  const originObj = unprojectViewPointToObject(originView, rx, ry, s, ox, oy);
+  const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy);
   const dir = [farObj[0] - originObj[0], farObj[1] - originObj[1], farObj[2] - originObj[2]];
 
   let bestT = Infinity, bestPoint = null;
@@ -1164,7 +1227,8 @@ function renderCubeFrame() {
   cubeParallaxX += (cubeParallaxTargetX - cubeParallaxX) * CUBE_PARALLAX_SMOOTHING;
   cubeParallaxY += (cubeParallaxTargetY - cubeParallaxY) * CUBE_PARALLAX_SMOOTHING;
 
-  let modelView = mat4Translate(0, 0, -5);
+  const [offsetX, offsetY] = getModelViewOffset();
+  let modelView = mat4Translate(offsetX, offsetY, -5);
   modelView = mat4Multiply(modelView, mat4RotateX(cubeRotX + cubeParallaxX));
   modelView = mat4Multiply(modelView, mat4RotateY(cubeRotY + cubeParallaxY));
   modelView = mat4Multiply(modelView, mat4Scale(CUBE_SCALE * cubeSizeScale));
@@ -1172,7 +1236,9 @@ function renderCubeFrame() {
   gl.useProgram(cubeProgram);
   gl.uniformMatrix4fv(uModelView, false, modelView);
   gl.uniformMatrix4fv(uProjection, false, cubeProjection);
-  gl.uniform3f(uLightDir, -1, 0, 1);
+  const azRad = (lightAzimuthValue * Math.PI) / 180;
+  const elRad = (lightElevationValue * Math.PI) / 180;
+  gl.uniform3f(uLightDir, Math.cos(elRad) * Math.cos(azRad), Math.sin(elRad), Math.cos(elRad) * Math.sin(azRad));
   gl.uniform1i(uBlueprint, blueprintEnabled ? 1 : 0);
   gl.uniform3f(uBlueprintFillColor, BLUEPRINT_FILL_COLOR[0], BLUEPRINT_FILL_COLOR[1], BLUEPRINT_FILL_COLOR[2]);
   gl.uniform3f(uBlueprintFillColorGreen, BLUEPRINT_FILL_COLOR_GREEN[0], BLUEPRINT_FILL_COLOR_GREEN[1], BLUEPRINT_FILL_COLOR_GREEN[2]);
@@ -1360,6 +1426,16 @@ export const controls = {
       cubeSize: cubeSizePercent,
       cubeSizeMin: CUBE_SIZE_MIN,
       cubeSizeMax: CUBE_SIZE_MAX,
+      modelOffsetX: modelOffsetXPercent,
+      modelOffsetY: modelOffsetYPercent,
+      modelOffsetMin: MODEL_POSITION_MIN,
+      modelOffsetMax: MODEL_POSITION_MAX,
+      lightAzimuth: lightAzimuthValue,
+      lightElevation: lightElevationValue,
+      lightAzimuthMin: LIGHT_AZIMUTH_MIN,
+      lightAzimuthMax: LIGHT_AZIMUTH_MAX,
+      lightElevationMin: LIGHT_ELEVATION_MIN,
+      lightElevationMax: LIGHT_ELEVATION_MAX,
       blueprintEnabled,
       showModelFlowArrow,
       hoverMovementPaused,
@@ -1376,6 +1452,11 @@ export const controls = {
   },
   setPulseWidth,
   setCubeSizePercent,
+  setModelOffsetXPercent,
+  setModelOffsetYPercent,
+  resetModelPosition,
+  setLightAzimuth,
+  setLightElevation,
   setBlueprintEnabled,
   setUseCustomModel,
   loadModelFiles: (files) => loadModelFromFiles(files),
