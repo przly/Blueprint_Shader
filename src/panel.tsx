@@ -137,270 +137,272 @@ export function Panel() {
       </Button>
 
       {!hidden && (
-        <div className="fixed top-14 left-4 z-10 flex w-[min(92vw,28rem)] flex-col gap-6 rounded-[24px] border border-border bg-popover/80 p-6 text-popover-foreground text-sm shadow-lg backdrop-blur-sm">
-          <h2 className="font-semibold text-base text-foreground">Model Controls</h2>
+        <div className="fixed top-14 left-4 z-10 max-h-[calc(100vh-4.5rem)] w-[min(92vw,28rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm">
+          <div className="panel-scrollbar flex h-full max-h-[calc(100vh-4.5rem)] flex-col gap-6 overflow-y-auto p-6">
+            <h2 className="font-semibold text-base text-foreground">Model Controls</h2>
 
-          <div className="flex flex-wrap items-center gap-4">
-            <input
-              ref={fileInputRef}
-              accept=".obj,.mtl"
-              className="hidden"
-              multiple
-              onChange={(event) => {
-                controls.loadModelFiles(Array.from(event.target.files ?? []));
-                event.target.value = "";
-              }}
-              type="file"
-            />
-            <Button onClick={() => fileInputRef.current?.click()} size="xs" variant="outline">
-              Load model…
-            </Button>
-            <span className="text-muted-foreground text-xs">or drop .obj/.mtl anywhere</span>
-            <Label className="gap-2.5 text-xs">
-              <Switch
-                checked={!state.useCustomModel}
-                disabled={!state.customModelReady}
-                onCheckedChange={(checked: boolean) => {
-                  const useCustomModel = !checked;
-                  controls.setUseCustomModel(useCustomModel);
-                  setState((s) => ({ ...s, useCustomModel }));
+            <div className="flex flex-wrap items-center gap-4">
+              <input
+                ref={fileInputRef}
+                accept=".obj,.mtl"
+                className="hidden"
+                multiple
+                onChange={(event) => {
+                  controls.loadModelFiles(Array.from(event.target.files ?? []));
+                  event.target.value = "";
                 }}
+                type="file"
               />
-              Show default cube
-            </Label>
-            <span className="text-muted-foreground text-xs">{state.cubeModelStatus}</span>
-            <Label className="gap-2.5 text-xs">
-              <Switch
-                checked={!state.blueprintEnabled}
-                onCheckedChange={(checked: boolean) => {
-                  const enabled = !checked;
-                  controls.setBlueprintEnabled(enabled);
-                  setState((s) => ({ ...s, blueprintEnabled: enabled }));
-                }}
-              />
-              Hide blueprint shader
-            </Label>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <Field className="flex-1">
-              <div className="flex w-full items-center justify-between gap-1">
-                <FieldLabel className="text-xs">Hatch frequency</FieldLabel>
-                <span className="text-muted-foreground text-xs tabular-nums">{state.hatchFrequency}</span>
-              </div>
-              <Slider
-                max={state.hatchFrequencyMax}
-                min={state.hatchFrequencyMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const clamped = controls.setHatchFrequency(value as number);
-                  setState((s) => ({ ...s, hatchFrequency: clamped }));
-                }}
-                value={state.hatchFrequency}
-              />
-            </Field>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <Field className="flex-1">
-              <div className="flex w-full items-center justify-between gap-1">
-                <FieldLabel className="text-xs">Model size</FieldLabel>
-                <span className="text-muted-foreground text-xs tabular-nums">{state.cubeSize}%</span>
-              </div>
-              <Slider
-                max={state.cubeSizeMax}
-                min={state.cubeSizeMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const clamped = controls.setCubeSizePercent(value as number);
-                  setState((s) => ({ ...s, cubeSize: clamped }));
-                }}
-                value={state.cubeSize}
-              />
-            </Field>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <Field className="flex-1">
-              <div className="flex w-full items-center justify-between gap-1">
-                <FieldLabel className="text-xs">Model X position</FieldLabel>
-                <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetX}</span>
-              </div>
-              <Slider
-                max={state.modelOffsetMax}
-                min={state.modelOffsetMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const clamped = controls.setModelOffsetXPercent(value as number);
-                  setState((s) => ({ ...s, modelOffsetX: clamped }));
-                }}
-                value={state.modelOffsetX}
-              />
-            </Field>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <Field className="flex-1">
-              <div className="flex w-full items-center justify-between gap-1">
-                <FieldLabel className="text-xs">Model Y position</FieldLabel>
-                <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetY}</span>
-              </div>
-              <Slider
-                max={state.modelOffsetMax}
-                min={state.modelOffsetMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const clamped = controls.setModelOffsetYPercent(value as number);
-                  setState((s) => ({ ...s, modelOffsetY: clamped }));
-                }}
-                value={state.modelOffsetY}
-              />
-            </Field>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <Button
-              className="ml-auto"
-              onClick={() => { controls.resetModelPosition(); setState((s) => ({ ...s, modelOffsetX: 0, modelOffsetY: 0 })); }}
-              size="xs"
-              variant="outline"
-            >
-              Reset position
-            </Button>
-          </div>
-
-          <Separator />
-
-          <h2 className="font-semibold text-base text-foreground">Light controls</h2>
-
-          <div className="flex items-center gap-4">
-            <Field className="flex-1">
-              <div className="flex w-full items-center justify-between gap-1">
-                <FieldLabel className="text-xs">Light azimuth</FieldLabel>
-                <span className="text-muted-foreground text-xs tabular-nums">{state.lightAzimuth}°</span>
-              </div>
-              <Slider
-                max={state.lightAzimuthMax}
-                min={state.lightAzimuthMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const azimuth = value as number;
-                  controls.setLightAzimuth(azimuth);
-                  setState((s) => ({ ...s, lightAzimuth: azimuth }));
-                }}
-                value={state.lightAzimuth}
-              />
-            </Field>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <Field className="flex-1">
-              <div className="flex w-full items-center justify-between gap-1">
-                <FieldLabel className="text-xs">Light elevation</FieldLabel>
-                <span className="text-muted-foreground text-xs tabular-nums">{state.lightElevation}°</span>
-              </div>
-              <Slider
-                max={state.lightElevationMax}
-                min={state.lightElevationMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const elevation = value as number;
-                  controls.setLightElevation(elevation);
-                  setState((s) => ({ ...s, lightElevation: elevation }));
-                }}
-                value={state.lightElevation}
-              />
-            </Field>
-          </div>
-
-          <Separator />
-
-          <h2 className="font-semibold text-base text-foreground">Interaction Controls</h2>
-
-          <div className="flex items-center gap-4">
-            <Label className="gap-2.5 text-xs">
-              <Switch
-                checked={!state.hoverMovementPaused}
-                onCheckedChange={(checked: boolean) => {
-                  const paused = !checked;
-                  controls.setHoverMovementPaused(paused);
-                  setState((s) => ({ ...s, hoverMovementPaused: paused }));
-                }}
-              />
-              Hover
-            </Label>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <Label className="gap-2.5 text-xs">
-              <Switch
-                checked={!state.rotationDisabled}
-                onCheckedChange={(checked: boolean) => {
-                  const disabled = !checked;
-                  controls.setRotationDisabled(disabled);
-                  setState((s) => ({ ...s, rotationDisabled: disabled }));
-                }}
-              />
-              Rotation
-            </Label>
-            <div className="ml-auto flex items-center gap-2">
-              <Button onClick={() => controls.resetRotation()} size="xs" variant="outline">
-                Reset rotation
+              <Button onClick={() => fileInputRef.current?.click()} size="xs" variant="outline">
+                Load model…
               </Button>
+              <span className="text-muted-foreground text-xs">or drop .obj/.mtl anywhere</span>
+              <Label className="gap-2.5 text-xs">
+                <Switch
+                  checked={!state.useCustomModel}
+                  disabled={!state.customModelReady}
+                  onCheckedChange={(checked: boolean) => {
+                    const useCustomModel = !checked;
+                    controls.setUseCustomModel(useCustomModel);
+                    setState((s) => ({ ...s, useCustomModel }));
+                  }}
+                />
+                Show default cube
+              </Label>
+              <span className="text-muted-foreground text-xs">{state.cubeModelStatus}</span>
+              <Label className="gap-2.5 text-xs">
+                <Switch
+                  checked={!state.blueprintEnabled}
+                  onCheckedChange={(checked: boolean) => {
+                    const enabled = !checked;
+                    controls.setBlueprintEnabled(enabled);
+                    setState((s) => ({ ...s, blueprintEnabled: enabled }));
+                  }}
+                />
+                Hide blueprint shader
+              </Label>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Hatch frequency</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.hatchFrequency}</span>
+                </div>
+                <Slider
+                  max={state.hatchFrequencyMax}
+                  min={state.hatchFrequencyMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setHatchFrequency(value as number);
+                    setState((s) => ({ ...s, hatchFrequency: clamped }));
+                  }}
+                  value={state.hatchFrequency}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Model size</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.cubeSize}%</span>
+                </div>
+                <Slider
+                  max={state.cubeSizeMax}
+                  min={state.cubeSizeMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setCubeSizePercent(value as number);
+                    setState((s) => ({ ...s, cubeSize: clamped }));
+                  }}
+                  value={state.cubeSize}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Model X position</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetX}</span>
+                </div>
+                <Slider
+                  max={state.modelOffsetMax}
+                  min={state.modelOffsetMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setModelOffsetXPercent(value as number);
+                    setState((s) => ({ ...s, modelOffsetX: clamped }));
+                  }}
+                  value={state.modelOffsetX}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Model Y position</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetY}</span>
+                </div>
+                <Slider
+                  max={state.modelOffsetMax}
+                  min={state.modelOffsetMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setModelOffsetYPercent(value as number);
+                    setState((s) => ({ ...s, modelOffsetY: clamped }));
+                  }}
+                  value={state.modelOffsetY}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
               <Button
-                onClick={() => {
-                  const clamped = controls.setCubeSizePercent(100);
-                  setState((s) => ({ ...s, cubeSize: clamped }));
-                }}
+                className="ml-auto"
+                onClick={() => { controls.resetModelPosition(); setState((s) => ({ ...s, modelOffsetX: 0, modelOffsetY: 0 })); }}
                 size="xs"
                 variant="outline"
               >
-                Reset size
+                Reset position
               </Button>
             </div>
-          </div>
 
-          <Separator />
+            <Separator />
 
-          <h2 className="font-semibold text-base text-foreground">Flow Controls</h2>
+            <h2 className="font-semibold text-base text-foreground">Light controls</h2>
 
-          <div className="flex items-center gap-4">
-            <Label className="gap-2.5 text-xs">
-              <Switch
-                checked={modelFlowDraw}
-                onCheckedChange={(checked: boolean) => {
-                  controls.setModelFlowDraw(checked);
-                  setModelFlowDraw(checked);
-                }}
-              />
-              Draw flow arrow
-            </Label>
-            <Button onClick={() => controls.clearModelFlow()} size="xs" variant="outline">
-              Clear arrow
-            </Button>
-            <Label className="gap-2.5 text-xs">
-              <Switch
-                checked={state.showModelFlowArrow}
-                onCheckedChange={(checked: boolean) => {
-                  controls.setModelFlowArrowVisible(checked);
-                  setState((s) => ({ ...s, showModelFlowArrow: checked }));
-                }}
-              />
-              Show arrows
-            </Label>
-          </div>
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Light azimuth</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.lightAzimuth}°</span>
+                </div>
+                <Slider
+                  max={state.lightAzimuthMax}
+                  min={state.lightAzimuthMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const azimuth = value as number;
+                    controls.setLightAzimuth(azimuth);
+                    setState((s) => ({ ...s, lightAzimuth: azimuth }));
+                  }}
+                  value={state.lightAzimuth}
+                />
+              </Field>
+            </div>
 
-          <Field>
-            <Slider
-              max={30}
-              min={1}
-              onValueChange={(value: number | readonly number[]) => {
-                const width = value as number;
-                controls.setPulseWidth(width);
-                setState((s) => ({ ...s, pulseWidth: width }));
-              }}
-              value={state.pulseWidth}
-            >
-              <div className="mb-2 flex w-full items-center justify-between gap-1">
-                <FieldLabel className="text-xs">Pulse width</FieldLabel>
-                <SliderValue className="text-muted-foreground text-xs" />
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Light elevation</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.lightElevation}°</span>
+                </div>
+                <Slider
+                  max={state.lightElevationMax}
+                  min={state.lightElevationMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const elevation = value as number;
+                    controls.setLightElevation(elevation);
+                    setState((s) => ({ ...s, lightElevation: elevation }));
+                  }}
+                  value={state.lightElevation}
+                />
+              </Field>
+            </div>
+
+            <Separator />
+
+            <h2 className="font-semibold text-base text-foreground">Interaction Controls</h2>
+
+            <div className="flex items-center gap-4">
+              <Label className="gap-2.5 text-xs">
+                <Switch
+                  checked={!state.hoverMovementPaused}
+                  onCheckedChange={(checked: boolean) => {
+                    const paused = !checked;
+                    controls.setHoverMovementPaused(paused);
+                    setState((s) => ({ ...s, hoverMovementPaused: paused }));
+                  }}
+                />
+                Hover
+              </Label>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Label className="gap-2.5 text-xs">
+                <Switch
+                  checked={!state.rotationDisabled}
+                  onCheckedChange={(checked: boolean) => {
+                    const disabled = !checked;
+                    controls.setRotationDisabled(disabled);
+                    setState((s) => ({ ...s, rotationDisabled: disabled }));
+                  }}
+                />
+                Rotation
+              </Label>
+              <div className="ml-auto flex items-center gap-2">
+                <Button onClick={() => controls.resetRotation()} size="xs" variant="outline">
+                  Reset rotation
+                </Button>
+                <Button
+                  onClick={() => {
+                    const clamped = controls.setCubeSizePercent(100);
+                    setState((s) => ({ ...s, cubeSize: clamped }));
+                  }}
+                  size="xs"
+                  variant="outline"
+                >
+                  Reset size
+                </Button>
               </div>
-            </Slider>
-          </Field>
+            </div>
+
+            <Separator />
+
+            <h2 className="font-semibold text-base text-foreground">Flow Controls</h2>
+
+            <div className="flex items-center gap-4">
+              <Label className="gap-2.5 text-xs">
+                <Switch
+                  checked={modelFlowDraw}
+                  onCheckedChange={(checked: boolean) => {
+                    controls.setModelFlowDraw(checked);
+                    setModelFlowDraw(checked);
+                  }}
+                />
+                Draw flow arrow
+              </Label>
+              <Button onClick={() => controls.clearModelFlow()} size="xs" variant="outline">
+                Clear arrow
+              </Button>
+              <Label className="gap-2.5 text-xs">
+                <Switch
+                  checked={state.showModelFlowArrow}
+                  onCheckedChange={(checked: boolean) => {
+                    controls.setModelFlowArrowVisible(checked);
+                    setState((s) => ({ ...s, showModelFlowArrow: checked }));
+                  }}
+                />
+                Show arrows
+              </Label>
+            </div>
+
+            <Field>
+              <Slider
+                max={30}
+                min={1}
+                onValueChange={(value: number | readonly number[]) => {
+                  const width = value as number;
+                  controls.setPulseWidth(width);
+                  setState((s) => ({ ...s, pulseWidth: width }));
+                }}
+                value={state.pulseWidth}
+              >
+                <div className="mb-2 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Pulse width</FieldLabel>
+                  <SliderValue className="text-muted-foreground text-xs" />
+                </div>
+              </Slider>
+            </Field>
+          </div>
         </div>
       )}
     </>
