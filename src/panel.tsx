@@ -170,35 +170,6 @@ export function Panel() {
                 Show default cube
               </Label>
               <span className="text-muted-foreground text-xs">{state.cubeModelStatus}</span>
-              <Label className="gap-2.5 text-xs">
-                <Switch
-                  checked={!state.blueprintEnabled}
-                  onCheckedChange={(checked: boolean) => {
-                    const enabled = !checked;
-                    controls.setBlueprintEnabled(enabled);
-                    setState((s) => ({ ...s, blueprintEnabled: enabled }));
-                  }}
-                />
-                Hide blueprint shader
-              </Label>
-            </div>
-
-            <div className="flex items-center gap-4">
-              <Field className="flex-1">
-                <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Hatch frequency</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.hatchFrequency}</span>
-                </div>
-                <Slider
-                  max={state.hatchFrequencyMax}
-                  min={state.hatchFrequencyMin}
-                  onValueChange={(value: number | readonly number[]) => {
-                    const clamped = controls.setHatchFrequency(value as number);
-                    setState((s) => ({ ...s, hatchFrequency: clamped }));
-                  }}
-                  value={state.hatchFrequency}
-                />
-              </Field>
             </div>
 
             <div className="flex items-center gap-4">
@@ -264,6 +235,114 @@ export function Panel() {
               >
                 Reset position
               </Button>
+            </div>
+
+            <Separator />
+
+            <h2 className="font-semibold text-base text-foreground">Shader Controls</h2>
+
+            <div className="flex items-center gap-4">
+              <Label className="gap-2.5 text-xs">
+                <Switch
+                  checked={!state.blueprintEnabled}
+                  onCheckedChange={(checked: boolean) => {
+                    const enabled = !checked;
+                    controls.setBlueprintEnabled(enabled);
+                    setState((s) => ({ ...s, blueprintEnabled: enabled }));
+                  }}
+                />
+                Hide blueprint shader
+              </Label>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Line frequency</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.lineFrequency}</span>
+                </div>
+                <Slider
+                  max={state.lineFrequencyMax}
+                  min={state.lineFrequencyMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setLineFrequency(value as number);
+                    setState((s) => ({ ...s, lineFrequency: clamped }));
+                  }}
+                  value={state.lineFrequency}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Dot frequency</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.dotFrequency}</span>
+                </div>
+                <Slider
+                  max={state.dotFrequencyMax}
+                  min={state.dotFrequencyMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setDotFrequency(value as number);
+                    setState((s) => ({ ...s, dotFrequency: clamped }));
+                  }}
+                  value={state.dotFrequency}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Dot size</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.dotSize}%</span>
+                </div>
+                <Slider
+                  max={state.dotSizeMax}
+                  min={state.dotSizeMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setDotSizePercent(value as number);
+                    setState((s) => ({ ...s, dotSize: clamped }));
+                  }}
+                  value={state.dotSize}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Plus frequency</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.plusFrequency}</span>
+                </div>
+                <Slider
+                  max={state.plusFrequencyMax}
+                  min={state.plusFrequencyMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setPlusFrequency(value as number);
+                    setState((s) => ({ ...s, plusFrequency: clamped }));
+                  }}
+                  value={state.plusFrequency}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs">Plus size</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.plusSize}%</span>
+                </div>
+                <Slider
+                  max={state.plusSizeMax}
+                  min={state.plusSizeMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setPlusSizePercent(value as number);
+                    setState((s) => ({ ...s, plusSize: clamped }));
+                  }}
+                  value={state.plusSize}
+                />
+              </Field>
             </div>
 
             <Separator />

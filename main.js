@@ -64,21 +64,79 @@ function setCubeSizePercent(percent) {
   return clamped;
 }
 
-// Blueprint mode's hatch fill (see aHatch / hatchLineMask): how many stripe
-// periods per object-space unit, i.e. how tightly packed the diagonal lines
-// are on a hatch-flagged face. Needs to be user-adjustable since a custom
-// model's object-space scale (and therefore how dense a given frequency
-// reads) varies per model — see parseObj's per-model extent normalization.
-const HATCH_FREQUENCY_MIN = 1;
-const HATCH_FREQUENCY_MAX = 60;
-let hatchFrequencyValue = restoreNumber('hatchFrequency', 1);
+// Blueprint mode's technical-fill patterns (see aFillPattern /
+// materialFillPatternId — hatch lines, dots, or plus marks): each pattern
+// gets its own frequency (pattern periods per object-space unit, i.e. how
+// tightly packed the lines/dots/pluses are on a fill-flagged face) so they
+// can be tuned independently rather than sharing one control. Needs to be
+// user-adjustable since a custom model's object-space scale (and therefore
+// how dense a given frequency reads) varies per model — see parseObj's
+// per-model extent normalization.
+const LINE_FREQUENCY_MIN = 1;
+const LINE_FREQUENCY_MAX = 60;
+let lineFrequencyValue = restoreNumber('lineFrequency', 1);
 
-function setHatchFrequency(value) {
-  const clamped = Math.max(HATCH_FREQUENCY_MIN, Math.min(HATCH_FREQUENCY_MAX, value));
-  hatchFrequencyValue = clamped;
-  persistNumber('hatchFrequency', clamped);
+function setLineFrequency(value) {
+  const clamped = Math.max(LINE_FREQUENCY_MIN, Math.min(LINE_FREQUENCY_MAX, value));
+  lineFrequencyValue = clamped;
+  persistNumber('lineFrequency', clamped);
   return clamped;
 }
+
+const DOT_FREQUENCY_MIN = 1;
+const DOT_FREQUENCY_MAX = 60;
+let dotFrequencyValue = restoreNumber('dotFrequency', 1);
+
+function setDotFrequency(value) {
+  const clamped = Math.max(DOT_FREQUENCY_MIN, Math.min(DOT_FREQUENCY_MAX, value));
+  dotFrequencyValue = clamped;
+  persistNumber('dotFrequency', clamped);
+  return clamped;
+}
+
+// Dot radius, as a percentage of the cell period (see dotsMask) — e.g. 16
+// means each dot's radius is 16% of the spacing between dot centers.
+const DOT_SIZE_MIN = 5;
+const DOT_SIZE_MAX = 45;
+let dotSizePercent = restoreNumber('dotSize', 16);
+
+function setDotSizePercent(value) {
+  const clamped = Math.max(DOT_SIZE_MIN, Math.min(DOT_SIZE_MAX, value));
+  dotSizePercent = clamped;
+  persistNumber('dotSize', clamped);
+  return clamped;
+}
+
+const PLUS_FREQUENCY_MIN = 1;
+const PLUS_FREQUENCY_MAX = 60;
+let plusFrequencyValue = restoreNumber('plusFrequency', 1);
+
+function setPlusFrequency(value) {
+  const clamped = Math.max(PLUS_FREQUENCY_MIN, Math.min(PLUS_FREQUENCY_MAX, value));
+  plusFrequencyValue = clamped;
+  persistNumber('plusFrequency', clamped);
+  return clamped;
+}
+
+// Plus arm half-length, as a percentage of the cell period (see plusMask) —
+// arm thickness scales proportionally (see PLUS_THICKNESS_RATIO in
+// renderCubeFrame) so a single slider keeps the mark reading as a "+"
+// rather than needing a separate thickness control.
+const PLUS_SIZE_MIN = 5;
+const PLUS_SIZE_MAX = 45;
+let plusSizePercent = restoreNumber('plusSize', 20);
+
+function setPlusSizePercent(value) {
+  const clamped = Math.max(PLUS_SIZE_MIN, Math.min(PLUS_SIZE_MAX, value));
+  plusSizePercent = clamped;
+  persistNumber('plusSize', clamped);
+  return clamped;
+}
+
+// Fixed ratio (rather than a third slider) so the mark keeps reading as a
+// "+" as its size changes — matches the original hardcoded 0.05/0.2
+// thickness/arm-length ratio from before these were user-adjustable.
+const PLUS_THICKNESS_RATIO = 0.12;
 
 // Directional light angle, as azimuth (rotation around the vertical Y axis)
 // and elevation (above/below the horizontal plane), both in degrees — see
@@ -153,7 +211,12 @@ const CUBE_VERTEX_SHADER = `
   attribute vec3 aColor;
   attribute float aIsGreen;
   attribute float aFlowCoord;
-  attribute float aHatch;
+  // Which technical-fill pattern (if any) this vertex's face uses: 0 = none,
+  // 1 = hatch lines, 2 = dots, 3 = plus marks — see materialFillPatternId,
+  // which maps a Blender material name to one of these. A single float
+  // (rather than a separate boolean per pattern) keeps this to one
+  // attribute/buffer regardless of how many fill patterns exist.
+  attribute float aFillPattern;
   uniform mat4 uModelView;
   uniform mat4 uProjection;
   varying vec3 vNormal;
@@ -161,7 +224,7 @@ const CUBE_VERTEX_SHADER = `
   varying float vIsGreen;
   varying float vFlowCoord;
   varying vec3 vPosition;
-  varying float vHatch;
+  varying float vFillPattern;
   void main() {
     gl_Position = uProjection * uModelView * vec4(aPosition, 1.0);
     // Object-space normal (no model rotation applied) so the light stays
@@ -170,11 +233,11 @@ const CUBE_VERTEX_SHADER = `
     vColor = aColor;
     vIsGreen = aIsGreen;
     vFlowCoord = aFlowCoord;
-    // Object-space position, same reasoning as vNormal above: the hatch
+    // Object-space position, same reasoning as vNormal above: the fill
     // pattern it drives (see CUBE_FRAGMENT_SHADER) needs to stay fixed to
     // the model rather than swim as the camera orbits.
     vPosition = aPosition;
-    vHatch = aHatch;
+    vFillPattern = aFillPattern;
   }
 `;
 
@@ -186,7 +249,7 @@ const CUBE_FRAGMENT_SHADER = `
   varying float vIsGreen;
   varying float vFlowCoord;
   varying vec3 vPosition;
-  varying float vHatch;
+  varying float vFillPattern;
   uniform vec3 uLightDir;
   uniform bool uBlueprint;
   uniform vec3 uBlueprintFillColor;
@@ -195,50 +258,103 @@ const CUBE_FRAGMENT_SHADER = `
   uniform float uFlowPulseCenter;
   uniform float uFlowSigma;
   uniform vec3 uFlowColor;
-  uniform float uHatchFrequency;
   uniform vec3 uHatchLineColor;
-  // Diagonal hatch lines, sampled in object space so they stay put on the
-  // face as the model rotates instead of swimming (screen-space would be
-  // simpler but reads as "wrong" the moment the camera moves). Projects
-  // onto the two axes spanning the face (dropping whichever axis the
-  // normal points along) so the stripe spacing is consistent regardless of
-  // which cube face — or which arbitrary custom-model face — is hatched.
-  // Line thickness is derived from the screen-space gradient of the stripe
-  // coordinate rather than a fixed fraction of the period, so it renders at
-  // a constant ~1 device pixel — matching the wireframe overlay, which is
-  // drawn with gl.LINES at the (unset, so default) 1px width. Uses the
-  // exact gradient length (dFdx/dFdy combined via Pythagoras) rather than
-  // fwidth's cheaper abs(dFdx)+abs(dFdy) approximation — fwidth overestimates
-  // the gradient except when the line runs exactly along the x or y screen
-  // axis, so it was making the line's rendered width (and thus its
-  // antialiasing) inconsistent — thinner/rougher-looking — at the diagonal
-  // angles most hatch lines actually run at.
-  const float HATCH_LINE_HALF_WIDTH_PX = 1.0;
-  // Below this many screen pixels per stripe period, the pattern has more
-  // than one period per pixel — under-sampled, so the crisp per-fragment
-  // line test aliases into shimmering moire as the surface (or the camera
-  // orbiting it) tilts the face toward grazing incidence, where foreshortening
-  // keeps shrinking the on-screen period. Standard fix (used for procedural
-  // grids/checkers under minification): once the period drops close to or
-  // below this, fade the mask to its flat average coverage instead of
-  // trying to resolve individual lines the pixel grid can't represent.
-  const float HATCH_MIN_RESOLVED_PERIOD_PX = 3.0;
-  const float HATCH_ALIASED_PERIOD_PX = 1.0;
-  float hatchLineMask(vec3 pos, vec3 normal) {
+  uniform float uLineFrequency;
+  uniform float uDotFrequency;
+  uniform float uDotRadius;
+  uniform float uPlusFrequency;
+  uniform float uPlusArmHalf;
+  uniform float uPlusThickness;
+
+  // Shared by all three fill patterns below (lines/dots/plus): projects
+  // object-space position onto the two axes spanning the face (dropping
+  // whichever axis the normal points along), sampled in object space so the
+  // pattern stays put on the face as the model rotates instead of swimming
+  // (screen-space would be simpler but reads as "wrong" the moment the
+  // camera moves) — and so spacing is consistent regardless of which cube
+  // face, or which arbitrary custom-model face, is flagged.
+  vec2 fillPatternUV(vec3 pos, vec3 normal) {
     vec3 an = abs(normal);
-    float u, v;
-    if (an.x >= an.y && an.x >= an.z) { u = pos.y; v = pos.z; }
-    else if (an.y >= an.x && an.y >= an.z) { u = pos.x; v = pos.z; }
-    else { u = pos.x; v = pos.y; }
-    float diag = (u + v) * uHatchFrequency;
+    if (an.x >= an.y && an.x >= an.z) return pos.yz;
+    if (an.y >= an.x && an.y >= an.z) return pos.xz;
+    return pos.xy;
+  }
+
+  // Edge thickness/softness shared by all three patterns, and the shared
+  // anti-moire fallback: derived from the screen-space gradient of each
+  // pattern's own "distance to feature" value rather than a fixed fraction
+  // of the period, so every pattern renders at a constant ~1 device pixel
+  // — matching the wireframe overlay (gl.LINES at the default 1px width) —
+  // regardless of how the face is scaled/tilted/zoomed. Below
+  // MIN_RESOLVED_PERIOD_PX screen pixels per period, the pattern has more
+  // than one repeat per pixel — under-sampled, so a crisp per-fragment test
+  // aliases into shimmering moire as the surface (or the camera orbiting
+  // it) tilts the face toward grazing incidence, where foreshortening keeps
+  // shrinking the on-screen period. Standard fix (used for procedural
+  // grids/checkers under minification): once the period drops close to or
+  // below this, fade to the pattern's flat average coverage instead of
+  // trying to resolve individual features the pixel grid can't represent.
+  const float FILL_EDGE_HALF_WIDTH_PX = 1.0;
+  const float FILL_MIN_RESOLVED_PERIOD_PX = 3.0;
+  const float FILL_ALIASED_PERIOD_PX = 1.0;
+
+  // Diagonal hatch lines. Uses the exact gradient length (dFdx/dFdy
+  // combined via Pythagoras) rather than fwidth's cheaper
+  // abs(dFdx)+abs(dFdy) approximation — fwidth overestimates the gradient
+  // except when the line runs exactly along the x or y screen axis, so it
+  // was making the line's rendered width (and thus its antialiasing)
+  // inconsistent — thinner/rougher-looking — at the diagonal angles most
+  // hatch lines actually run at.
+  float hatchLinesMask(vec3 pos, vec3 normal) {
+    vec2 uv = fillPatternUV(pos, normal);
+    float diag = (uv.x + uv.y) * uLineFrequency;
     float gradLen = length(vec2(dFdx(diag), dFdy(diag)));
     float phase = fract(diag);
     float distToLine = min(phase, 1.0 - phase) / max(gradLen, 1e-6);
-    float crispLine = 1.0 - smoothstep(0.0, HATCH_LINE_HALF_WIDTH_PX, distToLine);
+    float crispLine = 1.0 - smoothstep(0.0, FILL_EDGE_HALF_WIDTH_PX, distToLine);
     float periodPx = 1.0 / max(gradLen, 1e-6);
-    float coverage = clamp((2.0 * HATCH_LINE_HALF_WIDTH_PX) / max(periodPx, 1e-3), 0.0, 1.0);
-    float resolved = smoothstep(HATCH_ALIASED_PERIOD_PX, HATCH_MIN_RESOLVED_PERIOD_PX, periodPx);
+    float coverage = clamp((2.0 * FILL_EDGE_HALF_WIDTH_PX) / max(periodPx, 1e-3), 0.0, 1.0);
+    float resolved = smoothstep(FILL_ALIASED_PERIOD_PX, FILL_MIN_RESOLVED_PERIOD_PX, periodPx);
     return mix(coverage, crispLine, resolved);
+  }
+
+  // Small filled circles on a regular grid, one per uDotFrequency cell.
+  // uDotRadius is a fraction of the cell period (so dot size scales with
+  // spacing, like a real screen-printed dot pattern) rather than a fixed
+  // size — user-adjustable via the "Dot size" slider.
+  float dotsMask(vec3 pos, vec3 normal) {
+    vec2 uv = fillPatternUV(pos, normal) * uDotFrequency;
+    vec2 cell = fract(uv) - 0.5;
+    float dist = length(cell);
+    float gradLen = length(vec2(dFdx(dist), dFdy(dist)));
+    float distPx = (dist - uDotRadius) / max(gradLen, 1e-6);
+    float crispDot = 1.0 - smoothstep(-FILL_EDGE_HALF_WIDTH_PX, FILL_EDGE_HALF_WIDTH_PX, distPx);
+    float periodPx = 1.0 / max(gradLen, 1e-6);
+    float flatCoverage = clamp(3.14159265 * uDotRadius * uDotRadius, 0.0, 1.0);
+    float resolved = smoothstep(FILL_ALIASED_PERIOD_PX, FILL_MIN_RESOLVED_PERIOD_PX, periodPx);
+    return mix(flatCoverage, crispDot, resolved);
+  }
+
+  // Small "+" marks on a regular grid, one per uPlusFrequency cell — a
+  // union of a horizontal and a vertical bar (a cheap box-distance cross,
+  // not an exact Euclidean SDF, but sufficient at the thin scale these
+  // render at). uPlusArmHalf/uPlusThickness are fractions of the cell
+  // period, same reasoning as uDotRadius above — user-adjustable via the
+  // "Plus size" slider (thickness follows arm length at a fixed ratio, see
+  // PLUS_THICKNESS_RATIO in renderCubeFrame, so it keeps reading as a "+").
+  float plusMask(vec3 pos, vec3 normal) {
+    vec2 uv = fillPatternUV(pos, normal) * uPlusFrequency;
+    vec2 cell = fract(uv) - 0.5;
+    float distH = max(abs(cell.y) - uPlusThickness, abs(cell.x) - uPlusArmHalf);
+    float distV = max(abs(cell.x) - uPlusThickness, abs(cell.y) - uPlusArmHalf);
+    float dist = min(distH, distV);
+    float gradLen = length(vec2(dFdx(dist), dFdy(dist)));
+    float distPx = dist / max(gradLen, 1e-6);
+    float crispPlus = 1.0 - smoothstep(-FILL_EDGE_HALF_WIDTH_PX, FILL_EDGE_HALF_WIDTH_PX, distPx);
+    float periodPx = 1.0 / max(gradLen, 1e-6);
+    float flatCoverage = clamp(8.0 * uPlusArmHalf * uPlusThickness - 4.0 * uPlusThickness * uPlusThickness, 0.0, 1.0);
+    float resolved = smoothstep(FILL_ALIASED_PERIOD_PX, FILL_MIN_RESOLVED_PERIOD_PX, periodPx);
+    return mix(flatCoverage, crispPlus, resolved);
   }
   void main() {
     float diff = max(dot(normalize(vNormal), normalize(uLightDir)), 0.0);
@@ -262,12 +378,17 @@ const CUBE_FRAGMENT_SHADER = `
       float intensity = exp(-(d * d) / (2.0 * uFlowSigma * uFlowSigma));
       color += uFlowColor * intensity;
     }
-    // Hatch-flagged faces (see aHatch / isHatchMaterial) get uHatchLineColor
-    // diagonal lines drawn on top of everything above, so it reads on top of
-    // blueprint fill, shaded-mode lighting, and the flow glow alike.
-    if (vHatch > 0.5) {
-      float h = hatchLineMask(vPosition, vNormal);
-      color = mix(color, uHatchLineColor, h);
+    // Fill-pattern-flagged faces (see aFillPattern / materialFillPatternId)
+    // get uHatchLineColor drawn on top of everything above in whichever
+    // pattern their material selected, so it reads on top of blueprint
+    // fill, shaded-mode lighting, and the flow glow alike.
+    int fillPatternId = int(vFillPattern + 0.5);
+    float fillMask = 0.0;
+    if (fillPatternId == 1) fillMask = hatchLinesMask(vPosition, vNormal);
+    else if (fillPatternId == 2) fillMask = dotsMask(vPosition, vNormal);
+    else if (fillPatternId == 3) fillMask = plusMask(vPosition, vNormal);
+    if (fillPatternId != 0) {
+      color = mix(color, uHatchLineColor, fillMask);
     }
     gl_FragColor = vec4(color, 1.0);
   }
@@ -391,13 +512,13 @@ const cubeIsGreenBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, cubeIsGreenBuffer);
 gl.bufferData(gl.ARRAY_BUFFER, CUBE_IS_GREEN, gl.STATIC_DRAW);
 
-// Same reasoning as CUBE_IS_GREEN: the built-in cube has no materials, so
-// it's never hatched — only a loaded custom model's "Hatch"-named
-// materials are (see isHatchMaterial).
-const CUBE_IS_HATCH = new Float32Array(24).fill(0);
-const cubeHatchBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeHatchBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_IS_HATCH, gl.STATIC_DRAW);
+// Same reasoning as CUBE_IS_GREEN: the built-in cube has no materials, so it
+// never gets a fill pattern — only a loaded custom model's "Hatch"/"Dot"/
+// "Plus"-named materials do (see materialFillPatternId).
+const CUBE_FILL_PATTERN = new Float32Array(24).fill(0);
+const cubeFillPatternBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, cubeFillPatternBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, CUBE_FILL_PATTERN, gl.STATIC_DRAW);
 
 const cubeIndexBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
@@ -512,7 +633,7 @@ const aNormal = gl.getAttribLocation(cubeProgram, 'aNormal');
 const aColor = gl.getAttribLocation(cubeProgram, 'aColor');
 const aIsGreen = gl.getAttribLocation(cubeProgram, 'aIsGreen');
 const aFlowCoord = gl.getAttribLocation(cubeProgram, 'aFlowCoord');
-const aHatch = gl.getAttribLocation(cubeProgram, 'aHatch');
+const aFillPattern = gl.getAttribLocation(cubeProgram, 'aFillPattern');
 const uModelView = gl.getUniformLocation(cubeProgram, 'uModelView');
 const uProjection = gl.getUniformLocation(cubeProgram, 'uProjection');
 const uLightDir = gl.getUniformLocation(cubeProgram, 'uLightDir');
@@ -523,8 +644,13 @@ const uFlowActive = gl.getUniformLocation(cubeProgram, 'uFlowActive');
 const uFlowPulseCenter = gl.getUniformLocation(cubeProgram, 'uFlowPulseCenter');
 const uFlowSigma = gl.getUniformLocation(cubeProgram, 'uFlowSigma');
 const uFlowColor = gl.getUniformLocation(cubeProgram, 'uFlowColor');
-const uHatchFrequency = gl.getUniformLocation(cubeProgram, 'uHatchFrequency');
 const uHatchLineColor = gl.getUniformLocation(cubeProgram, 'uHatchLineColor');
+const uLineFrequency = gl.getUniformLocation(cubeProgram, 'uLineFrequency');
+const uDotFrequency = gl.getUniformLocation(cubeProgram, 'uDotFrequency');
+const uDotRadius = gl.getUniformLocation(cubeProgram, 'uDotRadius');
+const uPlusFrequency = gl.getUniformLocation(cubeProgram, 'uPlusFrequency');
+const uPlusArmHalf = gl.getUniformLocation(cubeProgram, 'uPlusArmHalf');
+const uPlusThickness = gl.getUniformLocation(cubeProgram, 'uPlusThickness');
 
 const aLinePosition = gl.getAttribLocation(lineProgram, 'aLinePosition');
 const aLineColor = gl.getAttribLocation(lineProgram, 'aLineColor');
@@ -825,12 +951,12 @@ function parseObj(text, materials) {
   const outNormals = [];
   const outColors = [];
   const outIsGreen = []; // one entry per emitted vertex — blueprint mode's green-fill flag
-  const outIsHatch = []; // one entry per emitted vertex — hatch-fill flag (see isHatchMaterial)
+  const outFillPattern = []; // one entry per emitted vertex — 0/1/2/3 fill-pattern id (see materialFillPatternId)
   const outTriVertIdx = []; // one entry per emitted vertex, the original `v` index it came from — used only for crease-edge detection below
   const outTriIsGreen = []; // one entry per emitted triangle — feeds the wireframe's green-edge coloring
   let activeColor = [1, 1, 1]; // no usemtl seen yet (or an unrecognized name) == plain white, same as the built-in cube
   let activeIsGreen = false;
-  let activeIsHatch = false;
+  let activeFillPattern = 0;
 
   const lines = text.split('\n');
   for (const line of lines) {
@@ -845,7 +971,7 @@ function parseObj(text, materials) {
       const materialName = trimmed.slice(7).trim();
       activeColor = materials[materialName] || [1, 1, 1];
       activeIsGreen = isGreenDominant(activeColor[0] * 255, activeColor[1] * 255, activeColor[2] * 255);
-      activeIsHatch = isHatchMaterial(materialName);
+      activeFillPattern = materialFillPatternId(materialName);
     } else if (trimmed[0] === 'f' && trimmed[1] === ' ') {
       const faceVerts = trimmed.split(/\s+/).slice(1).map((part) => {
         const [vStr, , vnStr] = part.split('/'); // v[/vt][/vn]
@@ -877,7 +1003,7 @@ function parseObj(text, materials) {
           outNormals.push(n[k][0], n[k][1], n[k][2]);
           outColors.push(activeColor[0], activeColor[1], activeColor[2]);
           outIsGreen.push(activeIsGreen ? 1 : 0);
-          outIsHatch.push(activeIsHatch ? 1 : 0);
+          outFillPattern.push(activeFillPattern);
           outTriVertIdx.push(tri[k].vIdx);
         }
       }
@@ -955,7 +1081,7 @@ function parseObj(text, materials) {
     normals: new Float32Array(outNormals),
     colors: new Float32Array(outColors),
     isGreen: new Float32Array(outIsGreen),
-    isHatch: new Float32Array(outIsHatch),
+    fillPattern: new Float32Array(outFillPattern),
     linePositions: lineData.positions,
     lineColors: lineData.colors,
     lineIsGreen: lineData.isGreen,
@@ -976,7 +1102,7 @@ const customModelPositionBuffer = gl.createBuffer();
 const customModelNormalBuffer = gl.createBuffer();
 const customModelColorBuffer = gl.createBuffer();
 const customModelIsGreenBuffer = gl.createBuffer();
-const customModelHatchBuffer = gl.createBuffer();
+const customModelFillPatternBuffer = gl.createBuffer();
 const customModelFlowCoordBuffer = gl.createBuffer();
 const customModelLineBuffer = gl.createBuffer();
 const customModelLineColorBuffer = gl.createBuffer();
@@ -1028,8 +1154,8 @@ function applyParsedModel(parsed, objName, mtlName) {
   gl.bufferData(gl.ARRAY_BUFFER, parsed.colors, gl.STATIC_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelIsGreenBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, parsed.isGreen, gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER, customModelHatchBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, parsed.isHatch, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelFillPatternBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, parsed.fillPattern, gl.STATIC_DRAW);
   customModelVertexCount = parsed.positions.length / 3;
 
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineBuffer);
@@ -1373,8 +1499,14 @@ function renderCubeFrame() {
   gl.uniform1i(uBlueprint, blueprintEnabled ? 1 : 0);
   gl.uniform3f(uBlueprintFillColor, BLUEPRINT_FILL_COLOR[0], BLUEPRINT_FILL_COLOR[1], BLUEPRINT_FILL_COLOR[2]);
   gl.uniform3f(uBlueprintFillColorGreen, BLUEPRINT_FILL_COLOR_GREEN[0], BLUEPRINT_FILL_COLOR_GREEN[1], BLUEPRINT_FILL_COLOR_GREEN[2]);
-  gl.uniform1f(uHatchFrequency, hatchFrequencyValue);
   gl.uniform3f(uHatchLineColor, BLUEPRINT_LINE_COLOR[0], BLUEPRINT_LINE_COLOR[1], BLUEPRINT_LINE_COLOR[2]);
+  gl.uniform1f(uLineFrequency, lineFrequencyValue);
+  gl.uniform1f(uDotFrequency, dotFrequencyValue);
+  gl.uniform1f(uDotRadius, dotSizePercent / 100);
+  gl.uniform1f(uPlusFrequency, plusFrequencyValue);
+  const plusArmHalf = plusSizePercent / 100;
+  gl.uniform1f(uPlusArmHalf, plusArmHalf);
+  gl.uniform1f(uPlusThickness, plusArmHalf * PLUS_THICKNESS_RATIO);
 
   const showCustomModel = useCustomModel && customModelReady;
 
@@ -1394,9 +1526,9 @@ function renderCubeFrame() {
   gl.enableVertexAttribArray(aIsGreen);
   gl.vertexAttribPointer(aIsGreen, 1, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelHatchBuffer : cubeHatchBuffer);
-  gl.enableVertexAttribArray(aHatch);
-  gl.vertexAttribPointer(aHatch, 1, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelFillPatternBuffer : cubeFillPatternBuffer);
+  gl.enableVertexAttribArray(aFillPattern);
+  gl.vertexAttribPointer(aFillPattern, 1, gl.FLOAT, false, 0, 0);
 
   gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelFlowCoordBuffer : cubeFlowCoordBuffer);
   gl.enableVertexAttribArray(aFlowCoord);
@@ -1547,12 +1679,20 @@ function isGreenDominant(r, g, b) {
   return g - r > GREEN_DOMINANCE_MARGIN && g - b > GREEN_DOMINANCE_MARGIN;
 }
 
-// Flags a material for the shader's hatch fill (see aHatch / hatchMask) by
-// name rather than by color, so it doesn't collide with GREEN_DOMINANCE_MARGIN
-// or any other color-based rule — in Blender, assign the target face(s) a
-// material named "Hatch" (case-insensitive) and it'll come through here.
-function isHatchMaterial(name) {
-  return name.trim().toLowerCase() === 'hatch';
+// Maps a material name to one of the shader's technical-fill patterns (see
+// aFillPattern / fillPatternUV) by name rather than by color, so it doesn't
+// collide with GREEN_DOMINANCE_MARGIN or any other color-based rule — in
+// Blender, assign the target face(s) a material named "Hatch", "Dot"
+// (or "Dots"), or "Plus" (or "Cross") — case-insensitive — and it'll come
+// through here as pattern 1, 2, or 3 respectively; anything else is 0 (no
+// fill pattern). Each has its own frequency (and, for dots/plus, size)
+// control, but all three share the same fill color — see uHatchLineColor.
+function materialFillPatternId(name) {
+  const trimmed = name.trim().toLowerCase();
+  if (trimmed === 'hatch') return 1;
+  if (trimmed === 'dot' || trimmed === 'dots') return 2;
+  if (trimmed === 'plus' || trimmed === 'cross') return 3;
+  return 0;
 }
 
 // FPS/frame-time overlay (top-right, see #perf-monitor in index.html).
@@ -1690,9 +1830,21 @@ export const controls = {
       lightElevationMin: LIGHT_ELEVATION_MIN,
       lightElevationMax: LIGHT_ELEVATION_MAX,
       blueprintEnabled,
-      hatchFrequency: hatchFrequencyValue,
-      hatchFrequencyMin: HATCH_FREQUENCY_MIN,
-      hatchFrequencyMax: HATCH_FREQUENCY_MAX,
+      lineFrequency: lineFrequencyValue,
+      lineFrequencyMin: LINE_FREQUENCY_MIN,
+      lineFrequencyMax: LINE_FREQUENCY_MAX,
+      dotFrequency: dotFrequencyValue,
+      dotFrequencyMin: DOT_FREQUENCY_MIN,
+      dotFrequencyMax: DOT_FREQUENCY_MAX,
+      dotSize: dotSizePercent,
+      dotSizeMin: DOT_SIZE_MIN,
+      dotSizeMax: DOT_SIZE_MAX,
+      plusFrequency: plusFrequencyValue,
+      plusFrequencyMin: PLUS_FREQUENCY_MIN,
+      plusFrequencyMax: PLUS_FREQUENCY_MAX,
+      plusSize: plusSizePercent,
+      plusSizeMin: PLUS_SIZE_MIN,
+      plusSizeMax: PLUS_SIZE_MAX,
       showModelFlowArrow,
       hoverMovementPaused,
       rotationDisabled,
@@ -1714,7 +1866,11 @@ export const controls = {
   setLightAzimuth,
   setLightElevation,
   setBlueprintEnabled,
-  setHatchFrequency,
+  setLineFrequency,
+  setDotFrequency,
+  setDotSizePercent,
+  setPlusFrequency,
+  setPlusSizePercent,
   setUseCustomModel,
   loadModelFiles: (files) => loadModelFromFiles(files),
   setModelFlowDraw,
