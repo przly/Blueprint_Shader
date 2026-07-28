@@ -66,9 +66,9 @@ function setCubeSizePercent(percent) {
 // are on a hatch-flagged face. Needs to be user-adjustable since a custom
 // model's object-space scale (and therefore how dense a given frequency
 // reads) varies per model — see parseObj's per-model extent normalization.
-const HATCH_FREQUENCY_MIN = 2;
+const HATCH_FREQUENCY_MIN = 1;
 const HATCH_FREQUENCY_MAX = 60;
-let hatchFrequencyValue = restoreNumber('hatchFrequency', 12);
+let hatchFrequencyValue = restoreNumber('hatchFrequency', 1);
 
 function setHatchFrequency(value) {
   const clamped = Math.max(HATCH_FREQUENCY_MIN, Math.min(HATCH_FREQUENCY_MAX, value));
