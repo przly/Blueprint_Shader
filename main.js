@@ -1,6 +1,10 @@
 // --- Config ---------------------------------------------------------------
 
-const DPR = window.devicePixelRatio || 1;
+// Capped at 2x: beyond that, extra device pixels cost real GPU/CPU time
+// (the WebGL render target and 2D blit below both scale with this) for a
+// sharpness difference nobody presenting on a laptop/projector/TV can
+// actually perceive — only very high-DPR phones/tablets (3x) hit the cap.
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
 // --- DOM --------------------------------------------------------------
 
@@ -1472,6 +1476,23 @@ function renderCubeFrame() {
   }
 }
 
+// Dynamic resolution scaling: cubeCanvas renders at up to full native
+// resolution (sharpest) by default, but the frame-time monitor (see
+// updateDynamicRenderScale, driven from recordAndDisplayFrameTiming below)
+// steps `renderScale` down when sustained frame time runs over the 60fps
+// budget, and back up once there's sustained headroom — so quality only
+// ever drops when the hardware genuinely can't keep up, never
+// preemptively, and recovers automatically once it can again.
+const RENDER_SCALE_MIN = 0.5;
+let renderScale = 1;
+let cubeCanvasBaseSize = CUBE_CANVAS_SIZE;
+
+function applyCubeCanvasSize() {
+  const size = Math.max(1, Math.round(cubeCanvasBaseSize * renderScale));
+  cubeCanvas.width = size;
+  cubeCanvas.height = size;
+}
+
 function resize() {
   canvas.width = Math.round(window.innerWidth * DPR);
   canvas.height = Math.round(window.innerHeight * DPR);
@@ -1481,9 +1502,8 @@ function resize() {
   // larger of the two display dimensions so the cover-fit below never has to
   // upscale it past native resolution; capped since cube mode re-renders
   // this every frame and a huge backing store costs real GPU time.
-  const cubeSize = Math.min(CUBE_CANVAS_MAX_SIZE, Math.max(canvas.width, canvas.height));
-  cubeCanvas.width = cubeSize;
-  cubeCanvas.height = cubeSize;
+  cubeCanvasBaseSize = Math.min(CUBE_CANVAS_MAX_SIZE, Math.max(canvas.width, canvas.height));
+  applyCubeCanvasSize();
 }
 
 // Crop rect that scales a sw0 x sh0 source to cover a destW x destH area,
@@ -1517,10 +1537,108 @@ function isHatchMaterial(name) {
   return name.trim().toLowerCase() === 'hatch';
 }
 
-function renderLoop() {
+// FPS/frame-time overlay (top-right, see #perf-monitor in index.html).
+// Written straight to the DOM via textContent rather than through the React
+// panel/state, since that updates every frame — funneling it through React
+// state would mean a full component re-render 60 times a second for a
+// display the panel itself has no other reason to know about.
+const perfMonitorEl = document.getElementById('perf-monitor');
+const PERF_DISPLAY_UPDATE_MS = 250; // readable refresh rate; measurement itself is still per-frame
+let perfLastFrameTime = performance.now();
+let perfFrameCount = 0;
+let perfFrameTimeSum = 0;
+let perfLastDisplayUpdate = perfLastFrameTime;
+// Session-long min/max (since page load), shown next to each current
+// reading so a viewer can see the actual observed range, not just the
+// instantaneous value — e.g. a brief stall during a model upload shows up
+// as a low FPS / high ms bound that persists rather than disappearing on
+// the next display refresh.
+let perfMinFps = Infinity;
+let perfMaxFps = -Infinity;
+let perfMinMs = Infinity;
+let perfMaxMs = -Infinity;
+
+// Drives renderScale (see applyCubeCanvasSize/resize above): steps
+// resolution down after a sustained run of over-budget display windows,
+// steps it back up after a longer sustained run of meeting-or-beating the
+// 60fps target (recovering more cautiously than it drops — a longer
+// sustained window, not a stricter frame-time margin — so it doesn't flap
+// between two resolutions right at the boundary). Recovery deliberately
+// checks against the plain target rather than requiring comfortable
+// headroom below it: a lower render scale is calibrated to land right
+// around 60fps by design, so it rarely runs meaningfully *faster* than
+// target — requiring that (as an earlier version of this logic did) meant
+// recovery almost never fired once scale had dropped. The first few
+// windows after load are ignored — first paint/shader compile is a
+// one-off cost, not a sign the hardware can't sustain 60fps once warmed up.
+const TARGET_FRAME_MS = 1000 / 60;
+const RENDER_SCALE_STEP = 0.1;
+const RENDER_SCALE_DOWN_WINDOWS = 2; // ~500ms over budget before dropping resolution
+const RENDER_SCALE_UP_WINDOWS = 8; // ~2s at/under target before restoring it
+const RENDER_SCALE_WARMUP_WINDOWS = 4; // ~1s ignored after load
+let perfWindowCount = 0;
+let overBudgetWindows = 0;
+let underBudgetWindows = 0;
+
+function updateDynamicRenderScale(avgFrameMs) {
+  perfWindowCount++;
+  if (perfWindowCount <= RENDER_SCALE_WARMUP_WINDOWS) return;
+
+  if (avgFrameMs > TARGET_FRAME_MS * 1.15) {
+    overBudgetWindows++;
+    underBudgetWindows = 0;
+  } else if (avgFrameMs < TARGET_FRAME_MS) {
+    underBudgetWindows++;
+    overBudgetWindows = 0;
+  } else {
+    overBudgetWindows = 0;
+    underBudgetWindows = 0;
+  }
+
+  if (overBudgetWindows >= RENDER_SCALE_DOWN_WINDOWS && renderScale > RENDER_SCALE_MIN) {
+    renderScale = Math.max(RENDER_SCALE_MIN, renderScale - RENDER_SCALE_STEP);
+    applyCubeCanvasSize();
+    overBudgetWindows = 0;
+  } else if (underBudgetWindows >= RENDER_SCALE_UP_WINDOWS && renderScale < 1) {
+    renderScale = Math.min(1, renderScale + RENDER_SCALE_STEP);
+    applyCubeCanvasSize();
+    underBudgetWindows = 0;
+  }
+}
+
+function recordAndDisplayFrameTiming(now) {
+  // The initial call below (`renderLoop()`, ahead of the rAF-driven ones)
+  // passes no timestamp — fall back to performance.now() so that first
+  // frame doesn't compute a NaN delta.
+  now = now ?? performance.now();
+  const frameMs = now - perfLastFrameTime;
+  perfLastFrameTime = now;
+  perfFrameCount++;
+  perfFrameTimeSum += frameMs;
+
+  if (now - perfLastDisplayUpdate >= PERF_DISPLAY_UPDATE_MS) {
+    const avgFrameMs = perfFrameTimeSum / perfFrameCount;
+    const fps = 1000 / avgFrameMs;
+    perfMinFps = Math.min(perfMinFps, fps);
+    perfMaxFps = Math.max(perfMaxFps, fps);
+    perfMinMs = Math.min(perfMinMs, avgFrameMs);
+    perfMaxMs = Math.max(perfMaxMs, avgFrameMs);
+    updateDynamicRenderScale(avgFrameMs);
+    perfMonitorEl.textContent =
+      `${fps.toFixed(0)} FPS (${perfMinFps.toFixed(0)}–${perfMaxFps.toFixed(0)})\n` +
+      `${avgFrameMs.toFixed(1)} ms (${perfMinMs.toFixed(1)}–${perfMaxMs.toFixed(1)})\n` +
+      `${Math.round(renderScale * 100)}% res`;
+    perfLastDisplayUpdate = now;
+    perfFrameCount = 0;
+    perfFrameTimeSum = 0;
+  }
+}
+
+function renderLoop(now) {
   renderCubeFrame();
   const { sx, sy, sw, sh } = coverRect(cubeCanvas.width, cubeCanvas.height, canvas.width, canvas.height);
   ctx.drawImage(cubeCanvas, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  recordAndDisplayFrameTiming(now);
   requestAnimationFrame(renderLoop);
 }
 
