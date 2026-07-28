@@ -120,7 +120,7 @@ function setBlueprintEnabled(value) {
 // well past its native resolution and read as blurry, especially with
 // blueprint mode's thin wireframe lines.
 const CUBE_CANVAS_SIZE = 512;
-const CUBE_CANVAS_MAX_SIZE = 2048;
+const CUBE_CANVAS_MAX_SIZE = 4096;
 const cubeCanvas = document.createElement('canvas');
 cubeCanvas.width = CUBE_CANVAS_SIZE;
 cubeCanvas.height = CUBE_CANVAS_SIZE;
@@ -191,17 +191,34 @@ const CUBE_FRAGMENT_SHADER = `
   uniform float uFlowSigma;
   uniform vec3 uFlowColor;
   uniform float uHatchFrequency;
+  uniform vec3 uHatchLineColor;
   // Diagonal hatch lines, sampled in object space so they stay put on the
   // face as the model rotates instead of swimming (screen-space would be
   // simpler but reads as "wrong" the moment the camera moves). Projects
   // onto the two axes spanning the face (dropping whichever axis the
   // normal points along) so the stripe spacing is consistent regardless of
   // which cube face — or which arbitrary custom-model face — is hatched.
-  // Line thickness is derived from fwidth (screen-space derivative of the
-  // stripe coordinate) rather than a fixed fraction of the period, so it
-  // renders at a constant ~1 device pixel — matching the wireframe overlay,
-  // which is drawn with gl.LINES at the (unset, so default) 1px width.
-  const float HATCH_LINE_HALF_WIDTH_PX = 0.5;
+  // Line thickness is derived from the screen-space gradient of the stripe
+  // coordinate rather than a fixed fraction of the period, so it renders at
+  // a constant ~1 device pixel — matching the wireframe overlay, which is
+  // drawn with gl.LINES at the (unset, so default) 1px width. Uses the
+  // exact gradient length (dFdx/dFdy combined via Pythagoras) rather than
+  // fwidth's cheaper abs(dFdx)+abs(dFdy) approximation — fwidth overestimates
+  // the gradient except when the line runs exactly along the x or y screen
+  // axis, so it was making the line's rendered width (and thus its
+  // antialiasing) inconsistent — thinner/rougher-looking — at the diagonal
+  // angles most hatch lines actually run at.
+  const float HATCH_LINE_HALF_WIDTH_PX = 1.0;
+  // Below this many screen pixels per stripe period, the pattern has more
+  // than one period per pixel — under-sampled, so the crisp per-fragment
+  // line test aliases into shimmering moire as the surface (or the camera
+  // orbiting it) tilts the face toward grazing incidence, where foreshortening
+  // keeps shrinking the on-screen period. Standard fix (used for procedural
+  // grids/checkers under minification): once the period drops close to or
+  // below this, fade the mask to its flat average coverage instead of
+  // trying to resolve individual lines the pixel grid can't represent.
+  const float HATCH_MIN_RESOLVED_PERIOD_PX = 3.0;
+  const float HATCH_ALIASED_PERIOD_PX = 1.0;
   float hatchLineMask(vec3 pos, vec3 normal) {
     vec3 an = abs(normal);
     float u, v;
@@ -209,10 +226,14 @@ const CUBE_FRAGMENT_SHADER = `
     else if (an.y >= an.x && an.y >= an.z) { u = pos.x; v = pos.z; }
     else { u = pos.x; v = pos.y; }
     float diag = (u + v) * uHatchFrequency;
-    float pixelWidth = fwidth(diag);
+    float gradLen = length(vec2(dFdx(diag), dFdy(diag)));
     float phase = fract(diag);
-    float distToLine = min(phase, 1.0 - phase);
-    return 1.0 - smoothstep(0.0, pixelWidth * HATCH_LINE_HALF_WIDTH_PX, distToLine);
+    float distToLine = min(phase, 1.0 - phase) / max(gradLen, 1e-6);
+    float crispLine = 1.0 - smoothstep(0.0, HATCH_LINE_HALF_WIDTH_PX, distToLine);
+    float periodPx = 1.0 / max(gradLen, 1e-6);
+    float coverage = clamp((2.0 * HATCH_LINE_HALF_WIDTH_PX) / max(periodPx, 1e-3), 0.0, 1.0);
+    float resolved = smoothstep(HATCH_ALIASED_PERIOD_PX, HATCH_MIN_RESOLVED_PERIOD_PX, periodPx);
+    return mix(coverage, crispLine, resolved);
   }
   void main() {
     float diff = max(dot(normalize(vNormal), normalize(uLightDir)), 0.0);
@@ -236,12 +257,12 @@ const CUBE_FRAGMENT_SHADER = `
       float intensity = exp(-(d * d) / (2.0 * uFlowSigma * uFlowSigma));
       color += uFlowColor * intensity;
     }
-    // Hatch-flagged faces (see aHatch / isHatchMaterial) get white diagonal
-    // lines drawn on top of everything above, so it reads on top of
+    // Hatch-flagged faces (see aHatch / isHatchMaterial) get uHatchLineColor
+    // diagonal lines drawn on top of everything above, so it reads on top of
     // blueprint fill, shaded-mode lighting, and the flow glow alike.
     if (vHatch > 0.5) {
       float h = hatchLineMask(vPosition, vNormal);
-      color = mix(color, vec3(1.0), h);
+      color = mix(color, uHatchLineColor, h);
     }
     gl_FragColor = vec4(color, 1.0);
   }
@@ -498,6 +519,7 @@ const uFlowPulseCenter = gl.getUniformLocation(cubeProgram, 'uFlowPulseCenter');
 const uFlowSigma = gl.getUniformLocation(cubeProgram, 'uFlowSigma');
 const uFlowColor = gl.getUniformLocation(cubeProgram, 'uFlowColor');
 const uHatchFrequency = gl.getUniformLocation(cubeProgram, 'uHatchFrequency');
+const uHatchLineColor = gl.getUniformLocation(cubeProgram, 'uHatchLineColor');
 
 const aLinePosition = gl.getAttribLocation(lineProgram, 'aLinePosition');
 const aLineColor = gl.getAttribLocation(lineProgram, 'aLineColor');
@@ -1326,6 +1348,7 @@ function renderCubeFrame() {
   gl.uniform3f(uBlueprintFillColor, BLUEPRINT_FILL_COLOR[0], BLUEPRINT_FILL_COLOR[1], BLUEPRINT_FILL_COLOR[2]);
   gl.uniform3f(uBlueprintFillColorGreen, BLUEPRINT_FILL_COLOR_GREEN[0], BLUEPRINT_FILL_COLOR_GREEN[1], BLUEPRINT_FILL_COLOR_GREEN[2]);
   gl.uniform1f(uHatchFrequency, hatchFrequencyValue);
+  gl.uniform3f(uHatchLineColor, BLUEPRINT_LINE_COLOR[0], BLUEPRINT_LINE_COLOR[1], BLUEPRINT_LINE_COLOR[2]);
 
   const showCustomModel = useCustomModel && customModelReady;
 
