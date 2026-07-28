@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Step 1: Connect</title>
+<style>
+  :root {
+    --ngen-grayscale-50: #F4F6F7;
+    --ngen-grayscale-500: #7C868E;
+    --ngen-grayscale-900: #041C2C;
+    --ngen-green-600: #44D62C;
+  }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .card {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    width: 727px;
+    padding: 8px;
+    background: var(--ngen-grayscale-50);
+    border-radius: 12px;
+    box-sizing: border-box;
+  }
+
+  .card-image {
+    position: relative;
+    flex-shrink: 0;
+    width: 200px;
+    height: 201px;
+    border-radius: 4px;
+    background: var(--ngen-green-600);
+    overflow: hidden;
+  }
+
+  .card-image canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .card-content {
+    display: flex;
+    flex: 1 0 0;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: space-between;
+    align-self: stretch;
+    min-width: 0;
+    padding: 16px;
+    box-sizing: border-box;
+  }
+
+  .card-step {
+    margin: 0;
+    font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: -0.24px;
+    text-transform: uppercase;
+    color: var(--ngen-grayscale-500);
+  }
+
+  .card-text {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .card-heading {
+    margin: 0;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-weight: 500;
+    font-size: 24px;
+    line-height: 1.2;
+    letter-spacing: -0.48px;
+    color: var(--ngen-grayscale-900);
+  }
+
+  .card-body {
+    margin: 0;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ngen-grayscale-500);
+  }
+
+  .card-body p {
+    margin: 0;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="card-image" id="cardImage">
+      <canvas id="boltMosaic"></canvas>
+    </div>
+    <div class="card-content">
+      <p class="card-step">Step 1</p>
+      <div class="card-text">
+        <p class="card-heading">Connect</p>
+        <div class="card-body">
+          <p>Link your solar, battery, meter and devices.</p>
+          <p>Works on any building, new or existing.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // The rest state (n=1) is the battery icon. Grid states (n>1)
+    // reconstruct its silhouette out of the curated icons/1-10.svg
+    // brightness ramp instead of repeating the same icon — like the
+    // original icon-mosaic shader, picking an icon per cell by luminance.
+    // Everything is rasterized pixel-perfectly: Canvas2D's normal
+    // fill()/drawImage() always anti-alias edges with no way to disable it,
+    // so every icon (battery and ramp alike) is rasterized once, then its
+    // alpha channel is thresholded to hard 0/255 (see rasterizeAndThreshold
+    // below), and placed via nearest-neighbor blits into an ImageData
+    // that's written with putImageData — a raw pixel copy with no blending.
+    const ICON_COLOR = '#041C2C';
+    const ICON_DISPLAY_SIZE = 120; // css px (long edge), at the tile's native (non-DPR) scale
+    // Grid icons' own ink often only fills part of their nominal bounding
+    // box, so a per-cell ratio of 1.0 can still leave visible gaps between
+    // them. Sized up so neighboring icons' ink slightly overlaps rather
+    // than leaving a gap — independent from ICON_DISPLAY_SIZE, which only
+    // sizes the single icon at rest.
+    const ICON_FILL_RATIO = 1.3;
+
+    const DPR = window.devicePixelRatio || 1;
+    const TILE_W = 200;
+    const TILE_H = 201;
+
+    const cardImageEl = document.getElementById('cardImage');
+    const mosaicCanvas = document.getElementById('boltMosaic');
+    const mosaicCtx = mosaicCanvas.getContext('2d');
+    mosaicCanvas.width = TILE_W * DPR;
+    mosaicCanvas.height = TILE_H * DPR;
+
+    async function loadSvgImage(path) {
+      const res = await fetch(path);
+      const svgText = await res.text();
+      const blob = new Blob([svgText], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const img = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = reject;
+        image.src = url;
+      });
+      URL.revokeObjectURL(url);
+      return img;
+    }
+
+    // Rasterizes an already-loaded SVG image, recolored to ICON_COLOR, at
+    // `longEdge` pixels along its longer dimension (preserving aspect
+    // ratio — icons here aren't all square, e.g. the battery is ~1.86:1),
+    // then thresholds its alpha channel so every pixel is either fully
+    // opaque or fully transparent. Returns { data, bw, bh }.
+    function rasterizeAndThreshold(img, longEdge) {
+      const aspect = img.naturalWidth / img.naturalHeight;
+      const bw = aspect >= 1 ? longEdge : Math.round(longEdge * aspect);
+      const bh = aspect >= 1 ? Math.round(longEdge / aspect) : longEdge;
+
+      const off = document.createElement('canvas');
+      off.width = bw;
+      off.height = bh;
+      const offCtx = off.getContext('2d');
+      offCtx.drawImage(img, 0, 0, bw, bh);
+      offCtx.globalCompositeOperation = 'source-in';
+      offCtx.fillStyle = ICON_COLOR;
+      offCtx.fillRect(0, 0, bw, bh);
+
+      const imageData = offCtx.getImageData(0, 0, bw, bh);
+      const d = imageData.data;
+      for (let i = 3; i < d.length; i += 4) d[i] = d[i] >= 128 ? 255 : 0;
+      return { data: imageData, bw, bh };
+    }
+
+    // Nearest-neighbor blit of a pre-thresholded icon (as returned by
+    // rasterizeAndThreshold) into `data`, "contain"-fit and centered within
+    // a boxSize x boxSize square at (cx, cy) — plain array indexing, no
+    // drawImage, so no interpolation/smoothing is reintroduced when scaling
+    // down to a cell.
+    function rasterizeIconAt(data, w, h, cx, cy, boxSize, icon) {
+      const scale = Math.min(boxSize / icon.bw, boxSize / icon.bh);
+      const destW = icon.bw * scale;
+      const destH = icon.bh * scale;
+      const originX = cx - destW / 2;
+      const originY = cy - destH / 2;
+      const px0 = Math.max(0, Math.floor(originX));
+      const py0 = Math.max(0, Math.floor(originY));
+      const px1 = Math.min(w, Math.ceil(originX + destW));
+      const py1 = Math.min(h, Math.ceil(originY + destH));
+      const src = icon.data.data;
+
+      for (let py = py0; py < py1; py++) {
+        const sy = Math.min(icon.bh - 1, Math.max(0, Math.floor(((py + 0.5 - originY) / destH) * icon.bh)));
+        for (let px = px0; px < px1; px++) {
+          const sx = Math.min(icon.bw - 1, Math.max(0, Math.floor(((px + 0.5 - originX) / destW) * icon.bw)));
+          const sIdx = (sy * icon.bw + sx) * 4;
+          if (src[sIdx + 3] === 0) continue;
+          const idx = (py * w + px) * 4;
+          data[idx] = src[sIdx];
+          data[idx + 1] = src[sIdx + 1];
+          data[idx + 2] = src[sIdx + 2];
+          data[idx + 3] = 255;
+        }
+      }
+    }
+
+    // Curated brightness-ramp icons for grid states — `icons` stays null
+    // until loaded; drawGrid falls back to the battery icon for grid cells
+    // if a hover happens to land before the fetch resolves.
+    const ICON_FILES = [
+      '10.svg', '9.svg', '8.svg', '7.svg', '6.svg', '5.svg', '4.svg', '3.svg', '2.svg', '1.svg',
+    ];
+    const ICON_BITMAP_SIZE = 256;
+    let icons = null;
+
+    async function loadIconRamp() {
+      icons = await Promise.all(
+        ICON_FILES.map(async (filename) => rasterizeAndThreshold(await loadSvgImage(`icons/${filename}`), ICON_BITMAP_SIZE))
+      );
+    }
+
+    // The rest-state icon and the shape sampled for grid classification.
+    const BATTERY_FILE = 'battery.svg';
+    const BATTERY_BITMAP_LONG_EDGE = 256;
+    let batteryIcon = null;
+
+    async function loadBatteryIcon() {
+      batteryIcon = rasterizeAndThreshold(await loadSvgImage(BATTERY_FILE), BATTERY_BITMAP_LONG_EDGE);
+    }
+
+    // Reference raster (battery icon on the tile's green background)
+    // sampled to decide, per cell, whether a grid position falls on the
+    // icon shape.
+    const SOURCE_SCALE = 4;
+    const sourceCanvas = document.createElement('canvas');
+    sourceCanvas.width = TILE_W * SOURCE_SCALE;
+    sourceCanvas.height = TILE_H * SOURCE_SCALE;
+    const sourceCtx = sourceCanvas.getContext('2d');
+
+    function drawSource() {
+      const s = SOURCE_SCALE;
+      sourceCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ngen-green-600').trim();
+      sourceCtx.fillRect(0, 0, sourceCanvas.width, sourceCanvas.height);
+
+      const frame = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+      rasterizeIconAt(frame.data, sourceCanvas.width, sourceCanvas.height, sourceCanvas.width / 2, sourceCanvas.height / 2, ICON_DISPLAY_SIZE * s, batteryIcon);
+      sourceCtx.putImageData(frame, 0, 0);
+    }
+
+    const sampleCanvas = document.createElement('canvas');
+    const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+    // Cells brighter than this (i.e. plain green background, not part of
+    // the icon) get no icon — luminance sits ~151 for the green fill and
+    // ~23 for the icon's navy ink, so 100 cleanly separates the two with
+    // margin for anti-aliased sampling.
+    const BRIGHT_THRESHOLD = 100;
+
+    // n === 1 always draws unconditionally (matches the original static
+    // look) since the whole tile's average luminance skews bright/green and
+    // would otherwise get wrongly filtered out by the threshold below.
+    function drawGrid(n) {
+      const w = mosaicCanvas.width;
+      const h = mosaicCanvas.height;
+      const frame = mosaicCtx.createImageData(w, h); // starts fully transparent
+      const data = frame.data;
+
+      if (n === 1) {
+        rasterizeIconAt(data, w, h, w / 2, h / 2, ICON_DISPLAY_SIZE * DPR, batteryIcon);
+        mosaicCtx.putImageData(frame, 0, 0);
+        return;
+      }
+
+      sampleCanvas.width = n;
+      sampleCanvas.height = n;
+      sampleCtx.drawImage(sourceCanvas, 0, 0, n, n);
+      const { data: sampleData } = sampleCtx.getImageData(0, 0, n, n);
+
+      const cellW = w / n;
+      const cellH = h / n;
+      const iconSize = Math.min(cellW, cellH) * ICON_FILL_RATIO;
+
+      for (let row = 0; row < n; row++) {
+        for (let col = 0; col < n; col++) {
+          const i = (row * n + col) * 4;
+          const luminance = 0.299 * sampleData[i] + 0.587 * sampleData[i + 1] + 0.114 * sampleData[i + 2];
+          if (luminance > BRIGHT_THRESHOLD) continue;
+          const cx = col * cellW + cellW / 2;
+          const cy = row * cellH + cellH / 2;
+          if (icons) {
+            const iconIndex = Math.floor((luminance / BRIGHT_THRESHOLD) * (icons.length - 1));
+            rasterizeIconAt(data, w, h, cx, cy, iconSize, icons[iconIndex]);
+          } else {
+            rasterizeIconAt(data, w, h, cx, cy, iconSize, batteryIcon); // ramp not loaded yet
+          }
+        }
+      }
+
+      mosaicCtx.putImageData(frame, 0, 0);
+    }
+
+    // Discrete stepped resolution levels: hold STEP_MS at each, then jump to
+    // the next, toward whatever level pointerenter/pointerleave last set as
+    // the target — reversing cleanly mid-animation on quick in/out.
+    const LEVELS = [1, 2, 4, 8, 16, 32, 64];
+    const TOTAL_MS = 240; // whole hover-in (or hover-out) sequence, end to end
+    const STEP_MS = TOTAL_MS / (LEVELS.length - 1);
+    let level = 0;
+    let currentTarget = 0;
+    let stepTimer = null;
+
+    function scheduleStep(target) {
+      if (target === currentTarget) return;
+      currentTarget = target;
+      if (stepTimer) clearTimeout(stepTimer);
+      const tick = () => {
+        if (level === currentTarget) {
+          stepTimer = null;
+          return;
+        }
+        level += level < currentTarget ? 1 : -1;
+        drawGrid(LEVELS[level]);
+        stepTimer = setTimeout(tick, STEP_MS);
+      };
+      stepTimer = setTimeout(tick, STEP_MS);
+    }
+
+    async function init() {
+      await loadBatteryIcon(); // needed before the very first render (rest state + sampling source)
+      drawSource();
+      drawGrid(LEVELS[level]);
+
+      // Hover isn't wired up until the ramp is actually loaded — the whole
+      // hover animation is faster than fetching + rasterizing 10 icons on a
+      // cold page load, so enabling hover any earlier could let a hover
+      // race past grid states before `icons` is populated and fall back to
+      // battery-only at the finest ("final") level too.
+      await loadIconRamp();
+      cardImageEl.addEventListener('pointerenter', () => scheduleStep(LEVELS.length - 1));
+      cardImageEl.addEventListener('pointerleave', () => scheduleStep(0));
+    }
+
+    init();
+  </script>
+</body>
+</html>
