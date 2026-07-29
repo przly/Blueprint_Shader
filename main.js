@@ -1118,6 +1118,13 @@ function parseObj(text, materials) {
   // above (affine transforms commute with taking a center point, so this is
   // equivalent to transforming all of that object's vertices and re-deriving
   // its bounding box, just without the extra pass).
+  //
+  // `size` (bounding-box diagonal length) is computed the same way, but
+  // needs no rotation step at all: a Y-axis rotation preserves vector
+  // lengths, so the pre-rotation diagonal only needs the uniform `scale`
+  // applied to land in the final coordinate space. Used by camera-target
+  // zoom (see renderCubeFrame) to frame smaller objects closer and larger
+  // ones farther back.
   const objects = objectOrder.map((name) => {
     const b = objectBounds.get(name);
     let ox = (b.minX + b.maxX) / 2, oy = (b.minY + b.maxY) / 2, oz = (b.minZ + b.maxZ) / 2;
@@ -1127,7 +1134,8 @@ function parseObj(text, materials) {
       const rotZ = -ox * sinY + oz * cosY;
       ox = rotX; oz = rotZ;
     }
-    return { name, center: [(ox - cx) * scale, (oy - cy) * scale, (oz - cz) * scale] };
+    const size = Math.hypot(b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ) * scale;
+    return { name, center: [(ox - cx) * scale, (oy - cy) * scale, (oz - cz) * scale], size };
   });
 
   // Blueprint-mode wireframe: crease/boundary edges only (see
@@ -1205,12 +1213,24 @@ const modelStateListeners = [];
 // that chases whichever slot is active (renderCubeFrame, each frame) — this
 // is the "null object" the camera stays rigidly offset from: rotation
 // (drag + hover) and distance never change when it moves.
-let customModelObjects = []; // [{name, center:[x,y,z]}], from parseObj
+let customModelObjects = []; // [{name, center:[x,y,z], size:number}], from parseObj
 /** @type {(string | null)[]} */
 let cameraTargetSlots = [null, null, null];
 let cameraTargetActiveIndex = null;
 let cameraTargetCurrent = [0, 0, 0];
+// Eased extra scale multiplier applied on top of cubeSizeScale while a
+// camera target is active (see renderCubeFrame) — chases 1x whenever no
+// target is active, and a target's size-derived goal otherwise, using the
+// same smoothing as cameraTargetCurrent so zoom and pan settle together.
+let cameraTargetZoomCurrent = 1;
 const CAMERA_TARGET_SMOOTHING = 0.05;
+// Object size (bounding-box diagonal, same normalized units as parseObj's
+// `size`) at which camera-target zoom is 1x — 25% of the ~20-unit
+// whole-model envelope every model is normalized to (see parseObj's
+// `scale`). Smaller targets zoom in past 1x, larger ones zoom out below it.
+const CAMERA_TARGET_ZOOM_REFERENCE_SIZE = 5;
+const CAMERA_TARGET_ZOOM_MIN = 0.4;
+const CAMERA_TARGET_ZOOM_MAX = 3;
 
 function getModelState() {
   return {
@@ -1299,6 +1319,7 @@ function applyParsedModel(parsed, objName, mtlName) {
   cameraTargetSlots = [null, null, null];
   cameraTargetActiveIndex = null;
   cameraTargetCurrent = [0, 0, 0];
+  cameraTargetZoomCurrent = 1;
 
   const greenTris = [];
   for (let i = 0; i < parsed.isGreen.length; i += 3) {
@@ -1508,7 +1529,9 @@ function raycastGreenMesh(clientX, clientY) {
   const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
   const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2; // canvas Y is down, NDC Y is up
 
-  const rx = cubeRotX + cubeParallaxX, ry = cubeRotY + cubeParallaxY, s = CUBE_SCALE * cubeSizeScale;
+  // s must match renderCubeFrame's exactly (including the eased camera-target
+  // zoom multiplier) or raycasting drifts out of sync with what's on screen.
+  const rx = cubeRotX + cubeParallaxX, ry = cubeRotY + cubeParallaxY, s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [ox, oy] = getCurrentCameraOffset(rx, ry, s);
   const originView = [ndcX * cubeProjectionHalfX, ndcY * cubeProjectionHalfY, -0.1];
   const farView = [originView[0], originView[1], -50];
@@ -1659,18 +1682,28 @@ function renderCubeFrame() {
 
   const rx = cubeRotX + cubeParallaxX;
   const ry = cubeRotY + cubeParallaxY;
-  const s = CUBE_SCALE * cubeSizeScale;
 
-  // Rotation/distance (rx/ry/s) are untouched by camera-target mode — only
-  // the pan offset's source changes, so drag/hover rotation and the "same
-  // orientation and distance to every object" requirement hold automatically.
+  // Rotation (rx/ry) is untouched by camera-target mode — only the pan
+  // offset's source and the extra zoom multiplier change, so drag/hover
+  // rotation holds automatically regardless of target.
+  let zoomGoal = 1;
   if (cameraTargetActiveIndex !== null && cameraTargetSlots[cameraTargetActiveIndex]) {
     const target = customModelObjects.find((o) => o.name === cameraTargetSlots[cameraTargetActiveIndex]);
     const targetCenter = target ? target.center : [0, 0, 0];
     cameraTargetCurrent[0] += (targetCenter[0] - cameraTargetCurrent[0]) * CAMERA_TARGET_SMOOTHING;
     cameraTargetCurrent[1] += (targetCenter[1] - cameraTargetCurrent[1]) * CAMERA_TARGET_SMOOTHING;
     cameraTargetCurrent[2] += (targetCenter[2] - cameraTargetCurrent[2]) * CAMERA_TARGET_SMOOTHING;
+    if (target && target.size > 0) {
+      zoomGoal = Math.max(
+        CAMERA_TARGET_ZOOM_MIN,
+        Math.min(CAMERA_TARGET_ZOOM_MAX, CAMERA_TARGET_ZOOM_REFERENCE_SIZE / target.size)
+      );
+    }
   }
+  // Eases back to 1x on its own whenever no target is active (including
+  // right after resetCameraTarget), same as chasing a new target's goal.
+  cameraTargetZoomCurrent += (zoomGoal - cameraTargetZoomCurrent) * CAMERA_TARGET_SMOOTHING;
+  const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [offsetX, offsetY] = getCurrentCameraOffset(rx, ry, s);
 
   let modelView = mat4Translate(offsetX, offsetY, cameraOffsetZ);
