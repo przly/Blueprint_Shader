@@ -237,6 +237,51 @@ export function Panel() {
               </Button>
             </div>
 
+            {state.customModelObjectNames?.length > 0 && (
+              <>
+                <Separator />
+                <h2 className="font-semibold text-base text-foreground">Camera Targets</h2>
+                <div className="flex flex-col gap-2">
+                  {[0, 1, 2].map((slotIndex) => (
+                    <div className="flex items-center gap-2" key={slotIndex}>
+                      <span className="w-14 shrink-0 text-muted-foreground text-xs">Target {slotIndex + 1}</span>
+                      <select
+                        className="h-7 flex-1 rounded-md border border-border bg-background px-2 text-xs"
+                        onChange={(event) => {
+                          const objectName = event.target.value || null;
+                          controls.setCameraTargetSlot(slotIndex, objectName);
+                          setState((s) => {
+                            const cameraTargetSlots = [...s.cameraTargetSlots];
+                            cameraTargetSlots[slotIndex] = objectName;
+                            return { ...s, cameraTargetSlots };
+                          });
+                        }}
+                        value={state.cameraTargetSlots?.[slotIndex] ?? ""}
+                      >
+                        <option value="">— none —</option>
+                        {state.customModelObjectNames.map((name: string) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        disabled={!state.cameraTargetSlots?.[slotIndex]}
+                        onClick={() => {
+                          controls.goToCameraTarget(slotIndex);
+                          setState((s) => ({ ...s, cameraTargetActiveIndex: slotIndex }));
+                        }}
+                        size="xs"
+                        variant={state.cameraTargetActiveIndex === slotIndex ? "default" : "outline"}
+                      >
+                        Go
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
             <Separator />
 
             <h2 className="font-semibold text-base text-foreground">Shader Controls</h2>

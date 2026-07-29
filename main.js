@@ -804,6 +804,15 @@ function getModelViewOffset() {
   return [(modelOffsetXPercent / 100) * MODEL_POSITION_RANGE, (modelOffsetYPercent / 100) * MODEL_POSITION_RANGE];
 }
 
+// Camera depth in view space — how far back the "camera" sits from the
+// model along Z. Kept as its own mutable seam (rather than inlined into the
+// translate call) so future scripted movement-through-the-model can drive it
+// per frame. Because this translate is applied *after* rotation in
+// renderCubeFrame's modelView build (see below), changing it can never
+// affect cubeRotX/Y or the hover parallax (cubeParallaxX/Y) — rotation stays
+// live no matter where the camera currently sits.
+let cameraOffsetZ = -5;
+
 // Classic isometric angles: 45° yaw so all three visible faces read as
 // equally foreshortened, and a ~35.264° (arctan(1/sqrt(2))) downward pitch
 // — the "magic angle" where a cube's edges project at exactly 30° from
@@ -958,6 +967,35 @@ function parseObj(text, materials) {
   let activeIsGreen = false;
   let activeFillPattern = 0;
 
+  // Per-object (raw, pre-transform) bounding boxes, tracked purely so camera
+  // targets (see cameraTargetSlots below) can later be assigned to a named
+  // part of the file — unrelated to geometry/material parsing. objectOrder
+  // preserves first-appearance order for the panel's object picker.
+  //
+  // `o` is the authoritative object boundary; `g` is tracked only as a
+  // fallback for files with no `o` lines at all. Exporters (Blender
+  // included) commonly emit multiple `g` lines *within* a single object —
+  // one per material slot it uses — so once any `o` line has been seen,
+  // later `g` lines are ignored rather than treated as new objects; otherwise
+  // one real object fragments into several wrongly-centered camera targets,
+  // sometimes even colliding on the same name.
+  let activeObjectName = null;
+  let sawObjectLine = false;
+  const objectBounds = new Map();
+  const objectOrder = [];
+  function touchObjectBounds(x, y, z) {
+    const name = activeObjectName || 'Object 1';
+    let b = objectBounds.get(name);
+    if (!b) {
+      b = { minX: Infinity, minY: Infinity, minZ: Infinity, maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity };
+      objectBounds.set(name, b);
+      objectOrder.push(name);
+    }
+    if (x < b.minX) b.minX = x; if (x > b.maxX) b.maxX = x;
+    if (y < b.minY) b.minY = y; if (y > b.maxY) b.maxY = y;
+    if (z < b.minZ) b.minZ = z; if (z > b.maxZ) b.maxZ = z;
+  }
+
   const lines = text.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
@@ -967,6 +1005,11 @@ function parseObj(text, materials) {
     } else if (trimmed.startsWith('vn ')) {
       const parts = trimmed.split(/\s+/);
       normals.push([parseFloat(parts[1]), parseFloat(parts[2]), parseFloat(parts[3])]);
+    } else if (trimmed[0] === 'o' && trimmed[1] === ' ') {
+      sawObjectLine = true;
+      activeObjectName = trimmed.slice(2).trim() || activeObjectName;
+    } else if (trimmed[0] === 'g' && trimmed[1] === ' ' && !sawObjectLine) {
+      activeObjectName = trimmed.slice(2).trim() || activeObjectName;
     } else if (trimmed.startsWith('usemtl ')) {
       const materialName = trimmed.slice(7).trim();
       activeColor = materials[materialName] || [1, 1, 1];
@@ -1005,6 +1048,7 @@ function parseObj(text, materials) {
           outIsGreen.push(activeIsGreen ? 1 : 0);
           outFillPattern.push(activeFillPattern);
           outTriVertIdx.push(tri[k].vIdx);
+          touchObjectBounds(p[k][0], p[k][1], p[k][2]);
         }
       }
     }
@@ -1051,6 +1095,24 @@ function parseObj(text, materials) {
     outPositions[i + 2] = (outPositions[i + 2] - cz) * scale;
   }
 
+  // Per-object camera-target centroids (see cameraTargetSlots), in the same
+  // final coordinate space outPositions ends up in — each object's raw
+  // bounding-box center run through the identical rotate/center/scale steps
+  // above (affine transforms commute with taking a center point, so this is
+  // equivalent to transforming all of that object's vertices and re-deriving
+  // its bounding box, just without the extra pass).
+  const objects = objectOrder.map((name) => {
+    const b = objectBounds.get(name);
+    let ox = (b.minX + b.maxX) / 2, oy = (b.minY + b.maxY) / 2, oz = (b.minZ + b.maxZ) / 2;
+    if (ry !== 0) {
+      const cosY = Math.cos(ry), sinY = Math.sin(ry);
+      const rotX = ox * cosY + oz * sinY;
+      const rotZ = -ox * sinY + oz * cosY;
+      ox = rotX; oz = rotZ;
+    }
+    return { name, center: [(ox - cx) * scale, (oy - cy) * scale, (oz - cz) * scale] };
+  });
+
   // Blueprint-mode wireframe: crease/boundary edges only (see
   // buildCreaseEdgeLines) — a literal every-edge wireframe on a mesh this
   // dense would overflow a 16-bit index buffer and render as solid haze.
@@ -1086,6 +1148,7 @@ function parseObj(text, materials) {
     lineColors: lineData.colors,
     lineIsGreen: lineData.isGreen,
     hasMaterials: Object.keys(materials).length > 0,
+    objects,
   };
 }
 
@@ -1116,8 +1179,43 @@ let cubeModelStatus = ''; // status text shown next to the file picker
 
 const modelStateListeners = [];
 
+// Camera targets: up to 3 named sub-objects from the loaded .obj (see
+// `objects` in parseObj's return value) that the "Go to Object N" panel
+// buttons ease the framing toward. cameraTargetSlots holds which object name
+// (or null) is assigned to each of the 3 slots; cameraTargetActiveIndex is
+// which slot is currently driving the camera, or null to fall back to the
+// manual pan sliders as before. cameraTargetCurrent is the eased position
+// that chases whichever slot is active (renderCubeFrame, each frame) — this
+// is the "null object" the camera stays rigidly offset from: rotation
+// (drag + hover) and distance never change when it moves.
+let customModelObjects = []; // [{name, center:[x,y,z]}], from parseObj
+/** @type {(string | null)[]} */
+let cameraTargetSlots = [null, null, null];
+let cameraTargetActiveIndex = null;
+let cameraTargetCurrent = [0, 0, 0];
+const CAMERA_TARGET_SMOOTHING = 0.05;
+
 function getModelState() {
-  return { customModelReady, useCustomModel, cubeModelStatus };
+  return {
+    customModelReady,
+    useCustomModel,
+    cubeModelStatus,
+    customModelObjectNames: customModelObjects.map((o) => o.name),
+    cameraTargetSlots,
+    cameraTargetActiveIndex,
+  };
+}
+
+function setCameraTargetSlot(slotIndex, objectName) {
+  cameraTargetSlots = cameraTargetSlots.map((v, i) => (i === slotIndex ? objectName || null : v));
+  if (cameraTargetActiveIndex === slotIndex && !objectName) cameraTargetActiveIndex = null;
+  notifyModelState();
+}
+
+function goToCameraTarget(slotIndex) {
+  if (!cameraTargetSlots[slotIndex]) return;
+  cameraTargetActiveIndex = slotIndex;
+  notifyModelState();
 }
 
 function notifyModelState() {
@@ -1170,6 +1268,13 @@ function applyParsedModel(parsed, objName, mtlName) {
   customModelIsGreenCache = parsed.isGreen;
   customModelLinePositionsCache = parsed.linePositions;
   customModelLineIsGreenCache = parsed.lineIsGreen;
+
+  // A newly loaded model's object names/centroids have nothing to do with
+  // whatever the previous model's camera-target assignments pointed at.
+  customModelObjects = parsed.objects;
+  cameraTargetSlots = [null, null, null];
+  cameraTargetActiveIndex = null;
+  cameraTargetCurrent = [0, 0, 0];
 
   const greenTris = [];
   for (let i = 0; i < parsed.isGreen.length; i += 3) {
@@ -1283,11 +1388,36 @@ function rotateYVec3(v, theta) {
 // Inverse of renderCubeFrame's modelView build (translate * rotateX(rx) *
 // rotateY(ry) * scale(s)) applied to a single view-space point, undone in
 // reverse order: un-translate, un-rotateX, un-rotateY, un-scale.
-function unprojectViewPointToObject(pv, rx, ry, s, ox, oy) {
-  const untranslated = [pv[0] - ox, pv[1] - oy, pv[2] + 5]; // inverse of mat4Translate(ox, oy, -5)
+function unprojectViewPointToObject(pv, rx, ry, s, ox, oy, oz) {
+  const untranslated = [pv[0] - ox, pv[1] - oy, pv[2] - oz]; // inverse of mat4Translate(ox, oy, oz)
   const unrotatedX = rotateXVec3(untranslated, -rx);
   const unrotatedY = rotateYVec3(unrotatedX, -ry);
   return [unrotatedY[0] / s, unrotatedY[1] / s, unrotatedY[2] / s];
+}
+
+// Forward counterpart of unprojectViewPointToObject: scale, rotateY,
+// rotateX (pre-translate) — used to find where an object-space point (e.g. a
+// camera-target centroid) lands in view space, so renderCubeFrame can pan to
+// center it regardless of the model's current rotation.
+function projectObjectPointToView(p, rx, ry, s) {
+  const scaled = [p[0] * s, p[1] * s, p[2] * s];
+  const afterY = rotateYVec3(scaled, ry);
+  return rotateXVec3(afterY, rx);
+}
+
+// Shared by renderCubeFrame and raycastGreenMesh so raycasting always
+// unprojects through the exact same view-space offset the render pass drew
+// with — same reason getModelViewOffset above is shared, just extended to
+// cover camera-target mode too. Read-only: when a camera target is active,
+// this reads cameraTargetCurrent's already-eased position rather than
+// advancing it — only renderCubeFrame's own per-frame tick does that, so the
+// ease rate stays tied to render frames rather than to how often a caller
+// (e.g. pointermove during arrow-drawing) happens to ask for the offset.
+function getCurrentCameraOffset(rx, ry, s) {
+  const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
+  if (!activeTargetName) return getModelViewOffset();
+  const viewPoint = projectObjectPointToView(cameraTargetCurrent, rx, ry, s);
+  return [-viewPoint[0], -viewPoint[1]];
 }
 
 // Möller–Trumbore ray-triangle intersection. tris is a flat Float32Array of
@@ -1336,11 +1466,11 @@ function raycastGreenMesh(clientX, clientY) {
   const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2; // canvas Y is down, NDC Y is up
 
   const rx = cubeRotX + cubeParallaxX, ry = cubeRotY + cubeParallaxY, s = CUBE_SCALE * cubeSizeScale;
-  const [ox, oy] = getModelViewOffset();
+  const [ox, oy] = getCurrentCameraOffset(rx, ry, s);
   const originView = [ndcX * cubeProjectionHalfX, ndcY * cubeProjectionHalfY, -0.1];
   const farView = [originView[0], originView[1], -50];
-  const originObj = unprojectViewPointToObject(originView, rx, ry, s, ox, oy);
-  const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy);
+  const originObj = unprojectViewPointToObject(originView, rx, ry, s, ox, oy, cameraOffsetZ);
+  const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy, cameraOffsetZ);
   const dir = [farObj[0] - originObj[0], farObj[1] - originObj[1], farObj[2] - originObj[2]];
 
   let bestT = Infinity, bestPoint = null;
@@ -1484,11 +1614,26 @@ function renderCubeFrame() {
   cubeParallaxX += (cubeParallaxTargetX - cubeParallaxX) * CUBE_PARALLAX_SMOOTHING;
   cubeParallaxY += (cubeParallaxTargetY - cubeParallaxY) * CUBE_PARALLAX_SMOOTHING;
 
-  const [offsetX, offsetY] = getModelViewOffset();
-  let modelView = mat4Translate(offsetX, offsetY, -5);
-  modelView = mat4Multiply(modelView, mat4RotateX(cubeRotX + cubeParallaxX));
-  modelView = mat4Multiply(modelView, mat4RotateY(cubeRotY + cubeParallaxY));
-  modelView = mat4Multiply(modelView, mat4Scale(CUBE_SCALE * cubeSizeScale));
+  const rx = cubeRotX + cubeParallaxX;
+  const ry = cubeRotY + cubeParallaxY;
+  const s = CUBE_SCALE * cubeSizeScale;
+
+  // Rotation/distance (rx/ry/s) are untouched by camera-target mode — only
+  // the pan offset's source changes, so drag/hover rotation and the "same
+  // orientation and distance to every object" requirement hold automatically.
+  if (cameraTargetActiveIndex !== null && cameraTargetSlots[cameraTargetActiveIndex]) {
+    const target = customModelObjects.find((o) => o.name === cameraTargetSlots[cameraTargetActiveIndex]);
+    const targetCenter = target ? target.center : [0, 0, 0];
+    cameraTargetCurrent[0] += (targetCenter[0] - cameraTargetCurrent[0]) * CAMERA_TARGET_SMOOTHING;
+    cameraTargetCurrent[1] += (targetCenter[1] - cameraTargetCurrent[1]) * CAMERA_TARGET_SMOOTHING;
+    cameraTargetCurrent[2] += (targetCenter[2] - cameraTargetCurrent[2]) * CAMERA_TARGET_SMOOTHING;
+  }
+  const [offsetX, offsetY] = getCurrentCameraOffset(rx, ry, s);
+
+  let modelView = mat4Translate(offsetX, offsetY, cameraOffsetZ);
+  modelView = mat4Multiply(modelView, mat4RotateX(rx));
+  modelView = mat4Multiply(modelView, mat4RotateY(ry));
+  modelView = mat4Multiply(modelView, mat4Scale(s));
 
   gl.useProgram(cubeProgram);
   gl.uniformMatrix4fv(uModelView, false, modelView);
@@ -1879,4 +2024,6 @@ export const controls = {
   setHoverMovementPaused,
   setRotationDisabled,
   resetRotation: resetCubeRotation,
+  setCameraTargetSlot,
+  goToCameraTarget,
 };
