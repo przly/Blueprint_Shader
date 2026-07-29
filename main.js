@@ -35,6 +35,15 @@ if (!localStorage.getItem(CUBE_SIZE_RESET_MIGRATION_KEY)) {
   localStorage.setItem(CUBE_SIZE_RESET_MIGRATION_KEY, '1');
 }
 
+// One-time migration: the dot fill's defaults changed (frequency 1 -> 9,
+// size 16% -> 5%) — same reasoning as the cubeSize migration above.
+const DOT_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.dotDefaultsResetV1';
+if (!localStorage.getItem(DOT_DEFAULTS_RESET_MIGRATION_KEY)) {
+  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'dotFrequency');
+  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'dotSize');
+  localStorage.setItem(DOT_DEFAULTS_RESET_MIGRATION_KEY, '1');
+}
+
 // Width of the model flow's traveling glow pulse (blueprint mode), as a
 // fraction of the path's total length — see MODEL_FLOW_PULSE_BAND_FRACTION
 // in renderCubeFrame, which multiplies this in.
@@ -85,7 +94,7 @@ function setLineFrequency(value) {
 
 const DOT_FREQUENCY_MIN = 1;
 const DOT_FREQUENCY_MAX = 60;
-let dotFrequencyValue = restoreNumber('dotFrequency', 1);
+let dotFrequencyValue = restoreNumber('dotFrequency', 9);
 
 function setDotFrequency(value) {
   const clamped = Math.max(DOT_FREQUENCY_MIN, Math.min(DOT_FREQUENCY_MAX, value));
@@ -98,7 +107,7 @@ function setDotFrequency(value) {
 // means each dot's radius is 16% of the spacing between dot centers.
 const DOT_SIZE_MIN = 5;
 const DOT_SIZE_MAX = 45;
-let dotSizePercent = restoreNumber('dotSize', 16);
+let dotSizePercent = restoreNumber('dotSize', 5);
 
 function setDotSizePercent(value) {
   const clamped = Math.max(DOT_SIZE_MIN, Math.min(DOT_SIZE_MAX, value));
