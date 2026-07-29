@@ -1410,7 +1410,7 @@ function rotateXVec3(v, theta) {
 }
 function rotateYVec3(v, theta) {
   const c = Math.cos(theta), s = Math.sin(theta);
-  return [v[0] * c - v[2] * s, v[1], v[0] * s + v[2] * c];
+  return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
 }
 
 // Inverse of renderCubeFrame's modelView build (translate * rotateX(rx) *
