@@ -279,6 +279,20 @@ export function Panel() {
                     </div>
                   ))}
                 </div>
+                <div className="flex items-center gap-4">
+                  <Button
+                    className="ml-auto"
+                    disabled={state.cameraTargetActiveIndex == null}
+                    onClick={() => {
+                      controls.resetCameraTarget();
+                      setState((s) => ({ ...s, cameraTargetActiveIndex: null }));
+                    }}
+                    size="xs"
+                    variant="outline"
+                  >
+                    Reset view
+                  </Button>
+                </div>
               </>
             )}
 

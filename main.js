@@ -1227,6 +1227,13 @@ function goToCameraTarget(slotIndex) {
   notifyModelState();
 }
 
+// Drops back to the manual pan sliders (getModelViewOffset) instead of a
+// camera target driving the offset — see getCurrentCameraOffset.
+function resetCameraTarget() {
+  cameraTargetActiveIndex = null;
+  notifyModelState();
+}
+
 function notifyModelState() {
   const state = getModelState();
   modelStateListeners.forEach((listener) => listener(state));
@@ -2055,4 +2062,5 @@ export const controls = {
   resetRotation: resetCubeRotation,
   setCameraTargetSlot,
   goToCameraTarget,
+  resetCameraTarget,
 };
