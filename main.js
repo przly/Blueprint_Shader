@@ -1341,6 +1341,25 @@ async function loadModelFromFiles(files) {
   }
 }
 
+// Bundled default model (public/models/), shown on startup instead of the
+// built-in procedural cube — same parse/apply path as a manual upload, just
+// fetched from a static asset instead of picked/dropped by the user. "Show
+// default cube" still works afterward since it just flips useCustomModel.
+async function loadBundledDefaultModel() {
+  try {
+    const [objText, mtlText] = await Promise.all([
+      fetch('/models/Movement.obj').then((r) => r.text()),
+      fetch('/models/Movement.mtl').then((r) => r.text()),
+    ]);
+    const materials = parseMtl(mtlText);
+    const parsed = parseObj(objText, materials);
+    applyParsedModel(parsed, 'Movement.obj', 'Movement.mtl');
+    clearModelFlowPath();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
 function setUseCustomModel(checked) {
   useCustomModel = customModelReady && checked;
   notifyModelState();
@@ -1957,6 +1976,7 @@ function renderLoop(now) {
 window.addEventListener('resize', resize);
 resize();
 renderLoop();
+loadBundledDefaultModel();
 
 // --- React control panel bridge --------------------------------------------
 //
