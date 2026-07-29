@@ -44,6 +44,14 @@ if (!localStorage.getItem(DOT_DEFAULTS_RESET_MIGRATION_KEY)) {
   localStorage.setItem(DOT_DEFAULTS_RESET_MIGRATION_KEY, '1');
 }
 
+// One-time migration: the plus fill's default frequency changed 1 -> 11 —
+// same reasoning as the cubeSize/dot migrations above.
+const PLUS_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.plusDefaultsResetV1';
+if (!localStorage.getItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY)) {
+  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'plusFrequency');
+  localStorage.setItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY, '1');
+}
+
 // Width of the model flow's traveling glow pulse (blueprint mode), as a
 // fraction of the path's total length — see MODEL_FLOW_PULSE_BAND_FRACTION
 // in renderCubeFrame, which multiplies this in.
@@ -118,7 +126,7 @@ function setDotSizePercent(value) {
 
 const PLUS_FREQUENCY_MIN = 1;
 const PLUS_FREQUENCY_MAX = 60;
-let plusFrequencyValue = restoreNumber('plusFrequency', 1);
+let plusFrequencyValue = restoreNumber('plusFrequency', 11);
 
 function setPlusFrequency(value) {
   const clamped = Math.max(PLUS_FREQUENCY_MIN, Math.min(PLUS_FREQUENCY_MAX, value));
