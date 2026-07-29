@@ -17,7 +17,6 @@ const OVERLAY_CLOSE_MS = 150; // keep in sync with --modal-close-dur in index.cs
 export function Panel() {
   const [hidden, setHidden] = useState(() => localStorage.getItem(CONTROLS_HIDDEN_KEY) === "1");
   const [state, setState] = useState(() => controls.getInitialState());
-  const [modelFlowDraw, setModelFlowDraw] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [overlayPhase, setOverlayPhase] = useState<OverlayPhase>("closed");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -497,20 +496,21 @@ export function Panel() {
 
             <h2 className="font-semibold text-base text-foreground">Flow Controls</h2>
 
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-4">
               <Label className="gap-2.5 text-xs">
                 <Switch
-                  checked={modelFlowDraw}
-                  onCheckedChange={(checked: boolean) => {
-                    controls.setModelFlowDraw(checked);
-                    setModelFlowDraw(checked);
-                  }}
+                  checked={!!state.modelFlowDrawMode}
+                  onCheckedChange={(checked: boolean) => controls.setModelFlowDraw(checked)}
                 />
                 Draw flow arrow
               </Label>
-              <Button onClick={() => controls.clearModelFlow()} size="xs" variant="outline">
-                Clear arrow
-              </Button>
+              <Label className="gap-2.5 text-xs">
+                <Switch
+                  checked={!!state.modelFlowSelectMode}
+                  onCheckedChange={(checked: boolean) => controls.setModelFlowSelectMode(checked)}
+                />
+                Select arrow
+              </Label>
               <Label className="gap-2.5 text-xs">
                 <Switch
                   checked={state.showModelFlowArrow}
@@ -521,6 +521,23 @@ export function Panel() {
                 />
                 Show arrows
               </Label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                disabled={state.selectedFlowArrowIndex == null}
+                onClick={() => controls.deleteSelectedModelFlowArrow()}
+                size="xs"
+                variant="outline"
+              >
+                Delete selected
+              </Button>
+              <Button onClick={() => controls.undoModelFlowArrow()} size="xs" variant="outline">
+                Undo last arrow
+              </Button>
+              <Button onClick={() => controls.clearModelFlow()} size="xs" variant="outline">
+                Clear arrows
+              </Button>
             </div>
 
             <Field>

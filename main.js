@@ -430,38 +430,22 @@ if (!gl.getProgramParameter(cubeProgram, gl.LINK_STATUS)) {
 const LINE_VERTEX_SHADER = `
   attribute vec3 aLinePosition;
   attribute vec3 aLineColor;
-  attribute float aLineIsGreen;
-  attribute float aLineFlowCoord;
   uniform mat4 uLineModelView;
   uniform mat4 uLineProjection;
   varying vec3 vLineColor;
-  varying float vLineIsGreen;
-  varying float vLineFlowCoord;
   void main() {
     gl_Position = uLineProjection * uLineModelView * vec4(aLinePosition, 1.0);
     vLineColor = aLineColor;
-    vLineIsGreen = aLineIsGreen;
-    vLineFlowCoord = aLineFlowCoord;
   }
 `;
 
+// Flat, unlit — the flow pulse only shows on the fill (see CUBE_FRAGMENT_SHADER),
+// so the wireframe/edge lines never carry it regardless of green-flagged status.
 const LINE_FRAGMENT_SHADER = `
   precision mediump float;
   varying vec3 vLineColor;
-  varying float vLineIsGreen;
-  varying float vLineFlowCoord;
-  uniform bool uFlowActive;
-  uniform float uFlowPulseCenter;
-  uniform float uFlowSigma;
-  uniform vec3 uFlowColor;
   void main() {
-    vec3 color = vLineColor;
-    if (uFlowActive && vLineIsGreen > 0.5) {
-      float d = vLineFlowCoord - uFlowPulseCenter;
-      float intensity = exp(-(d * d) / (2.0 * uFlowSigma * uFlowSigma));
-      color += uFlowColor * intensity;
-    }
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragColor = vec4(vLineColor, 1.0);
   }
 `;
 
@@ -609,7 +593,6 @@ function buildCreaseEdgeLines(flatPositions, triIndices, triIsGreen) {
 
   const lines = [];
   const colors = [];
-  const isGreenFlags = [];
   for (const { i0, i1, count, minDot, isGreen } of edgeMap.values()) {
     if (count === 1 || minDot < CREASE_ANGLE_DOT_THRESHOLD) {
       lines.push(
@@ -618,10 +601,9 @@ function buildCreaseEdgeLines(flatPositions, triIndices, triIsGreen) {
       );
       const c = isGreen ? BLUEPRINT_LINE_COLOR_GREEN_PART : BLUEPRINT_LINE_COLOR;
       colors.push(c[0], c[1], c[2], c[0], c[1], c[2]);
-      isGreenFlags.push(isGreen ? 1 : 0, isGreen ? 1 : 0);
     }
   }
-  return { positions: new Float32Array(lines), colors: new Float32Array(colors), isGreen: new Float32Array(isGreenFlags) };
+  return { positions: new Float32Array(lines), colors: new Float32Array(colors) };
 }
 
 const CUBE_LINES = buildCreaseEdgeLines(CUBE_POSITIONS, CUBE_INDICES);
@@ -631,15 +613,6 @@ gl.bufferData(gl.ARRAY_BUFFER, CUBE_LINES.positions, gl.STATIC_DRAW);
 const cubeLineColorBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, cubeLineColorBuffer);
 gl.bufferData(gl.ARRAY_BUFFER, CUBE_LINES.colors, gl.STATIC_DRAW);
-const cubeLineIsGreenBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeLineIsGreenBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_LINES.isGreen, gl.STATIC_DRAW);
-// The built-in cube has no flow path, so its flow-coord buffer is just
-// zero-filled — bound purely so the shared line shader's attribute layout
-// stays consistent regardless of which model is showing.
-const cubeLineFlowCoordBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeLineFlowCoordBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(CUBE_LINES.positions.length / 3), gl.STATIC_DRAW);
 const cubeLineVertexCount = CUBE_LINES.positions.length / 3;
 const cubeFlowCoordBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, cubeFlowCoordBuffer);
@@ -671,14 +644,8 @@ const uPlusThickness = gl.getUniformLocation(cubeProgram, 'uPlusThickness');
 
 const aLinePosition = gl.getAttribLocation(lineProgram, 'aLinePosition');
 const aLineColor = gl.getAttribLocation(lineProgram, 'aLineColor');
-const aLineIsGreen = gl.getAttribLocation(lineProgram, 'aLineIsGreen');
-const aLineFlowCoord = gl.getAttribLocation(lineProgram, 'aLineFlowCoord');
 const uLineModelView = gl.getUniformLocation(lineProgram, 'uLineModelView');
 const uLineProjection = gl.getUniformLocation(lineProgram, 'uLineProjection');
-const uLineFlowActive = gl.getUniformLocation(lineProgram, 'uFlowActive');
-const uLineFlowPulseCenter = gl.getUniformLocation(lineProgram, 'uFlowPulseCenter');
-const uLineFlowSigma = gl.getUniformLocation(lineProgram, 'uFlowSigma');
-const uLineFlowColor = gl.getUniformLocation(lineProgram, 'uFlowColor');
 
 gl.enable(gl.DEPTH_TEST);
 gl.clearColor(0, 0, 0, 1);
@@ -744,6 +711,9 @@ function mat4Scale(s) {
   // prettier-ignore
   return new Float32Array([s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1]);
 }
+
+// prettier-ignore
+const IDENTITY_MAT4 = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
 
 // Orthographic frustum half-size chosen to match how big the cube read
 // under the old 45°-fov perspective projection at the same camera distance
@@ -899,7 +869,7 @@ function setRotationDisabled(value) {
 updateCubeCursor();
 
 canvas.addEventListener('pointerdown', (event) => {
-  if (modelFlowDrawMode || rotationDisabled) return;
+  if (modelFlowDrawMode || modelFlowSelectMode || rotationDisabled) return;
   cubeDragging = true;
   cubeLastPointer = { x: event.clientX, y: event.clientY };
   canvas.style.cursor = 'grabbing';
@@ -912,10 +882,10 @@ window.addEventListener('pointermove', (event) => {
     cubeLastPointer = { x: event.clientX, y: event.clientY };
     return;
   }
-  // Keep the model perfectly still while tracing an arrow onto it — ambient
-  // parallax tilt shifting the surface under the cursor mid-draw would make
-  // it hard to trace a precise path.
-  if (modelFlowDrawMode || hoverMovementPaused) return;
+  // Keep the model perfectly still while tracing an arrow onto it, or while
+  // trying to click one precisely in select mode — ambient parallax tilt
+  // shifting the surface under the cursor would make either one hard to do.
+  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
   cubeParallaxTargetY = nx * CUBE_PARALLAX_MAX_RAD;
@@ -1171,7 +1141,6 @@ function parseObj(text, materials) {
     fillPattern: new Float32Array(outFillPattern),
     linePositions: lineData.positions,
     lineColors: lineData.colors,
-    lineIsGreen: lineData.isGreen,
     hasMaterials: Object.keys(materials).length > 0,
     objects,
   };
@@ -1194,8 +1163,6 @@ const customModelFillPatternBuffer = gl.createBuffer();
 const customModelFlowCoordBuffer = gl.createBuffer();
 const customModelLineBuffer = gl.createBuffer();
 const customModelLineColorBuffer = gl.createBuffer();
-const customModelLineIsGreenBuffer = gl.createBuffer();
-const customModelLineFlowCoordBuffer = gl.createBuffer();
 let customModelVertexCount = 0;
 let customModelLineVertexCount = 0;
 let customModelReady = false;
@@ -1240,6 +1207,10 @@ function getModelState() {
     customModelObjectNames: customModelObjects.map((o) => o.name),
     cameraTargetSlots,
     cameraTargetActiveIndex,
+    modelFlowArrowCount: modelFlowPaths.length,
+    selectedFlowArrowIndex,
+    modelFlowDrawMode,
+    modelFlowSelectMode,
   };
 }
 
@@ -1274,7 +1245,6 @@ function notifyModelState() {
 let customModelPositionsCache = null;
 let customModelIsGreenCache = null;
 let customModelLinePositionsCache = null;
-let customModelLineIsGreenCache = null;
 let greenTriPositionsCache = null; // Float32Array, only the triangles flagged green, for cheap raycasting
 
 // Uploads an already-parsed model (see parseObj) to the custom-model GPU
@@ -1304,14 +1274,11 @@ function applyParsedModel(parsed, objName, mtlName) {
   gl.bufferData(gl.ARRAY_BUFFER, parsed.linePositions, gl.STATIC_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineColorBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, parsed.lineColors, gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineIsGreenBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, parsed.lineIsGreen, gl.STATIC_DRAW);
   customModelLineVertexCount = parsed.linePositions.length / 3;
 
   customModelPositionsCache = parsed.positions;
   customModelIsGreenCache = parsed.isGreen;
   customModelLinePositionsCache = parsed.linePositions;
-  customModelLineIsGreenCache = parsed.lineIsGreen;
 
   // A newly loaded model's object names/centroids have nothing to do with
   // whatever the previous model's camera-target assignments pointed at.
@@ -1384,12 +1351,12 @@ async function loadModelFromFiles(files) {
 async function loadBundledDefaultModel() {
   try {
     const [objText, mtlText] = await Promise.all([
-      fetch('/models/Movement.obj').then((r) => r.text()),
-      fetch('/models/Movement.mtl').then((r) => r.text()),
+      fetch('/models/Flow.obj').then((r) => r.text()),
+      fetch('/models/Flow.mtl').then((r) => r.text()),
     ]);
     const materials = parseMtl(mtlText);
     const parsed = parseObj(objText, materials);
-    applyParsedModel(parsed, 'Movement.obj', 'Movement.mtl');
+    applyParsedModel(parsed, 'Flow.obj', 'Flow.mtl');
     clearModelFlowPath();
   } catch (err) {
     console.error(err);
@@ -1412,19 +1379,32 @@ window.addEventListener('drop', (event) => {
   if (files.length) loadModelFromFiles(files);
 });
 
-// --- 3D flow arrow: draw a path on the model's green parts, pulse follows it ---
+// --- 3D flow arrows: draw one or more paths on the model's green parts, pulse follows each ---
 //
-// A Gaussian glow band travels along a user-drawn path, looping over
-// FLOW_PULSE_PERIOD_MS. The "path" is drawn directly on the model's surface
-// (via raycasting into the green triangles under the cursor), and each
-// vertex's position along it is computed once (in object space) rather than
-// per-frame. Deliberately a single path — this model only has one or two
-// contiguous green parts, so one arrow covers it.
+// A Gaussian glow band travels along each user-drawn path, looping over
+// FLOW_PULSE_PERIOD_MS in sync across all of them. Each "path" is drawn
+// directly on the model's surface (via raycasting into the green triangles
+// under the cursor), and each vertex's position along its nearest path is
+// computed once (in object space) rather than per-frame. Supports any number
+// of arrows — e.g. separate branches of a green run that don't share a
+// single line — by giving every green vertex a flow coordinate normalized to
+// *its own nearest arrow's* length (0-1) rather than an absolute arc length,
+// so one shared pulse phase/width animates every arrow in sync regardless of
+// how many there are or how long each one is (see recomputeModelFlowCoords).
 
 const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 const MODEL_FLOW_MIN_POINT_SPACING = 0.03; // object-space units — only record a new drag sample once the hit point has moved this far
-const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of the path's total length
-const MODEL_FLOW_ARROW_COLOR = [1, 1, 1]; // bright white guide line for the drawn/dragged arrow overlay
+const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
+const MODEL_FLOW_ARROW_COLOR = [1, 0, 0]; // bright red guide line for unselected/dragged arrow overlays
+const MODEL_FLOW_ARROW_SELECTED_COLOR = [1, 0.85, 0.15]; // amber highlight for the currently selected arrow
+const MODEL_FLOW_ARROW_HALF_WIDTH_PX = 5; // half-width of the ribbon built in buildArrowRibbonNDC below
+// Furthest an object-space click can land from an arrow's polyline and still
+// count as selecting it (see nearestPointOnPath3D) — beyond this, a click in
+// select mode is treated as clicking empty space and clears the selection.
+const MODEL_FLOW_SELECT_MAX_DIST = 0.2;
+// Furthest a pointerdown->pointerup pair can drift (screen pixels) and still
+// count as a click rather than a drag, while in select mode.
+const MODEL_FLOW_SELECT_CLICK_MAX_DRIFT_PX = 6;
 // The traveling glow pulse loops over this period and pads this many sigmas
 // past each end of the path, so it fades in/out via the Gaussian tail
 // instead of popping straight from invisible to full brightness at the loop.
@@ -1432,10 +1412,82 @@ const FLOW_PULSE_PERIOD_MS = 3000;
 const FLOW_PULSE_PAD_SIGMAS = 3;
 
 let modelFlowDrawMode = false;
-let modelFlowDrag = null; // { points: [[x,y,z], ...] } object-space, while actively dragging
-let modelFlowPath = null; // { points: [[x,y,z], ...], cumLen: number[], totalLen } once finalized
+let modelFlowSelectMode = false;
+let modelFlowDrag = null; // { points: [[x,y,z], ...] } object-space, while actively dragging one new arrow
+let modelFlowPaths = []; // [{ points: [[x,y,z], ...], cumLen: number[], totalLen }, ...] one entry per finalized arrow
+let selectedFlowArrowIndex = null; // index into modelFlowPaths, or null if nothing selected
+let modelFlowSelectDownPos = null; // { x, y } clientX/Y at pointerdown, while in select mode — distinguishes a click from a drag
 let showModelFlowArrow = true;
-const modelFlowOverlayBuffer = gl.createBuffer(); // small, rebuilt-on-demand buffer for drawing the arrow guide line itself
+const modelFlowOverlayBuffer = gl.createBuffer(); // small, rebuilt-on-demand buffer for drawing the arrow guide ribbon
+
+// Builds every drawn arrow as one combined ribbon of triangles with a
+// constant on-screen pixel width, rather than gl.LINES — WebGL's line width
+// is clamped to ~1px on most browsers/GPUs (the "width" argument to
+// gl.lineWidth is widely ignored), so a hairline strip can never be made to
+// look bigger; a ribbon is the only reliable way. Does the projection on the
+// CPU instead of in the vertex shader: `combined` (projection * modelView)
+// is exactly what the shader would apply, and since both factors are built
+// from rotate/scale/translate and an orthographic projection — each with an
+// implicit [0,0,0,1] last row — clip.w is always 1, so the projected xyz IS
+// the NDC position with no perspective divide needed. That lets the offset
+// below be computed directly in NDC/pixel space instead of guessing an
+// object-space width that would look wrong at every zoom level. Per-segment
+// quads (no mitered joints), and each arrow's segments are kept separate
+// (no bridging quad between one arrow's last point and the next arrow's
+// first) — fine for thin guide lines, and not worth the extra complexity for
+// what's just a visual marker. Each path also gets a filled triangular
+// arrowhead at its endpoint, pointing along the final segment's direction,
+// so the arrow's direction of travel (start -> end) is visible at a glance
+// instead of just an undirected line.
+const MODEL_FLOW_ARROWHEAD_LENGTH_FACTOR = 4; // arrowhead tip-to-base length, as a multiple of halfWidthPx
+const MODEL_FLOW_ARROWHEAD_HALF_WIDTH_FACTOR = 2.2; // arrowhead base half-width, as a multiple of halfWidthPx
+
+function buildArrowRibbonNDC(pathsPoints, combined, canvasWidth, canvasHeight, halfWidthPx) {
+  const halfW = canvasWidth / 2, halfH = canvasHeight / 2;
+  const arrowLengthPx = halfWidthPx * MODEL_FLOW_ARROWHEAD_LENGTH_FACTOR;
+  const arrowHalfWidthPx = halfWidthPx * MODEL_FLOW_ARROWHEAD_HALF_WIDTH_FACTOR;
+  const verts = [];
+  for (const points of pathsPoints) {
+    const ndcPoints = points.map((p) => [
+      combined[0] * p[0] + combined[4] * p[1] + combined[8] * p[2] + combined[12],
+      combined[1] * p[0] + combined[5] * p[1] + combined[9] * p[2] + combined[13],
+      combined[2] * p[0] + combined[6] * p[1] + combined[10] * p[2] + combined[14],
+    ]);
+    for (let i = 0; i < ndcPoints.length - 1; i++) {
+      const a = ndcPoints[i], b = ndcPoints[i + 1];
+      // Direction converted to actual pixels (NDC axes scaled independently
+      // by the canvas's own half-width/half-height) so the perpendicular
+      // offset reads as an isotropic pixel width even when the canvas isn't
+      // square.
+      let dxPix = (b[0] - a[0]) * halfW, dyPix = (b[1] - a[1]) * halfH;
+      const lenPix = Math.hypot(dxPix, dyPix) || 1;
+      dxPix /= lenPix; dyPix /= lenPix;
+      const nx = (-dyPix * halfWidthPx) / halfW, ny = (dxPix * halfWidthPx) / halfH;
+      const a0x = a[0] - nx, a0y = a[1] - ny;
+      const a1x = a[0] + nx, a1y = a[1] + ny;
+      const b0x = b[0] - nx, b0y = b[1] - ny;
+      const b1x = b[0] + nx, b1y = b[1] + ny;
+      verts.push(
+        a0x, a0y, a[2],  b0x, b0y, b[2],  a1x, a1y, a[2],
+        a1x, a1y, a[2],  b0x, b0y, b[2],  b1x, b1y, b[2],
+      );
+
+      // Arrowhead on the final segment only, built from the same
+      // direction/perpendicular the ribbon quad above just used.
+      if (i === ndcPoints.length - 2) {
+        const backX = (dxPix * arrowLengthPx) / halfW, backY = (dyPix * arrowLengthPx) / halfH;
+        const baseCx = b[0] - backX, baseCy = b[1] - backY;
+        const wingX = (-dyPix * arrowHalfWidthPx) / halfW, wingY = (dxPix * arrowHalfWidthPx) / halfH;
+        verts.push(
+          b[0], b[1], b[2],
+          baseCx - wingX, baseCy - wingY, b[2],
+          baseCx + wingX, baseCy + wingY, b[2],
+        );
+      }
+    }
+  }
+  return new Float32Array(verts);
+}
 
 // Rotates a vec3 the same way mat4RotateX/mat4RotateY would (see those
 // functions) — used here to build the inverse camera transform for
@@ -1551,10 +1603,12 @@ function raycastGreenMesh(clientX, clientY) {
   return bestPoint;
 }
 
-// Nearest point on a 3D polyline to `point`, returned as arc length along
-// the path — the 3D analogue of the 2D projectOntoPath used for image
-// mode's flow cells.
-function projectOntoPath3D(path, point) {
+// Nearest point on a 3D polyline to `point` — the 3D analogue of the 2D
+// projectOntoPath used for image mode's flow cells. Returns both the arc
+// length along the path and the squared distance to that nearest point, so
+// callers juggling multiple candidate paths (see recomputeModelFlowCoords)
+// can tell which path `point` actually sits closest to.
+function nearestPointOnPath3D(path, point) {
   const { points, cumLen } = path;
   let bestDistSq = Infinity, bestArcLen = 0;
   for (let i = 0; i < points.length - 1; i++) {
@@ -1572,7 +1626,7 @@ function projectOntoPath3D(path, point) {
       bestArcLen = cumLen[i] + Math.sqrt(segLenSq) * t;
     }
   }
-  return bestArcLen;
+  return { arcLen: bestArcLen, distSq: bestDistSq };
 }
 
 function buildPathMetrics(points) {
@@ -1584,56 +1638,105 @@ function buildPathMetrics(points) {
   return { points, cumLen, totalLen: cumLen[cumLen.length - 1] || 1 };
 }
 
-// Recomputes every green vertex's (and green edge vertex's) arc-length
-// position along modelFlowPath and re-uploads the flow-coord buffers.
-// Non-green vertices get 0 — harmless since the shaders gate the glow
-// behind isGreen anyway. Called whenever the arrow is drawn/cleared and
-// once after a model (re)loads a restored path.
+// Recomputes every green vertex's flow coordinate and re-uploads the fill's
+// flow-coord buffer (the wireframe never carries the pulse, so it has no
+// flow-coord buffer of its own). Each vertex is assigned to whichever of
+// modelFlowPaths it's actually nearest to (see nearestPointOnPath3D), then
+// stores its arc length *normalized by that path's own totalLen* — a 0-1
+// fraction rather than an absolute distance — so every arrow shares the same
+// pulse timing/width regardless of how many arrows exist or how long each
+// one is (see the flowSigma/flowPulseCenter math in renderCubeFrame, which
+// is expressed in this same normalized space). Non-green vertices and
+// vertices with no paths at all get 0 — harmless since the fill shader gates
+// the glow behind isGreen anyway. Called whenever an arrow is drawn/cleared
+// and once after a model (re)loads a restored path.
 function recomputeModelFlowCoords() {
   if (!customModelReady || !customModelPositionsCache) return;
 
   const vertexCount = customModelPositionsCache.length / 3;
   const flowCoords = new Float32Array(vertexCount);
-  if (modelFlowPath) {
+  if (modelFlowPaths.length > 0) {
     for (let i = 0; i < vertexCount; i++) {
       if (!customModelIsGreenCache[i]) continue;
       const p = [customModelPositionsCache[i * 3], customModelPositionsCache[i * 3 + 1], customModelPositionsCache[i * 3 + 2]];
-      flowCoords[i] = projectOntoPath3D(modelFlowPath, p);
+      let bestFrac = 0, bestDistSq = Infinity;
+      for (const path of modelFlowPaths) {
+        const { arcLen, distSq } = nearestPointOnPath3D(path, p);
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          bestFrac = path.totalLen > 0 ? arcLen / path.totalLen : 0;
+        }
+      }
+      flowCoords[i] = bestFrac;
     }
   }
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelFlowCoordBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, flowCoords, gl.STATIC_DRAW);
-
-  const lineVertexCount = customModelLinePositionsCache.length / 3;
-  const lineFlowCoords = new Float32Array(lineVertexCount);
-  if (modelFlowPath) {
-    for (let i = 0; i < lineVertexCount; i++) {
-      if (!customModelLineIsGreenCache[i]) continue;
-      const p = [customModelLinePositionsCache[i * 3], customModelLinePositionsCache[i * 3 + 1], customModelLinePositionsCache[i * 3 + 2]];
-      lineFlowCoords[i] = projectOntoPath3D(modelFlowPath, p);
-    }
-  }
-  gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineFlowCoordBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, lineFlowCoords, gl.STATIC_DRAW);
 }
 
 function saveModelFlowPath() {
-  if (modelFlowPath) {
-    localStorage.setItem(MODEL_FLOW_STORAGE_KEY, JSON.stringify(modelFlowPath.points));
+  if (modelFlowPaths.length > 0) {
+    localStorage.setItem(MODEL_FLOW_STORAGE_KEY, JSON.stringify(modelFlowPaths.map((path) => path.points)));
   } else {
     localStorage.removeItem(MODEL_FLOW_STORAGE_KEY);
   }
 }
 
 function clearModelFlowPath() {
-  modelFlowPath = null;
+  modelFlowPaths = [];
   modelFlowDrag = null;
+  selectedFlowArrowIndex = null;
   saveModelFlowPath();
   recomputeModelFlowCoords();
+  notifyModelState();
+}
+
+// Drops only the most recently finalized arrow, leaving any earlier ones
+// (and an in-progress drag, if the user is mid-arrow) untouched.
+function undoLastModelFlowArrow() {
+  if (modelFlowPaths.length === 0) return;
+  modelFlowPaths.pop();
+  // The removed arrow was always the last index — if that's what was
+  // selected, the selection no longer points at anything; earlier indices
+  // are unaffected and stay valid.
+  if (selectedFlowArrowIndex === modelFlowPaths.length) selectedFlowArrowIndex = null;
+  saveModelFlowPath();
+  recomputeModelFlowCoords();
+  notifyModelState();
+}
+
+// Drops whichever arrow is currently selected (see setModelFlowSelectMode /
+// the select-mode click handler below).
+function deleteSelectedModelFlowArrow() {
+  if (selectedFlowArrowIndex === null) return;
+  modelFlowPaths.splice(selectedFlowArrowIndex, 1);
+  selectedFlowArrowIndex = null;
+  saveModelFlowPath();
+  recomputeModelFlowCoords();
+  notifyModelState();
 }
 
 function setModelFlowDraw(value) {
   modelFlowDrawMode = value;
+  // Drawing and selecting are mutually exclusive — both interpret a canvas
+  // click differently (start a new arrow vs. pick an existing one), so
+  // enabling one turns off the other.
+  if (value) {
+    modelFlowSelectMode = false;
+    selectedFlowArrowIndex = null;
+  }
+  notifyModelState();
+}
+
+// See setModelFlowDraw above re: mutual exclusivity with draw mode.
+function setModelFlowSelectMode(value) {
+  modelFlowSelectMode = value;
+  if (value) {
+    modelFlowDrawMode = false;
+  } else {
+    selectedFlowArrowIndex = null;
+  }
+  notifyModelState();
 }
 
 function setModelFlowArrowVisible(value) {
@@ -1641,7 +1744,13 @@ function setModelFlowArrowVisible(value) {
 }
 
 canvas.addEventListener('pointerdown', (event) => {
-  if (!blueprintEnabled || !modelFlowDrawMode) return;
+  if (!blueprintEnabled) return;
+  if (modelFlowSelectMode) {
+    modelFlowSelectDownPos = { x: event.clientX, y: event.clientY };
+    event.stopPropagation();
+    return;
+  }
+  if (!modelFlowDrawMode) return;
   const hit = raycastGreenMesh(event.clientX, event.clientY);
   if (!hit) return;
   modelFlowDrag = { points: [hit] };
@@ -1658,12 +1767,39 @@ window.addEventListener('pointermove', (event) => {
   }
 });
 
-window.addEventListener('pointerup', () => {
+window.addEventListener('pointerup', (event) => {
+  if (modelFlowSelectDownPos) {
+    const dx = event.clientX - modelFlowSelectDownPos.x, dy = event.clientY - modelFlowSelectDownPos.y;
+    modelFlowSelectDownPos = null;
+    // A drag beyond the click threshold isn't a selection attempt (e.g. the
+    // pointer merely slipped while clicking) — leave whatever was selected
+    // alone rather than guessing.
+    if (Math.hypot(dx, dy) > MODEL_FLOW_SELECT_CLICK_MAX_DRIFT_PX) return;
+    const hit = raycastGreenMesh(event.clientX, event.clientY);
+    let newIndex = null;
+    let bestDistSq = Infinity;
+    if (hit) {
+      modelFlowPaths.forEach((path, i) => {
+        const { distSq } = nearestPointOnPath3D(path, hit);
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          newIndex = i;
+        }
+      });
+      // Too far from every arrow — treat as clicking empty space, not a
+      // selection of "whatever happened to be nearest."
+      if (bestDistSq > MODEL_FLOW_SELECT_MAX_DIST * MODEL_FLOW_SELECT_MAX_DIST) newIndex = null;
+    }
+    selectedFlowArrowIndex = newIndex;
+    notifyModelState();
+    return;
+  }
   if (!modelFlowDrag) return;
   if (modelFlowDrag.points.length >= 2) {
-    modelFlowPath = buildPathMetrics(modelFlowDrag.points);
+    modelFlowPaths.push(buildPathMetrics(modelFlowDrag.points));
     saveModelFlowPath();
     recomputeModelFlowCoords();
+    notifyModelState();
   }
   modelFlowDrag = null;
 });
@@ -1756,21 +1892,24 @@ function renderCubeFrame() {
   gl.vertexAttribPointer(aFlowCoord, 1, gl.FLOAT, false, 0, 0);
 
   // Traveling flow pulse: same Gaussian-band-over-time math as the image
-  // mode's flow (see renderLoop's pulseLinear/pulseProgress/pulseSigma),
-  // just parameterized by arc length along modelFlowPath instead of grid
-  // cells. Reuses pulseBandFraction (the shared "Pulse width" slider) so one
-  // control governs both modes' pulse widths. Computed once here and reused
-  // for both the face pass (cubeProgram, below) and the line pass
-  // (lineProgram, further down) rather than reading anything back from the GPU.
-  const flowActive = blueprintEnabled && showCustomModel && !!modelFlowPath;
+  // mode's flow (see renderLoop's pulseLinear/pulseProgress/pulseSigma), just
+  // parameterized by each vertex's normalized (0-1) position along its
+  // nearest arrow instead of grid cells or an absolute arc length — so this
+  // one shared pulse phase/width animates every arrow in modelFlowPaths in
+  // sync, regardless of how many there are or how long each one is (see
+  // recomputeModelFlowCoords). Reuses pulseBandFraction (the shared "Pulse
+  // width" slider) so one control governs both modes' pulse widths. Computed
+  // once here and reused for both the face pass (cubeProgram, below) and the
+  // line pass (lineProgram, further down) rather than reading anything back
+  // from the GPU.
+  const flowActive = blueprintEnabled && showCustomModel && modelFlowPaths.length > 0;
   let flowPulseCenter = 0, flowSigma = 0.02;
   if (flowActive) {
-    const pathLen = modelFlowPath.totalLen;
-    flowSigma = Math.max(0.02, pathLen * MODEL_FLOW_PULSE_BAND_FRACTION * pulseBandFraction * 4);
+    flowSigma = Math.max(0.02, MODEL_FLOW_PULSE_BAND_FRACTION * pulseBandFraction * 4);
     const flowPad = flowSigma * FLOW_PULSE_PAD_SIGMAS;
     const pulseLinear = (performance.now() % FLOW_PULSE_PERIOD_MS) / FLOW_PULSE_PERIOD_MS;
     const pulseProgress = pulseLinear * pulseLinear * pulseLinear;
-    flowPulseCenter = -flowPad + pulseProgress * (pathLen + 2 * flowPad);
+    flowPulseCenter = -flowPad + pulseProgress * (1 + 2 * flowPad);
   }
   gl.uniform1i(uFlowActive, flowActive ? 1 : 0);
   if (flowActive) {
@@ -1800,12 +1939,6 @@ function renderCubeFrame() {
     gl.useProgram(lineProgram);
     gl.uniformMatrix4fv(uLineModelView, false, modelView);
     gl.uniformMatrix4fv(uLineProjection, false, cubeProjection);
-    gl.uniform1i(uLineFlowActive, flowActive ? 1 : 0);
-    if (flowActive) {
-      gl.uniform1f(uLineFlowPulseCenter, flowPulseCenter);
-      gl.uniform1f(uLineFlowSigma, flowSigma);
-      gl.uniform3f(uLineFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
-    }
 
     gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelLineBuffer : cubeLineBuffer);
     gl.enableVertexAttribArray(aLinePosition);
@@ -1815,38 +1948,52 @@ function renderCubeFrame() {
     gl.enableVertexAttribArray(aLineColor);
     gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 0, 0);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelLineIsGreenBuffer : cubeLineIsGreenBuffer);
-    gl.enableVertexAttribArray(aLineIsGreen);
-    gl.vertexAttribPointer(aLineIsGreen, 1, gl.FLOAT, false, 0, 0);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelLineFlowCoordBuffer : cubeLineFlowCoordBuffer);
-    gl.enableVertexAttribArray(aLineFlowCoord);
-    gl.vertexAttribPointer(aLineFlowCoord, 1, gl.FLOAT, false, 0, 0);
-
     gl.drawArrays(gl.LINES, 0, showCustomModel ? customModelLineVertexCount : cubeLineVertexCount);
 
-    // Draw the drawn arrow itself (or the in-progress drag) as a bright
-    // guide line on top, so the user can see/verify what they traced.
-    const overlayPath = modelFlowDrag || (showModelFlowArrow ? modelFlowPath : null);
-    if (overlayPath && overlayPath.points.length >= 2) {
-      const flat = new Float32Array(overlayPath.points.length * 3);
-      overlayPath.points.forEach((p, i) => {
-        flat[i * 3] = p[0]; flat[i * 3 + 1] = p[1]; flat[i * 3 + 2] = p[2];
+    // Draw every finalized arrow, plus the in-progress drag (if any), as a
+    // bold guide ribbon (with an arrowhead marking its direction) on top, so
+    // the user can see/verify what they've traced so far while still being
+    // able to add more arrows — built in NDC space (see buildArrowRibbonNDC)
+    // so its width reads as constant pixels regardless of zoom, which a
+    // plain gl.LINES strip can't do. Needs its own identity model/
+    // projection: the ribbon's vertices are already fully projected on the
+    // CPU, so the shader must not reproject them. The selected arrow (see
+    // setModelFlowSelectMode) is drawn as a separate batch in an amber
+    // highlight color so it's obviously distinct before deleting it.
+    const unselectedPointLists = [];
+    let selectedPointList = null;
+    if (showModelFlowArrow) {
+      modelFlowPaths.forEach((path, i) => {
+        if (i === selectedFlowArrowIndex) selectedPointList = path.points;
+        else unselectedPointLists.push(path.points);
       });
-      gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowOverlayBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, flat, gl.DYNAMIC_DRAW);
+    }
+    if (modelFlowDrag && modelFlowDrag.points.length >= 2) unselectedPointLists.push(modelFlowDrag.points);
+
+    if (unselectedPointLists.length > 0 || selectedPointList) {
+      const combined = mat4Multiply(cubeProjection, modelView);
+      gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
+      gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
       gl.enableVertexAttribArray(aLinePosition);
-      gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
-
       gl.disableVertexAttribArray(aLineColor);
-      gl.vertexAttrib3f(aLineColor, MODEL_FLOW_ARROW_COLOR[0], MODEL_FLOW_ARROW_COLOR[1], MODEL_FLOW_ARROW_COLOR[2]);
-      gl.disableVertexAttribArray(aLineIsGreen);
-      gl.vertexAttrib1f(aLineIsGreen, 0);
-      gl.disableVertexAttribArray(aLineFlowCoord);
-      gl.vertexAttrib1f(aLineFlowCoord, 0);
-      gl.uniform1i(uLineFlowActive, 0);
 
-      gl.drawArrays(gl.LINE_STRIP, 0, overlayPath.points.length);
+      if (unselectedPointLists.length > 0) {
+        const ribbon = buildArrowRibbonNDC(unselectedPointLists, combined, canvas.width, canvas.height, MODEL_FLOW_ARROW_HALF_WIDTH_PX);
+        gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowOverlayBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, ribbon, gl.DYNAMIC_DRAW);
+        gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+        gl.vertexAttrib3f(aLineColor, MODEL_FLOW_ARROW_COLOR[0], MODEL_FLOW_ARROW_COLOR[1], MODEL_FLOW_ARROW_COLOR[2]);
+        gl.drawArrays(gl.TRIANGLES, 0, ribbon.length / 3);
+      }
+
+      if (selectedPointList) {
+        const ribbon = buildArrowRibbonNDC([selectedPointList], combined, canvas.width, canvas.height, MODEL_FLOW_ARROW_HALF_WIDTH_PX);
+        gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowOverlayBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, ribbon, gl.DYNAMIC_DRAW);
+        gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+        gl.vertexAttrib3f(aLineColor, MODEL_FLOW_ARROW_SELECTED_COLOR[0], MODEL_FLOW_ARROW_SELECTED_COLOR[1], MODEL_FLOW_ARROW_SELECTED_COLOR[2]);
+        gl.drawArrays(gl.TRIANGLES, 0, ribbon.length / 3);
+      }
     }
   }
 }
@@ -2096,7 +2243,10 @@ export const controls = {
   setUseCustomModel,
   loadModelFiles: (files) => loadModelFromFiles(files),
   setModelFlowDraw,
+  setModelFlowSelectMode,
+  deleteSelectedModelFlowArrow,
   clearModelFlow: clearModelFlowPath,
+  undoModelFlowArrow: undoLastModelFlowArrow,
   setModelFlowArrowVisible,
   setHoverMovementPaused,
   setRotationDisabled,
