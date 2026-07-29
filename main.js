@@ -947,6 +947,7 @@ function parseObj(text, materials) {
   const outNormals = [];
   const outColors = [];
   const outIsGreen = []; // one entry per emitted vertex — blueprint mode's green-fill flag
+  const outObjectName = []; // one entry per emitted vertex — the `o`/`g` name active when it was emitted; resolved to an index into `objects` below (see outObjectIndex)
   const outFillPattern = []; // one entry per emitted vertex — 0/1/2/3 fill-pattern id (see materialFillPatternId)
   const outTriVertIdx = []; // one entry per emitted vertex, the original `v` index it came from — used only for crease-edge detection below
   const outTriIsGreen = []; // one entry per emitted triangle — feeds the wireframe's green-edge coloring
@@ -1033,6 +1034,7 @@ function parseObj(text, materials) {
           outNormals.push(n[k][0], n[k][1], n[k][2]);
           outColors.push(activeColor[0], activeColor[1], activeColor[2]);
           outIsGreen.push(activeIsGreen ? 1 : 0);
+          outObjectName.push(activeObjectName || 'Object 1');
           outFillPattern.push(activeFillPattern);
           outTriVertIdx.push(tri[k].vIdx);
           touchObjectBounds(p[k][0], p[k][1], p[k][2]);
@@ -1108,6 +1110,13 @@ function parseObj(text, materials) {
     return { name, center: [(ox - cx) * scale, (oy - cy) * scale, (oz - cz) * scale], size };
   });
 
+  // Per-vertex index into `objects` above — lets flow arrows (see
+  // recomputeModelFlowCoords/setFlowArrowObjectEnabled) tell which named
+  // object a given green vertex belongs to, so one arrow drawn across
+  // several objects can have its pulse restricted to just some of them.
+  const objectIndexByName = new Map(objectOrder.map((name, i) => [name, i]));
+  const outObjectIndex = outObjectName.map((name) => objectIndexByName.get(name));
+
   // Blueprint-mode wireframe: crease/boundary edges only (see
   // buildCreaseEdgeLines) — a literal every-edge wireframe on a mesh this
   // dense would overflow a 16-bit index buffer and render as solid haze.
@@ -1138,6 +1147,7 @@ function parseObj(text, materials) {
     normals: new Float32Array(outNormals),
     colors: new Float32Array(outColors),
     isGreen: new Float32Array(outIsGreen),
+    objectIndex: new Float32Array(outObjectIndex),
     fillPattern: new Float32Array(outFillPattern),
     linePositions: lineData.positions,
     lineColors: lineData.colors,
@@ -1211,6 +1221,19 @@ function getModelState() {
     selectedFlowArrowIndex,
     modelFlowDrawMode,
     modelFlowSelectMode,
+    // Per-object pulse toggles for whichever arrow is selected — one entry
+    // per object that arrow's drag actually touched, [] if nothing's
+    // selected or the selected arrow only ever touched one object (nothing
+    // to choose between).
+    selectedFlowArrowObjects: (() => {
+      const path = selectedFlowArrowIndex !== null ? modelFlowPaths[selectedFlowArrowIndex] : null;
+      if (!path || path.touchedObjectIndices.length <= 1) return [];
+      return path.touchedObjectIndices.map((idx) => ({
+        index: idx,
+        name: customModelObjects[idx]?.name ?? `Object ${idx + 1}`,
+        enabled: path.enabledObjectIndices.includes(idx),
+      }));
+    })(),
   };
 }
 
@@ -1244,8 +1267,10 @@ function notifyModelState() {
 // arrow changes — see raycastGreenMesh/recomputeModelFlowCoords below.
 let customModelPositionsCache = null;
 let customModelIsGreenCache = null;
+let customModelObjectIndexCache = null; // one entry per vertex — see parseObj's outObjectIndex
 let customModelLinePositionsCache = null;
 let greenTriPositionsCache = null; // Float32Array, only the triangles flagged green, for cheap raycasting
+let greenTriObjectIndexCache = null; // one entry per green triangle, parallel to greenTriPositionsCache — which object each hit belongs to
 
 // Uploads an already-parsed model (see parseObj) to the custom-model GPU
 // buffers and flips on the "use custom model" toggle. Shared by the file
@@ -1278,6 +1303,7 @@ function applyParsedModel(parsed, objName, mtlName) {
 
   customModelPositionsCache = parsed.positions;
   customModelIsGreenCache = parsed.isGreen;
+  customModelObjectIndexCache = parsed.objectIndex;
   customModelLinePositionsCache = parsed.linePositions;
 
   // A newly loaded model's object names/centroids have nothing to do with
@@ -1289,13 +1315,16 @@ function applyParsedModel(parsed, objName, mtlName) {
   cameraTargetZoomCurrent = 1;
 
   const greenTris = [];
+  const greenTriObjectIndex = [];
   for (let i = 0; i < parsed.isGreen.length; i += 3) {
     if (parsed.isGreen[i]) {
       const o = i * 3;
       for (let k = 0; k < 9; k++) greenTris.push(parsed.positions[o + k]);
+      greenTriObjectIndex.push(parsed.objectIndex[i]);
     }
   }
   greenTriPositionsCache = new Float32Array(greenTris);
+  greenTriObjectIndexCache = greenTriObjectIndex;
 
   // Any existing arrow's coordinates belonged to the *previous* model and no
   // longer mean anything — callers decide whether to drop it (a genuinely
@@ -1567,9 +1596,12 @@ function rayTriangleIntersect(origin, dir, tris, offset) {
 
 // Casts a ray from a screen point (clientX/clientY, as from a pointer event)
 // through the orthographic camera into object space, and returns the
-// nearest hit point on a green triangle, or null if it misses the green
-// mesh entirely (drawing is deliberately restricted to green parts, since
-// that's the only place the flow pulse can ever show).
+// nearest hit { point, objectIndex } on a green triangle, or null if it
+// misses the green mesh entirely (drawing is deliberately restricted to
+// green parts, since that's the only place the flow pulse can ever show).
+// objectIndex (see parseObj's outObjectIndex/greenTriObjectIndexCache) lets
+// the arrow-drawing tool track which named object(s) an arrow was actually
+// drawn over, for per-arrow object filtering (setFlowArrowObjectEnabled).
 function raycastGreenMesh(clientX, clientY) {
   if (!greenTriPositionsCache || greenTriPositionsCache.length === 0) return null;
 
@@ -1591,16 +1623,17 @@ function raycastGreenMesh(clientX, clientY) {
   const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy, cameraOffsetZ);
   const dir = [farObj[0] - originObj[0], farObj[1] - originObj[1], farObj[2] - originObj[2]];
 
-  let bestT = Infinity, bestPoint = null;
+  let bestT = Infinity, bestPoint = null, bestObjectIndex = -1;
   const tris = greenTriPositionsCache;
   for (let i = 0; i < tris.length; i += 9) {
     const t = rayTriangleIntersect(originObj, dir, tris, i);
     if (t !== null && t < bestT) {
       bestT = t;
       bestPoint = [originObj[0] + dir[0] * t, originObj[1] + dir[1] * t, originObj[2] + dir[2] * t];
+      bestObjectIndex = greenTriObjectIndexCache[i / 9];
     }
   }
-  return bestPoint;
+  return bestPoint ? { point: bestPoint, objectIndex: bestObjectIndex } : null;
 }
 
 // Nearest point on a 3D polyline to `point` — the 3D analogue of the 2D
@@ -1641,15 +1674,18 @@ function buildPathMetrics(points) {
 // Recomputes every green vertex's flow coordinate and re-uploads the fill's
 // flow-coord buffer (the wireframe never carries the pulse, so it has no
 // flow-coord buffer of its own). Each vertex is assigned to whichever of
-// modelFlowPaths it's actually nearest to (see nearestPointOnPath3D), then
-// stores its arc length *normalized by that path's own totalLen* — a 0-1
-// fraction rather than an absolute distance — so every arrow shares the same
-// pulse timing/width regardless of how many arrows exist or how long each
-// one is (see the flowSigma/flowPulseCenter math in renderCubeFrame, which
-// is expressed in this same normalized space). Non-green vertices and
-// vertices with no paths at all get 0 — harmless since the fill shader gates
-// the glow behind isGreen anyway. Called whenever an arrow is drawn/cleared
-// and once after a model (re)loads a restored path.
+// modelFlowPaths it's actually nearest to (see nearestPointOnPath3D) among
+// those whose enabledObjectIndices includes the vertex's own object (see
+// setFlowArrowObjectEnabled — lets one arrow drawn across several objects
+// pulse only some of them), then stores its arc length *normalized by that
+// path's own totalLen* — a 0-1 fraction rather than an absolute distance —
+// so every arrow shares the same pulse timing/width regardless of how many
+// arrows exist or how long each one is (see the flowSigma/flowPulseCenter
+// math in renderCubeFrame, which is expressed in this same normalized
+// space). Non-green vertices and vertices with no eligible path at all get
+// 0 — harmless since the fill shader gates the glow behind isGreen anyway.
+// Called whenever an arrow is drawn/cleared/reconfigured and once after a
+// model (re)loads a restored path.
 function recomputeModelFlowCoords() {
   if (!customModelReady || !customModelPositionsCache) return;
 
@@ -1658,9 +1694,11 @@ function recomputeModelFlowCoords() {
   if (modelFlowPaths.length > 0) {
     for (let i = 0; i < vertexCount; i++) {
       if (!customModelIsGreenCache[i]) continue;
+      const vertexObjectIndex = customModelObjectIndexCache[i];
       const p = [customModelPositionsCache[i * 3], customModelPositionsCache[i * 3 + 1], customModelPositionsCache[i * 3 + 2]];
       let bestFrac = 0, bestDistSq = Infinity;
       for (const path of modelFlowPaths) {
+        if (path.enabledObjectIndices && !path.enabledObjectIndices.includes(vertexObjectIndex)) continue;
         const { arcLen, distSq } = nearestPointOnPath3D(path, p);
         if (distSq < bestDistSq) {
           bestDistSq = distSq;
@@ -1676,7 +1714,14 @@ function recomputeModelFlowCoords() {
 
 function saveModelFlowPath() {
   if (modelFlowPaths.length > 0) {
-    localStorage.setItem(MODEL_FLOW_STORAGE_KEY, JSON.stringify(modelFlowPaths.map((path) => path.points)));
+    localStorage.setItem(
+      MODEL_FLOW_STORAGE_KEY,
+      JSON.stringify(modelFlowPaths.map((path) => ({
+        points: path.points,
+        touchedObjectIndices: path.touchedObjectIndices,
+        enabledObjectIndices: path.enabledObjectIndices,
+      }))),
+    );
   } else {
     localStorage.removeItem(MODEL_FLOW_STORAGE_KEY);
   }
@@ -1711,6 +1756,24 @@ function deleteSelectedModelFlowArrow() {
   if (selectedFlowArrowIndex === null) return;
   modelFlowPaths.splice(selectedFlowArrowIndex, 1);
   selectedFlowArrowIndex = null;
+  saveModelFlowPath();
+  recomputeModelFlowCoords();
+  notifyModelState();
+}
+
+// Toggles whether the currently-selected arrow's pulse applies to one of the
+// objects it was drawn over — lets one arrow spanning several objects (e.g.
+// its screen-space path crosses from one green part onto an adjacent one)
+// pulse only some of them. objectIndex must be one of that arrow's own
+// touchedObjectIndices (see the pointerup drag-finalize handler above); the
+// panel only ever offers those as choices.
+function setFlowArrowObjectEnabled(objectIndex, enabled) {
+  if (selectedFlowArrowIndex === null) return;
+  const path = modelFlowPaths[selectedFlowArrowIndex];
+  if (!path) return;
+  const has = path.enabledObjectIndices.includes(objectIndex);
+  if (enabled && !has) path.enabledObjectIndices.push(objectIndex);
+  else if (!enabled && has) path.enabledObjectIndices = path.enabledObjectIndices.filter((i) => i !== objectIndex);
   saveModelFlowPath();
   recomputeModelFlowCoords();
   notifyModelState();
@@ -1753,7 +1816,7 @@ canvas.addEventListener('pointerdown', (event) => {
   if (!modelFlowDrawMode) return;
   const hit = raycastGreenMesh(event.clientX, event.clientY);
   if (!hit) return;
-  modelFlowDrag = { points: [hit] };
+  modelFlowDrag = { points: [hit.point], touchedObjects: new Set([hit.objectIndex]) };
   event.stopPropagation();
 });
 
@@ -1762,8 +1825,9 @@ window.addEventListener('pointermove', (event) => {
   const hit = raycastGreenMesh(event.clientX, event.clientY);
   if (!hit) return;
   const last = modelFlowDrag.points[modelFlowDrag.points.length - 1];
-  if (Math.hypot(hit[0] - last[0], hit[1] - last[1], hit[2] - last[2]) >= MODEL_FLOW_MIN_POINT_SPACING) {
-    modelFlowDrag.points.push(hit);
+  if (Math.hypot(hit.point[0] - last[0], hit.point[1] - last[1], hit.point[2] - last[2]) >= MODEL_FLOW_MIN_POINT_SPACING) {
+    modelFlowDrag.points.push(hit.point);
+    modelFlowDrag.touchedObjects.add(hit.objectIndex);
   }
 });
 
@@ -1780,7 +1844,7 @@ window.addEventListener('pointerup', (event) => {
     let bestDistSq = Infinity;
     if (hit) {
       modelFlowPaths.forEach((path, i) => {
-        const { distSq } = nearestPointOnPath3D(path, hit);
+        const { distSq } = nearestPointOnPath3D(path, hit.point);
         if (distSq < bestDistSq) {
           bestDistSq = distSq;
           newIndex = i;
@@ -1796,7 +1860,13 @@ window.addEventListener('pointerup', (event) => {
   }
   if (!modelFlowDrag) return;
   if (modelFlowDrag.points.length >= 2) {
-    modelFlowPaths.push(buildPathMetrics(modelFlowDrag.points));
+    const path = buildPathMetrics(modelFlowDrag.points);
+    // Every object the drag actually raycasted onto — the pulse applies to
+    // all of them by default (see setFlowArrowObjectEnabled for narrowing
+    // this down to just some of them after the fact).
+    path.touchedObjectIndices = [...modelFlowDrag.touchedObjects];
+    path.enabledObjectIndices = [...modelFlowDrag.touchedObjects];
+    modelFlowPaths.push(path);
     saveModelFlowPath();
     recomputeModelFlowCoords();
     notifyModelState();
@@ -1907,8 +1977,10 @@ function renderCubeFrame() {
   if (flowActive) {
     flowSigma = Math.max(0.02, MODEL_FLOW_PULSE_BAND_FRACTION * pulseBandFraction * 4);
     const flowPad = flowSigma * FLOW_PULSE_PAD_SIGMAS;
-    const pulseLinear = (performance.now() % FLOW_PULSE_PERIOD_MS) / FLOW_PULSE_PERIOD_MS;
-    const pulseProgress = pulseLinear * pulseLinear * pulseLinear;
+    // Linear for now (was an eased t^3 ease-in — the pulse noticeably
+    // lingered at the start of each loop before accelerating through the
+    // rest of the arrow).
+    const pulseProgress = (performance.now() % FLOW_PULSE_PERIOD_MS) / FLOW_PULSE_PERIOD_MS;
     flowPulseCenter = -flowPad + pulseProgress * (1 + 2 * flowPad);
   }
   gl.uniform1i(uFlowActive, flowActive ? 1 : 0);
@@ -2063,7 +2135,7 @@ function materialFillPatternId(name) {
   return 0;
 }
 
-// FPS/frame-time overlay (top-right, see #perf-monitor in index.html).
+// FPS/frame-time overlay (top-center, see #perf-monitor in index.html).
 // Written straight to the DOM via textContent rather than through the React
 // panel/state, since that updates every frame — funneling it through React
 // state would mean a full component re-render 60 times a second for a
@@ -2245,6 +2317,7 @@ export const controls = {
   setModelFlowDraw,
   setModelFlowSelectMode,
   deleteSelectedModelFlowArrow,
+  setFlowArrowObjectEnabled,
   clearModelFlow: clearModelFlowPath,
   undoModelFlowArrow: undoLastModelFlowArrow,
   setModelFlowArrowVisible,

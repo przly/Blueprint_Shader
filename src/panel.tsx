@@ -491,9 +491,13 @@ export function Panel() {
                 </Button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            <Separator />
-
+      {!hidden && (
+        <div className="fixed top-4 right-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,22rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm">
+          <div className="panel-scrollbar flex h-full max-h-[calc(100vh-2rem)] flex-col gap-6 overflow-y-auto p-6">
             <h2 className="font-semibold text-base text-foreground">Flow Controls</h2>
 
             <div className="flex flex-wrap items-center gap-4">
@@ -539,6 +543,31 @@ export function Panel() {
                 Clear arrows
               </Button>
             </div>
+
+            {state.selectedFlowArrowObjects?.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <span className="text-muted-foreground text-xs">
+                  Selected arrow affects
+                </span>
+                {state.selectedFlowArrowObjects.map((obj: { index: number; name: string; enabled: boolean }) => (
+                  <Label className="gap-2.5 text-xs" key={obj.index}>
+                    <Switch
+                      checked={obj.enabled}
+                      onCheckedChange={(checked: boolean) => {
+                        controls.setFlowArrowObjectEnabled(obj.index, checked);
+                        setState((s) => ({
+                          ...s,
+                          selectedFlowArrowObjects: s.selectedFlowArrowObjects.map((o: typeof obj) =>
+                            o.index === obj.index ? { ...o, enabled: checked } : o,
+                          ),
+                        }));
+                      }}
+                    />
+                    {obj.name}
+                  </Label>
+                ))}
+              </div>
+            )}
 
             <Field>
               <Slider
