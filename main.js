@@ -1229,8 +1229,8 @@ const CAMERA_TARGET_SMOOTHING = 0.05;
 // whole-model envelope every model is normalized to (see parseObj's
 // `scale`). Smaller targets zoom in past 1x, larger ones zoom out below it.
 const CAMERA_TARGET_ZOOM_REFERENCE_SIZE = 5;
-const CAMERA_TARGET_ZOOM_MIN = 0.4;
-const CAMERA_TARGET_ZOOM_MAX = 3;
+const CAMERA_TARGET_ZOOM_MIN = 0.01;
+const CAMERA_TARGET_ZOOM_MAX = 5;
 
 function getModelState() {
   return {
