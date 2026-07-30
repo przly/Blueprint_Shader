@@ -51,6 +51,38 @@ function useRevealPhase(visible: boolean, closeMs: number): RevealPhase {
   return phase;
 }
 
+type TextSwapPhase = "rest" | "exit" | "enterStart";
+const TEXT_SWAP_MS = 80; // keep in sync with --text-swap-dur in index.css
+
+// Three-phase text/state swap (transitions.dev, 04-text-states-swap.md):
+// exit the old value (blur + slide up + fade), swap to the new value while
+// invisible and pre-positioned below (no transition), then release on the
+// next frame so it eases back to rest. `value` can be any comparable state,
+// not just text — the space-bar indicator drives its label AND its color
+// off the same delayed `displayed` value so both change together, mid-swap.
+function useTextSwap<T>(value: T, exitMs: number): { displayed: T; phase: TextSwapPhase } {
+  const [displayed, setDisplayed] = useState(value);
+  const [phase, setPhase] = useState<TextSwapPhase>("rest");
+
+  useEffect(() => {
+    if (value === displayed) return;
+    setPhase("exit");
+    const exitTimer = window.setTimeout(() => {
+      setDisplayed(value);
+      setPhase("enterStart");
+    }, exitMs);
+    return () => window.clearTimeout(exitTimer);
+  }, [value, displayed, exitMs]);
+
+  useEffect(() => {
+    if (phase !== "enterStart") return;
+    const id = requestAnimationFrame(() => setPhase("rest"));
+    return () => cancelAnimationFrame(id);
+  }, [phase]);
+
+  return { displayed, phase };
+}
+
 interface IconAnimationHandle {
   startAnimation: () => void;
   stopAnimation: () => void;
@@ -85,6 +117,7 @@ export function Panel() {
   const deleteArrowIconPress = useIconPressHandlers<DeleteIconHandle>();
   const undoArrowIconPress = useIconPressHandlers<UndoIconHandle>();
   const clearArrowsIconPress = useIconPressHandlers<XIconHandle>();
+  const spaceIndicator = useTextSwap(!!state.spaceHeld, TEXT_SWAP_MS);
 
   useEffect(() => controls.subscribe((patch: object) => setState((s) => ({ ...s, ...patch }))), []);
 
@@ -185,7 +218,7 @@ export function Panel() {
         <div className="pointer-events-none fixed top-1/2 left-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
           <svg
             className={cn(
-              "t-crosshair size-5 text-white/25",
+              "t-fade-center size-5 text-white/25",
               panelPhase === "open" && "is-open",
               panelPhase === "closing" && "is-closing",
             )}
@@ -198,6 +231,31 @@ export function Panel() {
             <circle cx="12" cy="12" r="3" />
             <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
           </svg>
+        </div>
+      )}
+
+      {panelPhase !== "closed" && (
+        <div className="pointer-events-none fixed bottom-6 left-1/2 z-10 -translate-x-1/2">
+          <div
+            className={cn(
+              "t-fade-center overflow-hidden rounded-full border px-4 py-2 font-medium text-sm shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
+              spaceIndicator.displayed
+                ? "border-transparent bg-white text-black"
+                : "border-input bg-popover/80 text-foreground",
+              panelPhase === "open" && "is-open",
+              panelPhase === "closing" && "is-closing",
+            )}
+          >
+            <span
+              className={cn(
+                "t-text-swap",
+                spaceIndicator.phase === "exit" && "is-exit",
+                spaceIndicator.phase === "enterStart" && "is-enter-start",
+              )}
+            >
+              {spaceIndicator.displayed ? "Release to enter rotation mode" : "Press space to move"}
+            </span>
+          </div>
         </div>
       )}
 

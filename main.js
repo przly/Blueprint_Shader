@@ -52,6 +52,17 @@ if (!localStorage.getItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY)) {
   localStorage.setItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY, '1');
 }
 
+// One-time migration: Space-to-pan now persists modelOffsetX/Y on every
+// drag (see schedulePanSync below), so any browser that was used to test it
+// likely has a stale panned-away position saved — same reasoning as the
+// migrations above, drop it once so the model position defaults back to 0,0.
+const MODEL_OFFSET_RESET_MIGRATION_KEY = 'iconMosaic.modelOffsetDefaultResetV1';
+if (!localStorage.getItem(MODEL_OFFSET_RESET_MIGRATION_KEY)) {
+  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetX');
+  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetY');
+  localStorage.setItem(MODEL_OFFSET_RESET_MIGRATION_KEY, '1');
+}
+
 // Width of the model flow's traveling glow pulse (blueprint mode), as a
 // fraction of the path's total length — see MODEL_FLOW_PULSE_BAND_FRACTION
 // in renderCubeFrame, which multiplies this in.
@@ -75,9 +86,23 @@ let cubeSizeScale = cubeSizePercent / 100;
 
 function setCubeSizePercent(percent) {
   const clamped = Math.max(CUBE_SIZE_MIN, Math.min(CUBE_SIZE_MAX, percent));
+  const previousScale = cubeSizeScale;
   cubeSizePercent = clamped;
   cubeSizeScale = clamped / 100;
   persistNumber('cubeSize', clamped);
+
+  // Zoom into the pivot crosshair (screen-center — see getObjectSpacePan)
+  // rather than the model's own origin: rescale the manual pan by the same
+  // ratio the model just resized by, so whatever object-space point
+  // currently sits under the crosshair keeps sitting there instead of
+  // drifting as the model grows/shrinks around its own center.
+  if (previousScale > 0 && cubeSizeScale !== previousScale) {
+    const ratio = cubeSizeScale / previousScale;
+    setModelOffsetXPercent(modelOffsetXPercent * ratio);
+    setModelOffsetYPercent(modelOffsetYPercent * ratio);
+  }
+
+  notifyModelState();
   return clamped;
 }
 
@@ -863,24 +888,34 @@ function flushPanSync() {
 // toward that target a little each frame (see renderCubeFrame) so the tilt
 // reads as a soft parallax drift rather than snapping straight to the mouse.
 // Suspended while dragging so the two rotation sources don't fight.
-const CUBE_PARALLAX_MAX_RAD = 0.1;
-const CUBE_PARALLAX_SMOOTHING = 0.08;
+const CUBE_PARALLAX_MAX_RAD = 0.2;
+const CUBE_PARALLAX_SMOOTHING = 0.1;
 let cubeParallaxTargetX = 0;
 let cubeParallaxTargetY = 0;
 let cubeParallaxX = 0;
 let cubeParallaxY = 0;
 
 // Snaps the model back to its default framed angle — both the drag rotation
-// (cubeRotX/Y) and the ambient parallax tilt (cubeParallaxX/Y and its target,
-// so it doesn't ease back toward wherever the cursor currently is). Shared by
-// the "Reset rotation" button and by enabling "Pause hover movement" below.
+// (cubeRotX/Y) and the ambient parallax tilt (cubeParallaxX/Y and its
+// target). Animated as a fast ease (see the tween applied in
+// renderCubeFrame) rather than an instant jump, so it reads as a deliberate
+// snap instead of a jarring cut. Shared by the "Reset rotation" button,
+// enabling "Pause hover movement" below, and Space down/up (see the
+// keydown/keyup handlers below).
+const CUBE_ROT_RESET_MS = 180; // fast — quicker than the modal open duration, barely more than a frame or two of "not instant"
+let cubeRotResetStartTime = null;
+let cubeRotResetFrom = null; // { rotX, rotY, parX, parY, parTargetX, parTargetY } snapshot taken at reset time
+
 function resetCubeRotation() {
-  cubeRotX = CUBE_ISO_PITCH;
-  cubeRotY = CUBE_ISO_YAW;
-  cubeParallaxTargetX = 0;
-  cubeParallaxTargetY = 0;
-  cubeParallaxX = 0;
-  cubeParallaxY = 0;
+  cubeRotResetFrom = {
+    rotX: cubeRotX,
+    rotY: cubeRotY,
+    parX: cubeParallaxX,
+    parY: cubeParallaxY,
+    parTargetX: cubeParallaxTargetX,
+    parTargetY: cubeParallaxTargetY,
+  };
+  cubeRotResetStartTime = performance.now();
 }
 
 // "Pause hover movement" control: freezes the ambient parallax tilt so the
@@ -921,21 +956,27 @@ window.addEventListener('keydown', (event) => {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   event.preventDefault();
   spaceHeld = true;
+  resetCubeRotation(); // start every pan from the default framed angle, not wherever drag/hover left it
   if (!cubeDragging) updateCubeCursor();
+  notifyModelState(); // panel's "Press space to move" indicator flips to "Release to enter rotation mode"
 });
 window.addEventListener('keyup', (event) => {
   if (event.code !== 'Space') return;
   spaceHeld = false;
+  resetCubeRotation(); // settle back to the framed angle on release too, same fast ease as the down-press
   if (!panDragging) updateCubeCursor();
+  notifyModelState();
 });
 // Dropping focus (e.g. alt-tabbing away) mid-hold never fires a matching
 // keyup — without this, spaceHeld/panDragging could get stuck on.
 window.addEventListener('blur', () => {
+  const wasSpaceHeld = spaceHeld;
   spaceHeld = false;
   if (panDragging) {
     panDragging = false;
     flushPanSync();
   }
+  if (wasSpaceHeld) notifyModelState();
   updateCubeCursor();
 });
 
@@ -980,7 +1021,11 @@ window.addEventListener('pointermove', (event) => {
   // Keep the model perfectly still while tracing an arrow onto it, or while
   // trying to click one precisely in select mode — ambient parallax tilt
   // shifting the surface under the cursor would make either one hard to do.
-  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused) return;
+  // Also suspended for as long as Space is held (spaceHeld covers both the
+  // pre-drag hold and the pan-drag itself) so it doesn't fight the manual
+  // pan; it simply stops updating its target rather than resetting, so it
+  // resumes smoothly from wherever it was once Space is released.
+  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
   cubeParallaxTargetY = nx * CUBE_PARALLAX_MAX_RAD;
@@ -1310,6 +1355,7 @@ const CAMERA_TARGET_ZOOM_MAX = 5;
 
 function getModelState() {
   return {
+    spaceHeld,
     customModelReady,
     useCustomModel,
     cubeModelStatus,
@@ -2036,8 +2082,26 @@ function renderCubeFrame() {
   }
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  cubeParallaxX += (cubeParallaxTargetX - cubeParallaxX) * CUBE_PARALLAX_SMOOTHING;
-  cubeParallaxY += (cubeParallaxTargetY - cubeParallaxY) * CUBE_PARALLAX_SMOOTHING;
+  if (cubeRotResetStartTime !== null) {
+    // Fast ease-out cubic from the snapshot taken in resetCubeRotation to the
+    // default framed angle/zero tilt — overrides the normal per-frame
+    // parallax easing below until the tween finishes.
+    const t = Math.min(1, (performance.now() - cubeRotResetStartTime) / CUBE_ROT_RESET_MS);
+    const eased = 1 - (1 - t) ** 3;
+    cubeRotX = cubeRotResetFrom.rotX + (CUBE_ISO_PITCH - cubeRotResetFrom.rotX) * eased;
+    cubeRotY = cubeRotResetFrom.rotY + (CUBE_ISO_YAW - cubeRotResetFrom.rotY) * eased;
+    cubeParallaxTargetX = cubeRotResetFrom.parTargetX * (1 - eased);
+    cubeParallaxTargetY = cubeRotResetFrom.parTargetY * (1 - eased);
+    cubeParallaxX = cubeRotResetFrom.parX * (1 - eased);
+    cubeParallaxY = cubeRotResetFrom.parY * (1 - eased);
+    if (t >= 1) {
+      cubeRotResetStartTime = null;
+      cubeRotResetFrom = null;
+    }
+  } else {
+    cubeParallaxX += (cubeParallaxTargetX - cubeParallaxX) * CUBE_PARALLAX_SMOOTHING;
+    cubeParallaxY += (cubeParallaxTargetY - cubeParallaxY) * CUBE_PARALLAX_SMOOTHING;
+  }
 
   const rx = cubeRotX + cubeParallaxX;
   const ry = cubeRotY + cubeParallaxY;

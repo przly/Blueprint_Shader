@@ -291,10 +291,11 @@
     opacity   var(--modal-close-dur) var(--modal-ease);
 }
 
-/* Pivot crosshair (src/panel.tsx) — same fade/scale as .t-modal above, minus
-   its pointer-events flip: this is a passive reticle over the canvas, never
-   interactive, so pointer-events stays none in every phase. */
-.t-crosshair {
+/* Fade+scale from center (src/panel.tsx) — same fade/scale as .t-modal above,
+   minus its pointer-events flip. Shared by anything that's purely decorative/
+   informational over the canvas — the pivot crosshair and the space-bar
+   indicator pill — so pointer-events stays none in every phase for both. */
+.t-fade-center {
   transform-origin: center;
   transform: scale(var(--modal-scale));
   opacity: 0;
@@ -303,16 +304,50 @@
     opacity   var(--modal-open-dur) var(--modal-ease);
   will-change: transform, opacity;
 }
-.t-crosshair.is-open {
+.t-fade-center.is-open {
   transform: scale(1);
   opacity: 1;
 }
-.t-crosshair.is-closing {
+.t-fade-center.is-closing {
   transform: scale(var(--modal-scale-close));
   opacity: 0;
   transition:
     transform var(--modal-close-dur) var(--modal-ease),
     opacity   var(--modal-close-dur) var(--modal-ease);
+}
+
+/* transitions.dev — text states swap (04-text-states-swap.md), used by the
+   space-bar indicator pill's label (src/panel.tsx): the old label exits up
+   with a blur, the new one enters from below once swapped in while hidden.
+   ease-out (not the reference snippet's ease-in-out) since this is an
+   enter/exit, not an on-screen move — see AUDIT.md's easing decision order. */
+:root {
+  --text-swap-dur: 80ms;
+  --text-swap-translate-y: 4px;
+  --text-swap-blur: 2px;
+  --text-swap-ease: ease-out;
+}
+.t-text-swap {
+  display: inline-block;
+  transform: translateY(0);
+  filter: blur(0);
+  opacity: 1;
+  transition:
+    transform var(--text-swap-dur) var(--text-swap-ease),
+    filter    var(--text-swap-dur) var(--text-swap-ease),
+    opacity   var(--text-swap-dur) var(--text-swap-ease);
+  will-change: transform, filter, opacity;
+}
+.t-text-swap.is-exit {
+  transform: translateY(calc(var(--text-swap-translate-y) * -1));
+  filter: blur(var(--text-swap-blur));
+  opacity: 0;
+}
+.t-text-swap.is-enter-start {
+  transform: translateY(var(--text-swap-translate-y));
+  filter: blur(var(--text-swap-blur));
+  opacity: 0;
+  transition: none;
 }
 
 /* transitions.dev — floating control panels (src/panel.tsx), same tokens as
@@ -379,8 +414,21 @@
   .t-modal,
   .t-panel,
   .t-reveal,
-  .t-crosshair {
+  .t-fade-center {
     transition: none !important;
+  }
+  /* Keep a quick opacity crossfade (it's what tells you the label actually
+     changed) but drop the translateY slide and blur — movement and heavy
+     filter work are what reduced motion asks to remove, not all feedback. */
+  .t-text-swap {
+    transition: opacity var(--text-swap-dur) var(--text-swap-ease) !important;
+    transform: none !important;
+    filter: none !important;
+  }
+  .t-text-swap.is-exit,
+  .t-text-swap.is-enter-start {
+    transform: none !important;
+    filter: none !important;
   }
 }
 
