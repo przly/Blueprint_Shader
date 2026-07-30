@@ -182,6 +182,26 @@ export function Panel() {
       </Button>
 
       {panelPhase !== "closed" && (
+        <div className="pointer-events-none fixed top-1/2 left-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
+          <svg
+            className={cn(
+              "t-crosshair size-5 text-white/25",
+              panelPhase === "open" && "is-open",
+              panelPhase === "closing" && "is-closing",
+            )}
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+          </svg>
+        </div>
+      )}
+
+      {panelPhase !== "closed" && (
         <div
           className={cn(
             "t-panel t-panel-left fixed top-14 left-4 z-10 max-h-[calc(100vh-4.5rem)] w-[min(92vw,28rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",

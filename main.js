@@ -764,15 +764,19 @@ const MODEL_POSITION_RANGE = CUBE_ORTHO_HALF_SIZE * 1.2;
 let modelOffsetXPercent = restoreNumber('modelOffsetX', 0);
 let modelOffsetYPercent = restoreNumber('modelOffsetY', 0);
 
+function clampModelPosition(percent) {
+  return Math.max(MODEL_POSITION_MIN, Math.min(MODEL_POSITION_MAX, percent));
+}
+
 function setModelOffsetXPercent(percent) {
-  const clamped = Math.max(MODEL_POSITION_MIN, Math.min(MODEL_POSITION_MAX, percent));
+  const clamped = clampModelPosition(percent);
   modelOffsetXPercent = clamped;
   persistNumber('modelOffsetX', clamped);
   return clamped;
 }
 
 function setModelOffsetYPercent(percent) {
-  const clamped = Math.max(MODEL_POSITION_MIN, Math.min(MODEL_POSITION_MAX, percent));
+  const clamped = clampModelPosition(percent);
   modelOffsetYPercent = clamped;
   persistNumber('modelOffsetY', clamped);
   return clamped;
@@ -816,6 +820,43 @@ let cubeRotY = CUBE_ISO_YAW;
 let cubeDragging = false;
 let cubeLastPointer = null;
 
+// Space-to-pan: holding Space and dragging moves the model on the view's X/Y
+// plane (via the same modelOffsetXPercent/YPercent the "Model X/Y position"
+// sliders drive — see setModelOffsetXPercent/YPercent below) instead of
+// rotating it, regardless of whether click-drag rotation is enabled. Takes
+// priority over rotation-drag while held (see the pointerdown handler below).
+let spaceHeld = false;
+let panDragging = false;
+let panLastPointer = null;
+let panSyncRAF = null; // see schedulePanSync below
+
+// setModelOffsetXPercent/YPercent do a synchronous localStorage write plus a
+// full panel re-render on every call — fine for the sliders (one call per
+// user action), but calling them on every single pointermove while panning
+// made the drag visibly janky, since a pointer can fire many move events per
+// rendered frame. Panning instead mutates the raw percent variables directly
+// (cheap) and batches the persist+notify side effects to once per animation
+// frame via this, with pointerup doing one final synchronous flush so the
+// panel/localStorage never lag behind once the drag actually stops.
+function schedulePanSync() {
+  if (panSyncRAF !== null) return;
+  panSyncRAF = requestAnimationFrame(() => {
+    panSyncRAF = null;
+    persistNumber('modelOffsetX', modelOffsetXPercent);
+    persistNumber('modelOffsetY', modelOffsetYPercent);
+    notifyModelState();
+  });
+}
+function flushPanSync() {
+  if (panSyncRAF !== null) {
+    cancelAnimationFrame(panSyncRAF);
+    panSyncRAF = null;
+  }
+  persistNumber('modelOffsetX', modelOffsetXPercent);
+  persistNumber('modelOffsetY', modelOffsetYPercent);
+  notifyModelState();
+}
+
 // Ambient parallax tilt: a small extra rotation, layered on top of
 // cubeRotX/Y, that follows the cursor's position anywhere on the page.
 // cubeParallaxTargetX/Y track the cursor instantly; cubeParallaxX/Y ease
@@ -858,7 +899,7 @@ function setHoverMovementPaused(value) {
 let rotationDisabled = true;
 
 function updateCubeCursor() {
-  canvas.style.cursor = rotationDisabled ? 'default' : 'grab';
+  canvas.style.cursor = spaceHeld || !rotationDisabled ? 'grab' : 'default';
 }
 
 function setRotationDisabled(value) {
@@ -868,14 +909,68 @@ function setRotationDisabled(value) {
 
 updateCubeCursor();
 
+// Held Space overrides whatever cursor/tool state rotation-drag would
+// otherwise show, same as the space-pan idiom in Figma/Photoshop. Guarded
+// against inputs/textareas/selects so it doesn't fight typing a value into a
+// slider or the model-name select, and preventDefault stops the page from
+// scrolling (there's normally nothing to scroll, but also stops Space from
+// re-clicking whatever button last had focus).
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'Space' || spaceHeld) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  spaceHeld = true;
+  if (!cubeDragging) updateCubeCursor();
+});
+window.addEventListener('keyup', (event) => {
+  if (event.code !== 'Space') return;
+  spaceHeld = false;
+  if (!panDragging) updateCubeCursor();
+});
+// Dropping focus (e.g. alt-tabbing away) mid-hold never fires a matching
+// keyup — without this, spaceHeld/panDragging could get stuck on.
+window.addEventListener('blur', () => {
+  spaceHeld = false;
+  if (panDragging) {
+    panDragging = false;
+    flushPanSync();
+  }
+  updateCubeCursor();
+});
+
 canvas.addEventListener('pointerdown', (event) => {
-  if (modelFlowDrawMode || modelFlowSelectMode || rotationDisabled) return;
+  if (modelFlowDrawMode || modelFlowSelectMode) return;
+  if (spaceHeld) {
+    panDragging = true;
+    panLastPointer = { x: event.clientX, y: event.clientY };
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
+  if (rotationDisabled) return;
   cubeDragging = true;
   cubeLastPointer = { x: event.clientX, y: event.clientY };
   canvas.style.cursor = 'grabbing';
 });
 
 window.addEventListener('pointermove', (event) => {
+  if (panDragging) {
+    // 1:1 with the cursor: convert the pixel delta to view-space units via
+    // the ortho frustum's actual on-screen size, then to the same percent
+    // scale setModelOffsetXPercent/YPercent (and the panel's sliders) use.
+    // View-space +Y is up (see raycastGreenMesh's NDC conversion below), so
+    // dragging down (+clientY) has to *subtract* from the Y offset to make
+    // the model follow the cursor instead of moving the opposite way.
+    const dxPix = event.clientX - panLastPointer.x;
+    const dyPix = event.clientY - panLastPointer.y;
+    panLastPointer = { x: event.clientX, y: event.clientY };
+    const percentPerPixelX = ((cubeProjectionHalfX * 2) / window.innerWidth) * (100 / MODEL_POSITION_RANGE);
+    const percentPerPixelY = ((cubeProjectionHalfY * 2) / window.innerHeight) * (100 / MODEL_POSITION_RANGE);
+    modelOffsetXPercent = clampModelPosition(modelOffsetXPercent + dxPix * percentPerPixelX);
+    modelOffsetYPercent = clampModelPosition(modelOffsetYPercent - dyPix * percentPerPixelY);
+    schedulePanSync();
+    return;
+  }
   if (cubeDragging) {
     cubeRotY += (event.clientX - cubeLastPointer.x) * 0.01;
     cubeRotX += (event.clientY - cubeLastPointer.y) * 0.01;
@@ -894,6 +989,10 @@ window.addEventListener('pointermove', (event) => {
 
 window.addEventListener('pointerup', () => {
   cubeDragging = false;
+  if (panDragging) {
+    panDragging = false;
+    flushPanSync();
+  }
   updateCubeCursor();
 });
 
@@ -1543,20 +1642,26 @@ function rotateYVec3(v, theta) {
   return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
 }
 
-// Inverse of renderCubeFrame's modelView build (translate * rotateX(rx) *
-// rotateY(ry) * scale(s)) applied to a single view-space point, undone in
-// reverse order: un-translate, un-rotateX, un-rotateY, un-scale.
-function unprojectViewPointToObject(pv, rx, ry, s, ox, oy, oz) {
+// Inverse of renderCubeFrame's modelView build (translate(ox,oy,oz) *
+// rotateX(rx) * rotateY(ry) * translate(panX,panY,0) * scale(s)) applied to a
+// single view-space point, undone in reverse order: un-translate(o),
+// un-rotateX, un-rotateY, un-translate(pan), un-scale. The manual-pan
+// translate sits *inside* the rotation (undone before un-scaling, after the
+// rotations) rather than outside it — see getObjectSpacePan below for why.
+function unprojectViewPointToObject(pv, rx, ry, s, ox, oy, oz, panX, panY) {
   const untranslated = [pv[0] - ox, pv[1] - oy, pv[2] - oz]; // inverse of mat4Translate(ox, oy, oz)
   const unrotatedX = rotateXVec3(untranslated, -rx);
   const unrotatedY = rotateYVec3(unrotatedX, -ry);
-  return [unrotatedY[0] / s, unrotatedY[1] / s, unrotatedY[2] / s];
+  const unpanned = [unrotatedY[0] - panX, unrotatedY[1] - panY, unrotatedY[2]]; // inverse of mat4Translate(panX, panY, 0)
+  return [unpanned[0] / s, unpanned[1] / s, unpanned[2] / s];
 }
 
 // Forward counterpart of unprojectViewPointToObject: scale, rotateY,
 // rotateX (pre-translate) — used to find where an object-space point (e.g. a
 // camera-target centroid) lands in view space, so renderCubeFrame can pan to
-// center it regardless of the model's current rotation.
+// center it regardless of the model's current rotation. Camera-target mode
+// never combines with the manual object-space pan (see getObjectSpacePan),
+// so this deliberately has no pan term of its own.
 function projectObjectPointToView(p, rx, ry, s) {
   const scaled = [p[0] * s, p[1] * s, p[2] * s];
   const afterY = rotateYVec3(scaled, ry);
@@ -1565,17 +1670,33 @@ function projectObjectPointToView(p, rx, ry, s) {
 
 // Shared by renderCubeFrame and raycastGreenMesh so raycasting always
 // unprojects through the exact same view-space offset the render pass drew
-// with — same reason getModelViewOffset above is shared, just extended to
-// cover camera-target mode too. Read-only: when a camera target is active,
-// this reads cameraTargetCurrent's already-eased position rather than
-// advancing it — only renderCubeFrame's own per-frame tick does that, so the
-// ease rate stays tied to render frames rather than to how often a caller
-// (e.g. pointermove during arrow-drawing) happens to ask for the offset.
+// with. Only ever nonzero for camera-target mode now — locking a target to
+// screen-center has to counteract whatever the *current* rotation does to
+// it, which is exactly what this recomputes every call (rx/ry-dependent).
+// Read-only: when a camera target is active, this reads cameraTargetCurrent's
+// already-eased position rather than advancing it — only renderCubeFrame's
+// own per-frame tick does that, so the ease rate stays tied to render frames
+// rather than to how often a caller (e.g. pointermove during arrow-drawing)
+// happens to ask for the offset.
 function getCurrentCameraOffset(rx, ry, s) {
   const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
-  if (!activeTargetName) return getModelViewOffset();
+  if (!activeTargetName) return [0, 0];
   const viewPoint = projectObjectPointToView(cameraTargetCurrent, rx, ry, s);
   return [-viewPoint[0], -viewPoint[1]];
+}
+
+// The manual "Model X/Y position" pan (slider- or Space-drag-driven; see
+// getModelViewOffset) — unlike getCurrentCameraOffset above, this is applied
+// *inside* rotation (see renderCubeFrame/unprojectViewPointToObject), so it's
+// rigid with the model instead of counteracting rotation: rotating (drag or
+// hover) always pivots around the model's true center regardless of how far
+// it's been panned, rather than the pivot itself drifting to wherever a
+// post-rotation pan translate happened to place it. Suppressed while a
+// camera target is active — that mode already owns centering via the offset
+// above, and combining both would fight over the same screen position.
+function getObjectSpacePan() {
+  const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
+  return activeTargetName ? [0, 0] : getModelViewOffset();
 }
 
 // Möller–Trumbore ray-triangle intersection. tris is a flat Float32Array of
@@ -1630,10 +1751,11 @@ function raycastGreenMesh(clientX, clientY) {
   // zoom multiplier) or raycasting drifts out of sync with what's on screen.
   const rx = cubeRotX + cubeParallaxX, ry = cubeRotY + cubeParallaxY, s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [ox, oy] = getCurrentCameraOffset(rx, ry, s);
+  const [panX, panY] = getObjectSpacePan();
   const originView = [ndcX * cubeProjectionHalfX, ndcY * cubeProjectionHalfY, -0.1];
   const farView = [originView[0], originView[1], -50];
-  const originObj = unprojectViewPointToObject(originView, rx, ry, s, ox, oy, cameraOffsetZ);
-  const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy, cameraOffsetZ);
+  const originObj = unprojectViewPointToObject(originView, rx, ry, s, ox, oy, cameraOffsetZ, panX, panY);
+  const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy, cameraOffsetZ, panX, panY);
   const dir = [farObj[0] - originObj[0], farObj[1] - originObj[1], farObj[2] - originObj[2]];
 
   let bestT = Infinity, bestPoint = null, bestObjectIndex = -1;
@@ -1942,10 +2064,12 @@ function renderCubeFrame() {
   cameraTargetZoomCurrent += (zoomGoal - cameraTargetZoomCurrent) * CAMERA_TARGET_SMOOTHING;
   const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [offsetX, offsetY] = getCurrentCameraOffset(rx, ry, s);
+  const [panX, panY] = getObjectSpacePan();
 
   let modelView = mat4Translate(offsetX, offsetY, cameraOffsetZ);
   modelView = mat4Multiply(modelView, mat4RotateX(rx));
   modelView = mat4Multiply(modelView, mat4RotateY(ry));
+  modelView = mat4Multiply(modelView, mat4Translate(panX, panY, 0));
   modelView = mat4Multiply(modelView, mat4Scale(s));
 
   gl.useProgram(cubeProgram);

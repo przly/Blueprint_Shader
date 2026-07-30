@@ -291,6 +291,30 @@
     opacity   var(--modal-close-dur) var(--modal-ease);
 }
 
+/* Pivot crosshair (src/panel.tsx) — same fade/scale as .t-modal above, minus
+   its pointer-events flip: this is a passive reticle over the canvas, never
+   interactive, so pointer-events stays none in every phase. */
+.t-crosshair {
+  transform-origin: center;
+  transform: scale(var(--modal-scale));
+  opacity: 0;
+  transition:
+    transform var(--modal-open-dur) var(--modal-ease),
+    opacity   var(--modal-open-dur) var(--modal-ease);
+  will-change: transform, opacity;
+}
+.t-crosshair.is-open {
+  transform: scale(1);
+  opacity: 1;
+}
+.t-crosshair.is-closing {
+  transform: scale(var(--modal-scale-close));
+  opacity: 0;
+  transition:
+    transform var(--modal-close-dur) var(--modal-ease),
+    opacity   var(--modal-close-dur) var(--modal-ease);
+}
+
 /* transitions.dev — floating control panels (src/panel.tsx), same tokens as
    the modal above. Each panel scales/fades from the corner it's anchored to
    so it reads as growing out of its own trigger rather than teleporting in. */
@@ -354,7 +378,8 @@
   .t-overlay-backdrop,
   .t-modal,
   .t-panel,
-  .t-reveal {
+  .t-reveal,
+  .t-crosshair {
     transition: none !important;
   }
 }
