@@ -291,9 +291,70 @@
     opacity   var(--modal-close-dur) var(--modal-ease);
 }
 
+/* transitions.dev — floating control panels (src/panel.tsx), same tokens as
+   the modal above. Each panel scales/fades from the corner it's anchored to
+   so it reads as growing out of its own trigger rather than teleporting in. */
+.t-panel {
+  opacity: 0;
+  transform: scale(var(--modal-scale)) translateY(-8px);
+  pointer-events: none;
+  transition:
+    transform var(--modal-open-dur) var(--modal-ease),
+    opacity   var(--modal-open-dur) var(--modal-ease);
+  will-change: transform, opacity;
+}
+.t-panel.is-open {
+  transform: scale(1) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.t-panel.is-closing {
+  transform: scale(var(--modal-scale-close)) translateY(-8px);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--modal-close-dur) var(--modal-ease),
+    opacity   var(--modal-close-dur) var(--modal-ease);
+}
+.t-panel-left {
+  transform-origin: top left;
+}
+.t-panel-right {
+  transform-origin: top right;
+}
+
+/* transitions.dev — collapsible section reveal (Camera Targets, selected
+   flow-arrow object list). Height can't transition directly, so the row
+   itself is animated via grid-template-rows; the child needs overflow:
+   hidden so its content clips as the row collapses. */
+.t-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--modal-open-dur) var(--modal-ease),
+    opacity             var(--modal-open-dur) var(--modal-ease);
+}
+.t-reveal > * {
+  overflow: hidden;
+}
+.t-reveal.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.t-reveal.is-closing {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--modal-close-dur) var(--modal-ease),
+    opacity             var(--modal-close-dur) var(--modal-ease);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .t-overlay-backdrop,
-  .t-modal {
+  .t-modal,
+  .t-panel,
+  .t-reveal {
     transition: none !important;
   }
 }

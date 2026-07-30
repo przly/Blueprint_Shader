@@ -1,25 +1,90 @@
 import { useEffect, useRef, useState } from "react";
 import { Menu } from "lucide-react";
+import { ArrowBigRightDashIcon, type ArrowBigRightDashIconHandle } from "@/components/ui/arrow-big-right-dash";
 import { Button } from "@/components/ui/button";
+import { DeleteIcon, type DeleteIconHandle } from "@/components/ui/delete";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Slider, SliderValue } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { UndoIcon, type UndoIconHandle } from "@/components/ui/undo";
+import { UndoDotIcon, type UndoDotIconHandle } from "@/components/ui/undo-dot";
+import { UploadIcon, type UploadIconHandle } from "@/components/ui/upload";
+import { XIcon, type XIconHandle } from "@/components/ui/x";
 import { cn } from "@/lib/utils";
 import { controls } from "../main.js";
 
 const CONTROLS_HIDDEN_KEY = "iconMosaic.controlsHidden";
 
-type OverlayPhase = "closed" | "entering" | "open" | "closing";
-const OVERLAY_CLOSE_MS = 150; // keep in sync with --modal-close-dur in index.css
+type RevealPhase = "closed" | "entering" | "open" | "closing";
+const MODAL_CLOSE_MS = 150; // keep in sync with --modal-close-dur in index.css
+
+// Shared open/close lifecycle for anything driven by the --modal-open-dur/
+// --modal-close-dur tokens (transitions.dev, 06-modal.md): mount in a
+// pre-open state, flip to "open" on the next frame so the enter transition
+// actually plays, and on close hold in "closing" for the CSS transition's
+// duration before unmounting.
+function useRevealPhase(visible: boolean, closeMs: number): RevealPhase {
+  const [phase, setPhase] = useState<RevealPhase>(() => (visible ? "open" : "closed"));
+
+  useEffect(() => {
+    if (visible) {
+      setPhase((p) => (p === "closed" ? "entering" : p === "closing" ? "open" : p));
+    } else {
+      setPhase((p) => (p === "closed" ? "closed" : "closing"));
+    }
+  }, [visible]);
+
+  useEffect(() => {
+    if (phase !== "entering") return;
+    const id = requestAnimationFrame(() => setPhase("open"));
+    return () => cancelAnimationFrame(id);
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase !== "closing") return;
+    const id = window.setTimeout(() => setPhase("closed"), closeMs);
+    return () => window.clearTimeout(id);
+  }, [phase, closeMs]);
+
+  return phase;
+}
+
+interface IconAnimationHandle {
+  startAnimation: () => void;
+  stopAnimation: () => void;
+}
+
+// The lucide-animated icon components only self-trigger on hover over their
+// own (icon-sized) bounding box. Buttons want the whole hit area to trigger
+// the icon on press (not hover), so the icon is used in "controlled" mode via
+// ref and driven from the button's own pointer down/up/leave instead.
+function useIconPressHandlers<T extends IconAnimationHandle>() {
+  const ref = useRef<T>(null);
+  return {
+    ref,
+    onPointerDown: () => ref.current?.startAnimation(),
+    onPointerLeave: () => ref.current?.stopAnimation(),
+    onPointerUp: () => ref.current?.stopAnimation(),
+  };
+}
 
 export function Panel() {
   const [hidden, setHidden] = useState(() => localStorage.getItem(CONTROLS_HIDDEN_KEY) === "1");
   const [state, setState] = useState(() => controls.getInitialState());
   const [isDraggingFile, setIsDraggingFile] = useState(false);
-  const [overlayPhase, setOverlayPhase] = useState<OverlayPhase>("closed");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const loadModelIconPress = useIconPressHandlers<UploadIconHandle>();
+  const resetPositionIconPress = useIconPressHandlers<UndoDotIconHandle>();
+  const goIconRefs = useRef<(ArrowBigRightDashIconHandle | null)[]>([]);
+  const resetViewIconPress = useIconPressHandlers<UndoDotIconHandle>();
+  const resetRotationIconPress = useIconPressHandlers<UndoDotIconHandle>();
+  const resetSizeIconPress = useIconPressHandlers<UndoDotIconHandle>();
+  const deleteArrowIconPress = useIconPressHandlers<DeleteIconHandle>();
+  const undoArrowIconPress = useIconPressHandlers<UndoIconHandle>();
+  const clearArrowsIconPress = useIconPressHandlers<XIconHandle>();
 
   useEffect(() => controls.subscribe((patch: object) => setState((s) => ({ ...s, ...patch }))), []);
 
@@ -77,29 +142,10 @@ export function Panel() {
     };
   }, []);
 
-  // Drives the t-modal/t-overlay-backdrop lifecycle (transitions.dev, 06-modal.md):
-  // mount in a pre-open state, flip to "open" on the next frame so the enter
-  // transition actually plays, and on close hold in "closing" for the CSS
-  // transition's duration before unmounting.
-  useEffect(() => {
-    if (isDraggingFile) {
-      setOverlayPhase((p) => (p === "closed" ? "entering" : p === "closing" ? "open" : p));
-    } else {
-      setOverlayPhase((p) => (p === "closed" ? "closed" : "closing"));
-    }
-  }, [isDraggingFile]);
-
-  useEffect(() => {
-    if (overlayPhase !== "entering") return;
-    const id = requestAnimationFrame(() => setOverlayPhase("open"));
-    return () => cancelAnimationFrame(id);
-  }, [overlayPhase]);
-
-  useEffect(() => {
-    if (overlayPhase !== "closing") return;
-    const id = window.setTimeout(() => setOverlayPhase("closed"), OVERLAY_CLOSE_MS);
-    return () => window.clearTimeout(id);
-  }, [overlayPhase]);
+  const overlayPhase = useRevealPhase(isDraggingFile, MODAL_CLOSE_MS);
+  const panelPhase = useRevealPhase(!hidden, MODAL_CLOSE_MS);
+  const cameraTargetsPhase = useRevealPhase((state.customModelObjectNames?.length ?? 0) > 0, MODAL_CLOSE_MS);
+  const flowObjectsPhase = useRevealPhase((state.selectedFlowArrowObjects?.length ?? 0) > 0, MODAL_CLOSE_MS);
 
   return (
     <>
@@ -135,8 +181,14 @@ export function Panel() {
         <Menu />
       </Button>
 
-      {!hidden && (
-        <div className="fixed top-14 left-4 z-10 max-h-[calc(100vh-4.5rem)] w-[min(92vw,28rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm">
+      {panelPhase !== "closed" && (
+        <div
+          className={cn(
+            "t-panel t-panel-left fixed top-14 left-4 z-10 max-h-[calc(100vh-4.5rem)] w-[min(92vw,28rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",
+            panelPhase === "open" && "is-open",
+            panelPhase === "closing" && "is-closing",
+          )}
+        >
           <div className="panel-scrollbar flex h-full max-h-[calc(100vh-4.5rem)] flex-col gap-6 overflow-y-auto p-6">
             <h2 className="font-semibold text-base text-foreground">Model Controls</h2>
 
@@ -152,7 +204,15 @@ export function Panel() {
                 }}
                 type="file"
               />
-              <Button onClick={() => fileInputRef.current?.click()} size="xs" variant="outline">
+              <Button
+                onClick={() => fileInputRef.current?.click()}
+                onPointerDown={loadModelIconPress.onPointerDown}
+                onPointerLeave={loadModelIconPress.onPointerLeave}
+                onPointerUp={loadModelIconPress.onPointerUp}
+                size="xs"
+                variant="outline"
+              >
+                <UploadIcon className="size-3" ref={loadModelIconPress.ref} />
                 Load model…
               </Button>
               <span className="text-muted-foreground text-xs">or drop .obj/.mtl anywhere</span>
@@ -225,19 +285,44 @@ export function Panel() {
               </Field>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
               <Button
                 className="ml-auto"
                 onClick={() => { controls.resetModelPosition(); setState((s) => ({ ...s, modelOffsetX: 0, modelOffsetY: 0 })); }}
+                onPointerDown={resetPositionIconPress.onPointerDown}
+                onPointerLeave={resetPositionIconPress.onPointerLeave}
+                onPointerUp={resetPositionIconPress.onPointerUp}
                 size="xs"
                 variant="outline"
               >
+                <UndoDotIcon className="size-3" ref={resetPositionIconPress.ref} />
                 Reset position
+              </Button>
+              <Button
+                onClick={() => {
+                  const clamped = controls.setCubeSizePercent(100);
+                  setState((s) => ({ ...s, cubeSize: clamped }));
+                }}
+                onPointerDown={resetSizeIconPress.onPointerDown}
+                onPointerLeave={resetSizeIconPress.onPointerLeave}
+                onPointerUp={resetSizeIconPress.onPointerUp}
+                size="xs"
+                variant="outline"
+              >
+                <UndoDotIcon className="size-3" ref={resetSizeIconPress.ref} />
+                Reset size
               </Button>
             </div>
 
-            {state.customModelObjectNames?.length > 0 && (
-              <>
+            {cameraTargetsPhase !== "closed" && (
+              <div
+                className={cn(
+                  "t-reveal",
+                  cameraTargetsPhase === "open" && "is-open",
+                  cameraTargetsPhase === "closing" && "is-closing",
+                )}
+              >
+              <div className="flex flex-col gap-6">
                 <Separator />
                 <h2 className="font-semibold text-base text-foreground">Camera Targets</h2>
                 <div className="flex flex-col gap-2">
@@ -258,22 +343,32 @@ export function Panel() {
                         value={state.cameraTargetSlots?.[slotIndex] ?? ""}
                       >
                         <option value="">— none —</option>
-                        {state.customModelObjectNames.map((name: string) => (
+                        {(state.customModelObjectNames ?? []).map((name: string) => (
                           <option key={name} value={name}>
                             {name}
                           </option>
                         ))}
                       </select>
                       <Button
+                        className="transition-[color,background-color,border-color,box-shadow] duration-150"
                         disabled={!state.cameraTargetSlots?.[slotIndex]}
                         onClick={() => {
                           controls.goToCameraTarget(slotIndex);
                           setState((s) => ({ ...s, cameraTargetActiveIndex: slotIndex }));
                         }}
+                        onPointerDown={() => goIconRefs.current[slotIndex]?.startAnimation()}
+                        onPointerLeave={() => goIconRefs.current[slotIndex]?.stopAnimation()}
+                        onPointerUp={() => goIconRefs.current[slotIndex]?.stopAnimation()}
                         size="xs"
                         variant={state.cameraTargetActiveIndex === slotIndex ? "default" : "outline"}
                       >
                         Go
+                        <ArrowBigRightDashIcon
+                          className="size-3"
+                          ref={(el) => {
+                            goIconRefs.current[slotIndex] = el;
+                          }}
+                        />
                       </Button>
                     </div>
                   ))}
@@ -286,13 +381,18 @@ export function Panel() {
                       controls.resetCameraTarget();
                       setState((s) => ({ ...s, cameraTargetActiveIndex: null }));
                     }}
+                    onPointerDown={resetViewIconPress.onPointerDown}
+                    onPointerLeave={resetViewIconPress.onPointerLeave}
+                    onPointerUp={resetViewIconPress.onPointerUp}
                     size="xs"
                     variant="outline"
                   >
+                    <UndoDotIcon className="size-3" ref={resetViewIconPress.ref} />
                     Reset view
                   </Button>
                 </div>
-              </>
+              </div>
+              </div>
             )}
 
             <Separator />
@@ -476,18 +576,16 @@ export function Panel() {
                 Rotation
               </Label>
               <div className="ml-auto flex items-center gap-2">
-                <Button onClick={() => controls.resetRotation()} size="xs" variant="outline">
-                  Reset rotation
-                </Button>
                 <Button
-                  onClick={() => {
-                    const clamped = controls.setCubeSizePercent(100);
-                    setState((s) => ({ ...s, cubeSize: clamped }));
-                  }}
+                  onClick={() => controls.resetRotation()}
+                  onPointerDown={resetRotationIconPress.onPointerDown}
+                  onPointerLeave={resetRotationIconPress.onPointerLeave}
+                  onPointerUp={resetRotationIconPress.onPointerUp}
                   size="xs"
                   variant="outline"
                 >
-                  Reset size
+                  <UndoDotIcon className="size-3" ref={resetRotationIconPress.ref} />
+                  Reset rotation
                 </Button>
               </div>
             </div>
@@ -495,8 +593,14 @@ export function Panel() {
         </div>
       )}
 
-      {!hidden && (
-        <div className="fixed top-4 right-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,22rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm">
+      {panelPhase !== "closed" && (
+        <div
+          className={cn(
+            "t-panel t-panel-right fixed top-4 right-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,22rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",
+            panelPhase === "open" && "is-open",
+            panelPhase === "closing" && "is-closing",
+          )}
+        >
           <div className="panel-scrollbar flex h-full max-h-[calc(100vh-2rem)] flex-col gap-6 overflow-y-auto p-6">
             <h2 className="font-semibold text-base text-foreground">Flow Controls</h2>
 
@@ -531,25 +635,52 @@ export function Panel() {
               <Button
                 disabled={state.selectedFlowArrowIndex == null}
                 onClick={() => controls.deleteSelectedModelFlowArrow()}
+                onPointerDown={deleteArrowIconPress.onPointerDown}
+                onPointerLeave={deleteArrowIconPress.onPointerLeave}
+                onPointerUp={deleteArrowIconPress.onPointerUp}
                 size="xs"
                 variant="outline"
               >
+                <DeleteIcon className="size-3" ref={deleteArrowIconPress.ref} />
                 Delete selected
               </Button>
-              <Button onClick={() => controls.undoModelFlowArrow()} size="xs" variant="outline">
+              <Button
+                onClick={() => controls.undoModelFlowArrow()}
+                onPointerDown={undoArrowIconPress.onPointerDown}
+                onPointerLeave={undoArrowIconPress.onPointerLeave}
+                onPointerUp={undoArrowIconPress.onPointerUp}
+                size="xs"
+                variant="outline"
+              >
+                <UndoIcon className="size-3" ref={undoArrowIconPress.ref} />
                 Undo last arrow
               </Button>
-              <Button onClick={() => controls.clearModelFlow()} size="xs" variant="outline">
+              <Button
+                onClick={() => controls.clearModelFlow()}
+                onPointerDown={clearArrowsIconPress.onPointerDown}
+                onPointerLeave={clearArrowsIconPress.onPointerLeave}
+                onPointerUp={clearArrowsIconPress.onPointerUp}
+                size="xs"
+                variant="outline"
+              >
+                <XIcon className="size-3" ref={clearArrowsIconPress.ref} />
                 Clear arrows
               </Button>
             </div>
 
-            {state.selectedFlowArrowObjects?.length > 0 && (
+            {flowObjectsPhase !== "closed" && (
+              <div
+                className={cn(
+                  "t-reveal",
+                  flowObjectsPhase === "open" && "is-open",
+                  flowObjectsPhase === "closing" && "is-closing",
+                )}
+              >
               <div className="flex flex-col gap-2">
                 <span className="text-muted-foreground text-xs">
                   Selected arrow affects
                 </span>
-                {state.selectedFlowArrowObjects.map((obj: { index: number; name: string; enabled: boolean }) => (
+                {(state.selectedFlowArrowObjects ?? []).map((obj: { index: number; name: string; enabled: boolean }) => (
                   <Label className="gap-2.5 text-xs" key={obj.index}>
                     <Switch
                       checked={obj.enabled}
@@ -566,6 +697,7 @@ export function Panel() {
                     {obj.name}
                   </Label>
                 ))}
+              </div>
               </div>
             )}
 
