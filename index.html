@@ -45,6 +45,16 @@
     height: 32px;
     margin-top: 6px;
   }
+  #axis-gizmo {
+    display: block;
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 10;
+    width: 84px;
+    height: 84px;
+    pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -53,6 +63,7 @@
     <div id="perf-monitor-text"></div>
     <canvas height="32" id="perf-history" width="140"></canvas>
   </div>
+  <canvas height="84" id="axis-gizmo" width="84"></canvas>
   <div id="react-controls-root"></div>
   <script type="module" src="/src/main.tsx"></script>
   <script type="module" src="/main.js"></script>

@@ -319,7 +319,7 @@ export function Panel() {
               <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
                   <FieldLabel className="text-xs sm:text-xs">Model X position</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetX}</span>
+                  <span className="text-muted-foreground text-xs tabular-nums">{Math.round(state.modelOffsetX)}</span>
                 </div>
                 <Slider
                   max={state.modelOffsetMax}
@@ -337,7 +337,7 @@ export function Panel() {
               <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
                   <FieldLabel className="text-xs sm:text-xs">Model Y position</FieldLabel>
-                  <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetY}</span>
+                  <span className="text-muted-foreground text-xs tabular-nums">{Math.round(state.modelOffsetY)}</span>
                 </div>
                 <Slider
                   max={state.modelOffsetMax}

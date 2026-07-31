@@ -913,6 +913,12 @@ let cubeLastPointer = null;
 let spaceHeld = false;
 let panDragging = false;
 let panLastPointer = null;
+// Held-Z drag (see zKeyHeld below): independent of Space/bird's-eye —
+// vertical drag alone adjusts object-space Y (height), same up-is-positive
+// convention as the "Model Y position" slider.
+let zDragging = false;
+let zLastPointer = null;
+let zKeyHeld = false; // declared up here (not by the Z keydown/keyup handlers further below) since updateCubeCursor, defined next, reads it immediately
 let panSyncRAF = null; // see schedulePanSync below
 
 // setModelOffsetXPercent/YPercent/ZPercent trigger a full panel re-render on
@@ -1000,7 +1006,7 @@ function setHoverMovementPaused(value) {
 let rotationDisabled = true;
 
 function updateCubeCursor() {
-  canvas.style.cursor = spaceHeld || !rotationDisabled ? 'grab' : 'default';
+  canvas.style.cursor = spaceHeld || zKeyHeld || !rotationDisabled ? 'grab' : 'default';
 }
 
 function setRotationDisabled(value) {
@@ -1093,6 +1099,26 @@ window.addEventListener('blur', () => {
   notifyModelState();
 });
 
+// Held Z is its own drag gesture, independent of Space/bird's-eye: click and drag
+// while it's held adjusts object-space Y (height) directly — see
+// zDragging's pointerdown/pointermove/pointerup handling below.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyZ' || zKeyHeld) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  zKeyHeld = true;
+  if (!zDragging) updateCubeCursor();
+});
+window.addEventListener('keyup', (event) => {
+  if (event.code !== 'KeyZ') return;
+  zKeyHeld = false;
+  if (!zDragging) updateCubeCursor();
+});
+window.addEventListener('blur', () => {
+  zKeyHeld = false;
+  if (!zDragging) updateCubeCursor();
+});
+
 // Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
 // and out, reusing the exact same underlying scale as the "Model size"
 // slider (see applyCubeSizePercent) — so it zooms into the pivot crosshair
@@ -1126,6 +1152,12 @@ canvas.addEventListener(
 
 canvas.addEventListener('pointerdown', (event) => {
   if (modelFlowDrawMode || modelFlowSelectMode) return;
+  if (zKeyHeld) {
+    zDragging = true;
+    zLastPointer = { x: event.clientX, y: event.clientY };
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
   if (spaceHeld) {
     panDragging = true;
     panLastPointer = { x: event.clientX, y: event.clientY };
@@ -1139,6 +1171,16 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 
 window.addEventListener('pointermove', (event) => {
+  if (zDragging) {
+    // Vertical-only: dragging up subtracts a negative dyPix, raising Y,
+    // same up-is-positive convention as the "Model Y position" slider.
+    const dyPix = event.clientY - zLastPointer.y;
+    zLastPointer = { x: event.clientX, y: event.clientY };
+    const percentPerPixelY = ((cubeProjectionHalfY * 2) / window.innerHeight) * (100 / MODEL_POSITION_RANGE);
+    modelOffsetYPercent = clampModelPosition(modelOffsetYPercent - dyPix * percentPerPixelY);
+    schedulePanSync();
+    return;
+  }
   if (panDragging) {
     // 1:1 with the cursor: convert the pixel delta to view-space units via
     // the ortho frustum's actual on-screen size, then to the same percent
@@ -1148,9 +1190,10 @@ window.addEventListener('pointermove', (event) => {
     // zero yaw, so screen-horizontal drag maps to object-space X and
     // screen-vertical drag maps to object-space Z (the ground plane's other
     // axis) rather than Y, which at a 90° pitch would move things in depth,
-    // not across the screen. Dragging right adds to X the same way it
-    // always has; dragging down adds to Z (opposite sign from the old Y
-    // mapping) to make the ground follow the cursor instead of the camera.
+    // not across the screen — Y is only reachable via the separate held-Z
+    // drag above. Dragging right adds to X the same way it always has;
+    // dragging down adds to Z to make the ground follow the cursor instead
+    // of the camera.
     const dxPix = event.clientX - panLastPointer.x;
     const dyPix = event.clientY - panLastPointer.y;
     panLastPointer = { x: event.clientX, y: event.clientY };
@@ -1170,12 +1213,13 @@ window.addEventListener('pointermove', (event) => {
   // Keep the model perfectly still while tracing an arrow onto it, or while
   // trying to click one precisely in select mode — ambient parallax tilt
   // shifting the surface under the cursor would make either one hard to do.
-  // Also suspended for as long as Space or R is held (spaceHeld covers both
-  // the pre-drag hold and the pan-drag itself, rKeyHeld the same for
-  // rotate-drag) so neither fights the manual pan/rotate; it simply stops
-  // updating its target rather than resetting, so it resumes smoothly from
-  // wherever it was once the key is released.
-  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld) return;
+  // Also suspended for as long as Space, R, or Z is held (spaceHeld covers
+  // both the pre-drag hold and the pan-drag itself, rKeyHeld the same for
+  // rotate-drag, zKeyHeld the same for the height drag) so none of them
+  // fight the manual pan/rotate/height-adjust; it simply stops updating its
+  // target rather than resetting, so it resumes smoothly from wherever it
+  // was once the key is released.
+  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
   cubeParallaxTargetY = nx * CUBE_PARALLAX_MAX_RAD;
@@ -1186,6 +1230,10 @@ window.addEventListener('pointerup', () => {
   cubeDragging = false;
   if (panDragging) {
     panDragging = false;
+    flushPanSync();
+  }
+  if (zDragging) {
+    zDragging = false;
     flushPanSync();
   }
   updateCubeCursor();
@@ -1356,9 +1404,19 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
     }
   }
 
-  // Center and scale to roughly the same [-1, 1] envelope CUBE_POSITIONS
-  // uses, so the same CUBE_SCALE/camera distance frame it similarly
-  // regardless of what units the source model was modeled in.
+  // Center (X/Z) and floor (Y) the model, then scale to roughly the same
+  // [-1, 1] envelope CUBE_POSITIONS uses, so the same CUBE_SCALE/camera
+  // distance frame it similarly regardless of what units the source model
+  // was modeled in. Y specifically aligns to the *lowest* point (minY)
+  // rather than the bounding box's vertical midpoint like X/Z — Blender's
+  // OBJ exporter already converts its Z-up scenes to this format's Y-up, so
+  // a model built with its ground plane at Blender height 0 should still
+  // have its ground at object-space Y=0 after import, not floating at
+  // -extentY/2 with the scene's vertical *center* at 0. Everything derived
+  // from cy below (per-object centroids, the wireframe's dedupedTransformed
+  // copy) automatically inherits this floor-relative convention too, and
+  // it's what the flow-pulse pivot's floor guide (see
+  // CUSTOM_MODEL_ROTATE_Y_RAD) assumes Y=0 means.
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (let i = 0; i < outPositions.length; i += 3) {
     const x = outPositions[i], y = outPositions[i + 1], z = outPositions[i + 2];
@@ -1366,7 +1424,7 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
     if (y < minY) minY = y; if (y > maxY) maxY = y;
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
+  const cx = (minX + maxX) / 2, cy = minY, cz = (minZ + maxZ) / 2;
   const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
   // 10x the built-in cube's normalized envelope — a custom model's intended
   // physical size relative to the cube, independent of CUBE_SCALE (which
@@ -1509,6 +1567,12 @@ function getModelState() {
   return {
     spaceHeld,
     rotationDisabled,
+    // Included so schedulePanSync/flushPanSync's notifyModelState() (fired
+    // continuously while Space-dragging) keeps the "Model X/Y position"
+    // sliders live-in-sync with the drag, not just on the next full reload
+    // (getInitialState reads these too, but that's only read once on mount).
+    modelOffsetX: modelOffsetXPercent,
+    modelOffsetY: modelOffsetYPercent,
     customModelReady,
     useCustomModel,
     cubeModelStatus,
@@ -1681,17 +1745,21 @@ async function loadModelFromFiles(files) {
 async function loadBundledDefaultModel() {
   try {
     const [objText, mtlText] = await Promise.all([
-      fetch('/models/for_home.obj').then((r) => r.text()),
-      fetch('/models/for_home.mtl').then((r) => r.text()),
+      fetch('/models/ngen_assets.obj').then((r) => r.text()),
+      fetch('/models/ngen_assets.mtl').then((r) => r.text()),
     ]);
     const materials = parseMtl(mtlText);
-    // On top of parseObj's usual extent normalization — for_home.obj's scene
-    // (house, car, charger) is laid out much larger/more spread out than a
-    // typical upload, so it reads too large/zoomed in at the normal baseline
-    // size. This shrinks the model itself, independent of the "Model size"
-    // slider, which still starts at its usual 100%.
-    const parsed = parseObj(objText, materials, 0.35);
-    applyParsedModel(parsed, 'for_home.obj', 'for_home.mtl', ['EV_Charger_Body', 'EV_Car_01_Body', 'House_01_Primary']);
+    // On top of parseObj's usual extent normalization — 8x, independent of
+    // the "Model size" slider, which still starts at its usual 100%.
+    const parsed = parseObj(objText, materials, 8);
+    // The file's three top-level scene groups, one per Camera Target slot —
+    // jumping between them is how the user navigates the bundle's separate
+    // scenes rather than a single shared layout.
+    applyParsedModel(parsed, 'ngen_assets.obj', 'ngen_assets.mtl', [
+      '1-House',
+      '2-Business_Facility',
+      '3.1-Investor_Energy_Hub_PLANE',
+    ]);
     applyDefaultModelFlowPath();
   } catch (err) {
     console.error(err);
@@ -1735,11 +1803,12 @@ const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // an empty green mesh, without redrawing it every reload. Same shape
 // saveModelFlowPath persists to localStorage (points/touchedObjectIndices/
 // enabledObjectIndices), just applied unconditionally on startup instead.
-// Empty for now — the previous bundled model (Flow.obj) had a hand-drawn
-// path baked in here, but its points are specific to that model's geometry
-// and scale, so they don't carry over to for_home.obj. Draw a new one via
-// "Draw flow arrow" and it'll persist to localStorage on its own; re-bake it
-// here (see saveModelFlowPath) if you want a fresh out-of-the-box arrow.
+// Empty for now — earlier bundled models had a hand-drawn path baked in
+// here, but its points are specific to one model's geometry and scale, so
+// they never carry over to a newly swapped-in bundled model. Draw a new one
+// via "Draw flow arrow" and it'll persist to localStorage on its own;
+// re-bake it here (see saveModelFlowPath) if you want a fresh
+// out-of-the-box arrow.
 const DEFAULT_MODEL_FLOW_PATH_DATA = [];
 const MODEL_FLOW_MIN_POINT_SPACING = 0.03; // object-space units — only record a new drag sample once the hit point has moved this far
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
@@ -1804,6 +1873,54 @@ function buildPivotOrbNDC(centerNDC, canvasWidth, canvasHeight, radiusPx) {
       cx, cy, cz, ...PIVOT_ORB_COLOR_CENTER,
       cx + Math.cos(a0) * rx, cy + Math.sin(a0) * ry, cz, ...PIVOT_ORB_COLOR_EDGE,
       cx + Math.cos(a1) * rx, cy + Math.sin(a1) * ry, cz, ...PIVOT_ORB_COLOR_EDGE,
+    );
+  }
+  return new Float32Array(verts);
+}
+
+// Floor guide: a dashed yellow line straight down (object-space Y=0 is the
+// floor — see CUSTOM_MODEL_ROTATE_Y_RAD) from the pivot orb to the floor
+// directly beneath/above it, showing how high off the ground the current
+// pivot sits. Same color family as the orb; a plain flat color (not the
+// orb's radial gradient) since a thin dashed line doesn't read as 3D shaded
+// either way.
+const PIVOT_FLOOR_LINE_COLOR = [1, 0.85, 0.15];
+const PIVOT_FLOOR_LINE_HALF_WIDTH_PX = 1.25;
+const PIVOT_FLOOR_DASH_LENGTH_PX = 6;
+const PIVOT_FLOOR_DASH_GAP_PX = 5;
+const pivotFloorLineBuffer = gl.createBuffer();
+
+// Dashes a straight object-space segment (pointA -> pointB) at a constant
+// on-screen pixel dash/gap length regardless of zoom — same CPU-side
+// projection + constant-pixel-width-ribbon technique as buildArrowRibbonNDC,
+// simplified to a single already-straight segment (no per-point joints or
+// arrowhead) and split into dash/gap steps along its own length instead of
+// one continuous ribbon.
+function buildDashedLineNDC(pointA, pointB, combined, canvasWidth, canvasHeight, halfWidthPx, dashPx, gapPx) {
+  const halfW = canvasWidth / 2, halfH = canvasHeight / 2;
+  const project = (p) => [
+    combined[0] * p[0] + combined[4] * p[1] + combined[8] * p[2] + combined[12],
+    combined[1] * p[0] + combined[5] * p[1] + combined[9] * p[2] + combined[13],
+    combined[2] * p[0] + combined[6] * p[1] + combined[10] * p[2] + combined[14],
+  ];
+  const a = project(pointA), b = project(pointB);
+  let dxPix = (b[0] - a[0]) * halfW, dyPix = (b[1] - a[1]) * halfH;
+  const lenPix = Math.hypot(dxPix, dyPix) || 1;
+  dxPix /= lenPix; dyPix /= lenPix;
+  const nx = (-dyPix * halfWidthPx) / halfW, ny = (dxPix * halfWidthPx) / halfH;
+  const verts = [];
+  const stepPix = dashPx + gapPx;
+  const steps = Math.ceil(lenPix / stepPix);
+  for (let i = 0; i < steps; i++) {
+    const startPix = i * stepPix;
+    if (startPix >= lenPix) break;
+    const endPix = Math.min(startPix + dashPx, lenPix);
+    const t0 = startPix / lenPix, t1 = endPix / lenPix;
+    const p0x = a[0] + (b[0] - a[0]) * t0, p0y = a[1] + (b[1] - a[1]) * t0, p0z = a[2] + (b[2] - a[2]) * t0;
+    const p1x = a[0] + (b[0] - a[0]) * t1, p1y = a[1] + (b[1] - a[1]) * t1, p1z = a[2] + (b[2] - a[2]) * t1;
+    verts.push(
+      p0x - nx, p0y - ny, p0z,  p1x - nx, p1y - ny, p1z,  p0x + nx, p0y + ny, p0z,
+      p0x + nx, p0y + ny, p0z,  p1x - nx, p1y - ny, p1z,  p1x + nx, p1y + ny, p1z,
     );
   }
   return new Float32Array(verts);
@@ -2287,6 +2404,80 @@ window.addEventListener('pointerup', (event) => {
   modelFlowDrag = null;
 });
 
+// Bottom-right axis gizmo: a small always-visible indicator of which way
+// object-space X/Y/Z currently point on screen, so panning/rotating (drag,
+// hover parallax, R, Space's bird's-eye view, camera targets — anything
+// that changes rx/ry) doesn't leave the user guessing which axis is which.
+// A separate plain-2D canvas (see #axis-gizmo in index.html) rather than
+// squeezing a scissored sub-viewport into the main WebGL canvas — much
+// simpler to get text labels and line styling right, and precedented by
+// #perf-history just above doing the same thing for the FPS sparkline.
+// Reuses rotateXVec3/rotateYVec3 (see unprojectViewPointToObject above) with
+// the exact same rotation order renderCubeFrame's modelView applies
+// (Y then X) so the gizmo's orientation always matches the model's.
+const axisGizmoCanvas = document.getElementById('axis-gizmo');
+const axisGizmoCtx = axisGizmoCanvas.getContext('2d');
+const AXIS_GIZMO_DPR = Math.max(1, window.devicePixelRatio || 1);
+axisGizmoCanvas.width = axisGizmoCanvas.clientWidth * AXIS_GIZMO_DPR || axisGizmoCanvas.width;
+axisGizmoCanvas.height = axisGizmoCanvas.clientHeight * AXIS_GIZMO_DPR || axisGizmoCanvas.height;
+const AXIS_GIZMO_RADIUS = (axisGizmoCanvas.width / 2) * 0.68; // leaves room for the end labels within the canvas
+const AXIS_GIZMO_LINE_WIDTH = 2 * AXIS_GIZMO_DPR;
+const AXIS_GIZMO_FONT = `${11 * AXIS_GIZMO_DPR}px ui-monospace, monospace`;
+// Standard red/green/blue = X/Y/Z convention (Blender, Three.js editor,
+// etc.) — worth keeping even though this app uses green/red for unrelated
+// things elsewhere (flow parts, arrow guides), since it's what anyone
+// who's used a 3D tool before will already recognize at a glance.
+const AXIS_GIZMO_AXES = [
+  { dir: [1, 0, 0], label: 'X', color: '229, 57, 53' },
+  { dir: [0, 1, 0], label: 'Y', color: '67, 160, 71' },
+  { dir: [0, 0, 1], label: 'Z', color: '30, 136, 229' },
+];
+
+function drawAxisGizmo(rx, ry) {
+  const w = axisGizmoCanvas.width, h = axisGizmoCanvas.height;
+  const cx = w / 2, cy = h / 2;
+  axisGizmoCtx.clearRect(0, 0, w, h);
+
+  // Each axis contributes a near (behind, -dir) and far (in front, +dir)
+  // tip; painter's-algorithm sorted back-to-front by rotated depth (index 2)
+  // so nearer tips draw over farther ones, same cheap trick
+  // buildPivotOrbNDC's caller relies on for the real 3D scene's depth buffer
+  // — there's no actual depth buffer here since this is a flat 2D canvas.
+  const tips = [];
+  for (const axis of AXIS_GIZMO_AXES) {
+    const rotated = rotateXVec3(rotateYVec3(axis.dir, ry), rx);
+    tips.push({ ...axis, rotated, sign: 1 });
+    tips.push({ ...axis, rotated: rotated.map((v) => -v), sign: -1 });
+  }
+  tips.sort((a, b) => a.rotated[2] - b.rotated[2]);
+
+  for (const tip of tips) {
+    const tx = cx + tip.rotated[0] * AXIS_GIZMO_RADIUS;
+    const ty = cy - tip.rotated[1] * AXIS_GIZMO_RADIUS; // canvas Y is down, object-space Y is up
+    const alpha = tip.sign > 0 ? 1 : 0.35; // the -X/-Y/-Z tips read as faint stubs, not full axes
+    axisGizmoCtx.strokeStyle = `rgba(${tip.color}, ${alpha})`;
+    axisGizmoCtx.lineWidth = AXIS_GIZMO_LINE_WIDTH;
+    axisGizmoCtx.lineCap = 'round';
+    axisGizmoCtx.beginPath();
+    axisGizmoCtx.moveTo(cx, cy);
+    axisGizmoCtx.lineTo(tx, ty);
+    axisGizmoCtx.stroke();
+
+    if (tip.sign > 0) {
+      axisGizmoCtx.fillStyle = `rgba(${tip.color}, 1)`;
+      axisGizmoCtx.beginPath();
+      axisGizmoCtx.arc(tx, ty, 2.5 * AXIS_GIZMO_DPR, 0, Math.PI * 2);
+      axisGizmoCtx.fill();
+      axisGizmoCtx.font = AXIS_GIZMO_FONT;
+      axisGizmoCtx.textAlign = 'center';
+      axisGizmoCtx.textBaseline = 'middle';
+      const lx = cx + tip.rotated[0] * (AXIS_GIZMO_RADIUS + 11 * AXIS_GIZMO_DPR);
+      const ly = cy - tip.rotated[1] * (AXIS_GIZMO_RADIUS + 11 * AXIS_GIZMO_DPR);
+      axisGizmoCtx.fillText(tip.label, lx, ly);
+    }
+  }
+}
+
 function renderCubeFrame() {
   gl.viewport(0, 0, canvas.width, canvas.height);
   if (blueprintEnabled) {
@@ -2509,21 +2700,40 @@ function renderCubeFrame() {
       }
     }
 
-    // Pivot orb (see buildPivotOrbNDC above): object-space location of the
-    // point drag/hover rotation and zoom pivot around — the model's own
-    // center offset by the inverse of the current pan (see
-    // getObjectSpacePan's comment for why that's the pivot), or the active
-    // camera target's centroid when one's selected, since that's what
-    // camera-target mode locks to screen-center instead.
+    // Pivot orb + floor guide (see buildPivotOrbNDC/buildDashedLineNDC
+    // above): object-space location of the point drag/hover rotation and
+    // zoom pivot around — the model's own center offset by the inverse of
+    // the current pan (see getObjectSpacePan's comment for why that's the
+    // pivot), or the active camera target's centroid when one's selected,
+    // since that's what camera-target mode locks to screen-center instead.
     {
       const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
       const pivotObj = activeTargetName ? cameraTargetCurrent : [-panX / s, -panY / s, -panZ / s];
+      gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
+      gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
+
+      // Dashed line down to the floor (object-space Y=0), skipped once the
+      // pivot's basically already on it — a near-zero-length dashed line is
+      // just visual noise.
+      if (Math.abs(pivotObj[1]) > 1e-4) {
+        const floorObj = [pivotObj[0], 0, pivotObj[2]];
+        const dashes = buildDashedLineNDC(
+          pivotObj, floorObj, combined, canvas.width, canvas.height,
+          PIVOT_FLOOR_LINE_HALF_WIDTH_PX, PIVOT_FLOOR_DASH_LENGTH_PX, PIVOT_FLOOR_DASH_GAP_PX,
+        );
+        gl.bindBuffer(gl.ARRAY_BUFFER, pivotFloorLineBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, dashes, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(aLinePosition);
+        gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+        gl.disableVertexAttribArray(aLineColor);
+        gl.vertexAttrib3f(aLineColor, PIVOT_FLOOR_LINE_COLOR[0], PIVOT_FLOOR_LINE_COLOR[1], PIVOT_FLOOR_LINE_COLOR[2]);
+        gl.drawArrays(gl.TRIANGLES, 0, dashes.length / 3);
+      }
+
       const cx = combined[0] * pivotObj[0] + combined[4] * pivotObj[1] + combined[8] * pivotObj[2] + combined[12];
       const cy = combined[1] * pivotObj[0] + combined[5] * pivotObj[1] + combined[9] * pivotObj[2] + combined[13];
       const cz = combined[2] * pivotObj[0] + combined[6] * pivotObj[1] + combined[10] * pivotObj[2] + combined[14];
       const orb = buildPivotOrbNDC([cx, cy, cz], canvas.width, canvas.height, PIVOT_ORB_RADIUS_PX);
-      gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
-      gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
       gl.bindBuffer(gl.ARRAY_BUFFER, pivotOrbBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, orb, gl.DYNAMIC_DRAW);
       gl.enableVertexAttribArray(aLinePosition);
@@ -2533,6 +2743,8 @@ function renderCubeFrame() {
       gl.drawArrays(gl.TRIANGLES, 0, orb.length / 6);
     }
   }
+
+  drawAxisGizmo(rx, ry);
 }
 
 // Dynamic resolution scaling: canvas's WebGL backing store renders at up to
@@ -2588,12 +2800,17 @@ function isGreenDominant(r, g, b) {
 // aFillPattern / fillPatternUV) by name rather than by color, so it doesn't
 // collide with GREEN_DOMINANCE_MARGIN or any other color-based rule — in
 // Blender, assign the target face(s) a material named "Hatch", "Dot"
-// (or "Dots"), or "Plus" (or "Cross") — case-insensitive — and it'll come
-// through here as pattern 1, 2, or 3 respectively; anything else is 0 (no
-// fill pattern). Each has its own frequency (and, for dots/plus, size)
-// control, but all three share the same fill color — see uHatchLineColor.
+// (or "Dots"), or "Plus" (or "Cross") — case-insensitive, and tolerant of
+// Blender's ".001"-style de-dupe suffixes — and it'll come through here as
+// pattern 1, 2, or 3 respectively; anything else is 0 (no fill pattern).
+// Each has its own frequency (and, for dots/plus, size) control, but all
+// three share the same fill color — see uHatchLineColor.
 function materialFillPatternId(name) {
-  const trimmed = name.trim().toLowerCase();
+  // Blender appends ".001", ".002", etc. to de-duplicate material names when
+  // appending/merging scenes that each define their own "Hatch"/"Dot"/"Plus"
+  // material — strip that suffix before matching so e.g. a merged file's
+  // "Hatch.003" still resolves the same as a plain "Hatch".
+  const trimmed = name.trim().toLowerCase().replace(/\.\d{3}$/, '');
   if (trimmed === 'hatch') return 1;
   if (trimmed === 'dot' || trimmed === 'dots') return 2;
   if (trimmed === 'plus' || trimmed === 'cross') return 3;
