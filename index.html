@@ -33,15 +33,26 @@
     font-size: 11px;
     line-height: 1.4;
     font-variant-numeric: tabular-nums;
-    white-space: pre;
     pointer-events: none;
     user-select: none;
+  }
+  #perf-monitor-text {
+    white-space: pre;
+  }
+  #perf-history {
+    display: block;
+    width: 140px;
+    height: 32px;
+    margin-top: 6px;
   }
 </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
-  <div id="perf-monitor"></div>
+  <div id="perf-monitor">
+    <div id="perf-monitor-text"></div>
+    <canvas height="32" id="perf-history" width="140"></canvas>
+  </div>
   <div id="react-controls-root"></div>
   <script type="module" src="/src/main.tsx"></script>
   <script type="module" src="/main.js"></script>

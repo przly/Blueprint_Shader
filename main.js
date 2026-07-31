@@ -2359,12 +2359,83 @@ function materialFillPatternId(name) {
 // panel/state, since that updates every frame — funneling it through React
 // state would mean a full component re-render 60 times a second for a
 // display the panel itself has no other reason to know about.
-const perfMonitorEl = document.getElementById('perf-monitor');
+const perfMonitorEl = document.getElementById('perf-monitor-text');
 const PERF_DISPLAY_UPDATE_MS = 250; // readable refresh rate; measurement itself is still per-frame
 let perfLastFrameTime = performance.now();
 let perfFrameCount = 0;
 let perfFrameTimeSum = 0;
 let perfLastDisplayUpdate = perfLastFrameTime;
+
+// Rolling FPS sparkline (last 10s) — one point per display update, so a
+// dropped-frame stretch shows up as a visible dip instead of getting
+// smoothed away by the running min/max text above it.
+const perfHistoryCanvas = document.getElementById('perf-history');
+const perfHistoryCtx = perfHistoryCanvas.getContext('2d');
+const PERF_HISTORY_WINDOW_MS = 10000;
+const PERF_HISTORY_DPR = Math.max(1, window.devicePixelRatio || 1);
+perfHistoryCanvas.width = perfHistoryCanvas.clientWidth * PERF_HISTORY_DPR || perfHistoryCanvas.width;
+perfHistoryCanvas.height = perfHistoryCanvas.clientHeight * PERF_HISTORY_DPR || perfHistoryCanvas.height;
+let perfHistory = []; // { time, fps }[], oldest first
+
+function drawPerfHistory() {
+  const w = perfHistoryCanvas.width;
+  const h = perfHistoryCanvas.height;
+  perfHistoryCtx.clearRect(0, 0, w, h);
+  if (perfHistory.length < 2) return;
+
+  const now = perfHistory[perfHistory.length - 1].time;
+  const windowStart = now - PERF_HISTORY_WINDOW_MS;
+  // Ceiling follows the session's peak (at least the 60fps target) so the
+  // chart stays meaningful on both capped-60 and high-refresh displays,
+  // while a fixed floor of 0 keeps drop severity visually comparable.
+  const ceiling = Math.max(60, perfMaxFps === -Infinity ? 60 : perfMaxFps);
+  const x = (t) => ((t - windowStart) / PERF_HISTORY_WINDOW_MS) * w;
+  const y = (fps) => h - (Math.min(fps, ceiling) / ceiling) * h;
+
+  // 60fps target reference line.
+  perfHistoryCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+  perfHistoryCtx.lineWidth = 1;
+  perfHistoryCtx.setLineDash([2 * PERF_HISTORY_DPR, 2 * PERF_HISTORY_DPR]);
+  perfHistoryCtx.beginPath();
+  const targetY = Math.round(y(60)) + 0.5;
+  perfHistoryCtx.moveTo(0, targetY);
+  perfHistoryCtx.lineTo(w, targetY);
+  perfHistoryCtx.stroke();
+  perfHistoryCtx.setLineDash([]);
+
+  // Filled area under the line, tinted red wherever a point drops below
+  // the target — the fill (not just the line) is what makes a brief dip
+  // readable at a glance in a 140x32 sparkline.
+  perfHistoryCtx.beginPath();
+  perfHistoryCtx.moveTo(x(perfHistory[0].time), h);
+  for (const point of perfHistory) perfHistoryCtx.lineTo(x(point.time), y(point.fps));
+  perfHistoryCtx.lineTo(x(perfHistory[perfHistory.length - 1].time), h);
+  perfHistoryCtx.closePath();
+  perfHistoryCtx.fillStyle = 'rgba(120, 220, 255, 0.18)';
+  perfHistoryCtx.fill();
+
+  perfHistoryCtx.lineWidth = 1.5 * PERF_HISTORY_DPR;
+  perfHistoryCtx.lineJoin = 'round';
+  perfHistoryCtx.beginPath();
+  perfHistory.forEach((point, i) => {
+    const px = x(point.time);
+    const py = y(point.fps);
+    if (i === 0) perfHistoryCtx.moveTo(px, py);
+    else perfHistoryCtx.lineTo(px, py);
+  });
+  perfHistoryCtx.strokeStyle = 'rgba(120, 220, 255, 0.9)';
+  perfHistoryCtx.stroke();
+
+  // Mark every below-target sample with a dot (not just runs of them) so a
+  // single dropped frame is still visible in a sparkline this dense.
+  perfHistoryCtx.fillStyle = 'rgba(255, 90, 90, 0.9)';
+  for (const point of perfHistory) {
+    if (point.fps >= 60) continue;
+    perfHistoryCtx.beginPath();
+    perfHistoryCtx.arc(x(point.time), y(point.fps), 1.5 * PERF_HISTORY_DPR, 0, Math.PI * 2);
+    perfHistoryCtx.fill();
+  }
+}
 // Session-long min/max (since page load), shown next to each current
 // reading so a viewer can see the actual observed range, not just the
 // instantaneous value — e.g. a brief stall during a model upload shows up
@@ -2445,6 +2516,12 @@ function recordAndDisplayFrameTiming(now) {
       `${fps.toFixed(0)} FPS (${perfMinFps.toFixed(0)}–${perfMaxFps.toFixed(0)})\n` +
       `${avgFrameMs.toFixed(1)} ms (${perfMinMs.toFixed(1)}–${perfMaxMs.toFixed(1)})\n` +
       `${Math.round(renderScale * 100)}% res`;
+
+    perfHistory.push({ time: now, fps });
+    const historyStart = now - PERF_HISTORY_WINDOW_MS;
+    while (perfHistory.length > 0 && perfHistory[0].time < historyStart) perfHistory.shift();
+    drawPerfHistory();
+
     perfLastDisplayUpdate = now;
     perfFrameCount = 0;
     perfFrameTimeSum = 0;
