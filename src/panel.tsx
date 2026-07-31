@@ -784,6 +784,24 @@ export function Panel() {
                 </div>
               </Slider>
             </Field>
+
+            <Field>
+              <Slider
+                max={state.flowSpeedMax}
+                min={state.flowSpeedMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const speed = value as number;
+                  controls.setFlowSpeedPercent(speed);
+                  setState((s) => ({ ...s, flowSpeed: speed }));
+                }}
+                value={state.flowSpeed}
+              >
+                <div className="mb-3 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Flow speed</FieldLabel>
+                  <SliderValue className="text-xs text-muted-foreground" />
+                </div>
+              </Slider>
+            </Field>
           </div>
         </div>
       )}
