@@ -52,7 +52,7 @@ function useRevealPhase(visible: boolean, closeMs: number): RevealPhase {
 }
 
 type TextSwapPhase = "rest" | "exit" | "enterStart";
-const TEXT_SWAP_MS = 80; // keep in sync with --text-swap-dur in index.css
+const TEXT_SWAP_MS = 50; // keep in sync with --text-swap-dur in index.css
 
 // Three-phase text/state swap (transitions.dev, 04-text-states-swap.md):
 // exit the old value (blur + slide up + fade), swap to the new value while
@@ -249,8 +249,9 @@ export function Panel() {
             <span
               className={cn(
                 "t-text-swap",
-                spaceIndicator.phase === "exit" && "is-exit",
-                spaceIndicator.phase === "enterStart" && "is-enter-start",
+                spaceIndicator.phase === "exit" && (state.spaceHeld ? "is-exit-up" : "is-exit-down"),
+                spaceIndicator.phase === "enterStart" &&
+                  (state.spaceHeld ? "is-enter-from-bottom" : "is-enter-from-top"),
               )}
             >
               {spaceIndicator.displayed ? "Release to enter rotation mode" : "Press space to move"}

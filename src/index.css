@@ -317,12 +317,15 @@
 }
 
 /* transitions.dev — text states swap (04-text-states-swap.md), used by the
-   space-bar indicator pill's label (src/panel.tsx): the old label exits up
-   with a blur, the new one enters from below once swapped in while hidden.
+   space-bar indicator pill's label (src/panel.tsx): the old label exits with
+   a blur, the new one enters once swapped in while hidden. Direction mirrors
+   the space-bar action itself — pressing space slides the label up (-up
+   variants), releasing it slides the label back down (-down variants), so
+   the swap direction reverses along with the key.
    ease-out (not the reference snippet's ease-in-out) since this is an
    enter/exit, not an on-screen move — see AUDIT.md's easing decision order. */
 :root {
-  --text-swap-dur: 80ms;
+  --text-swap-dur: 50ms;
   --text-swap-translate-y: 4px;
   --text-swap-blur: 2px;
   --text-swap-ease: ease-out;
@@ -338,13 +341,24 @@
     opacity   var(--text-swap-dur) var(--text-swap-ease);
   will-change: transform, filter, opacity;
 }
-.t-text-swap.is-exit {
+.t-text-swap.is-exit-up {
   transform: translateY(calc(var(--text-swap-translate-y) * -1));
   filter: blur(var(--text-swap-blur));
   opacity: 0;
 }
-.t-text-swap.is-enter-start {
+.t-text-swap.is-exit-down {
   transform: translateY(var(--text-swap-translate-y));
+  filter: blur(var(--text-swap-blur));
+  opacity: 0;
+}
+.t-text-swap.is-enter-from-bottom {
+  transform: translateY(var(--text-swap-translate-y));
+  filter: blur(var(--text-swap-blur));
+  opacity: 0;
+  transition: none;
+}
+.t-text-swap.is-enter-from-top {
+  transform: translateY(calc(var(--text-swap-translate-y) * -1));
   filter: blur(var(--text-swap-blur));
   opacity: 0;
   transition: none;
@@ -425,8 +439,10 @@
     transform: none !important;
     filter: none !important;
   }
-  .t-text-swap.is-exit,
-  .t-text-swap.is-enter-start {
+  .t-text-swap.is-exit-up,
+  .t-text-swap.is-exit-down,
+  .t-text-swap.is-enter-from-bottom,
+  .t-text-swap.is-enter-from-top {
     transform: none !important;
     filter: none !important;
   }
