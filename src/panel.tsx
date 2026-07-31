@@ -241,7 +241,7 @@ export function Panel() {
                   (state.spaceHeld ? "is-enter-from-bottom" : "is-enter-from-top"),
               )}
             >
-              {spaceIndicator.displayed ? "Release to enter rotation mode" : "Press space to move around"}
+              {spaceIndicator.displayed ? "Release to return to default view" : "Press space for bird's-eye view"}
             </span>
           </div>
         </div>
@@ -391,51 +391,53 @@ export function Panel() {
               <div className="flex flex-col gap-6">
                 <Separator />
                 <h2 className="font-semibold text-base text-foreground">Camera Targets</h2>
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-4">
                   {[0, 1, 2].map((slotIndex) => (
-                    <div className="flex items-center gap-2" key={slotIndex}>
-                      <span className="w-14 shrink-0 text-muted-foreground text-xs">Target {slotIndex + 1}</span>
-                      <select
-                        className="h-7 flex-1 rounded-md border border-border bg-background px-2 text-xs"
-                        onChange={(event) => {
-                          const objectName = event.target.value || null;
-                          controls.setCameraTargetSlot(slotIndex, objectName);
-                          setState((s) => {
-                            const cameraTargetSlots = [...s.cameraTargetSlots];
-                            cameraTargetSlots[slotIndex] = objectName;
-                            return { ...s, cameraTargetSlots };
-                          });
-                        }}
-                        value={state.cameraTargetSlots?.[slotIndex] ?? ""}
-                      >
-                        <option value="">— none —</option>
-                        {(state.customModelObjectNames ?? []).map((name: string) => (
-                          <option key={name} value={name}>
-                            {name}
-                          </option>
-                        ))}
-                      </select>
-                      <Button
-                        className="transition-[color,background-color,border-color,box-shadow] duration-150"
-                        disabled={!state.cameraTargetSlots?.[slotIndex]}
-                        onClick={() => {
-                          controls.goToCameraTarget(slotIndex);
-                          setState((s) => ({ ...s, cameraTargetActiveIndex: slotIndex }));
-                        }}
-                        onPointerDown={() => goIconRefs.current[slotIndex]?.startAnimation()}
-                        onPointerLeave={() => goIconRefs.current[slotIndex]?.stopAnimation()}
-                        onPointerUp={() => goIconRefs.current[slotIndex]?.stopAnimation()}
-                        size="xs"
-                        variant={state.cameraTargetActiveIndex === slotIndex ? "default" : "outline"}
-                      >
-                        Go
-                        <ArrowBigRightDashIcon
-                          className="size-3"
-                          ref={(el) => {
-                            goIconRefs.current[slotIndex] = el;
+                    <div className="flex flex-col gap-1.5" key={slotIndex}>
+                      <span className="text-muted-foreground text-xs">Target {slotIndex + 1}</span>
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="h-7 min-w-0 flex-1 truncate rounded-md border border-border bg-background px-2 text-xs"
+                          onChange={(event) => {
+                            const objectName = event.target.value || null;
+                            controls.setCameraTargetSlot(slotIndex, objectName);
+                            setState((s) => {
+                              const cameraTargetSlots = [...s.cameraTargetSlots];
+                              cameraTargetSlots[slotIndex] = objectName;
+                              return { ...s, cameraTargetSlots };
+                            });
                           }}
-                        />
-                      </Button>
+                          value={state.cameraTargetSlots?.[slotIndex] ?? ""}
+                        >
+                          <option value="">— none —</option>
+                          {(state.customModelObjectNames ?? []).map((name: string) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          className="shrink-0 transition-[color,background-color,border-color,box-shadow] duration-150"
+                          disabled={!state.cameraTargetSlots?.[slotIndex]}
+                          onClick={() => {
+                            controls.goToCameraTarget(slotIndex);
+                            setState((s) => ({ ...s, cameraTargetActiveIndex: slotIndex }));
+                          }}
+                          onPointerDown={() => goIconRefs.current[slotIndex]?.startAnimation()}
+                          onPointerLeave={() => goIconRefs.current[slotIndex]?.stopAnimation()}
+                          onPointerUp={() => goIconRefs.current[slotIndex]?.stopAnimation()}
+                          size="xs"
+                          variant={state.cameraTargetActiveIndex === slotIndex ? "default" : "outline"}
+                        >
+                          Go
+                          <ArrowBigRightDashIcon
+                            className="size-3"
+                            ref={(el) => {
+                              goIconRefs.current[slotIndex] = el;
+                            }}
+                          />
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -674,7 +676,18 @@ export function Panel() {
               <Label className="gap-2.5 text-xs">
                 <Switch
                   checked={!!state.modelFlowDrawMode}
-                  onCheckedChange={(checked: boolean) => controls.setModelFlowDraw(checked)}
+                  onCheckedChange={(checked: boolean) => {
+                    controls.setModelFlowDraw(checked);
+                    // main.js resets position on enable, and disables
+                    // rotation again on disable — mirror that here too, same
+                    // as the dedicated "Reset position"/rotation controls do.
+                    setState((s) => ({
+                      ...s,
+                      modelOffsetX: checked ? 0 : s.modelOffsetX,
+                      modelOffsetY: checked ? 0 : s.modelOffsetY,
+                      rotationDisabled: checked ? s.rotationDisabled : true,
+                    }));
+                  }}
                 />
                 Draw flow arrow
               </Label>

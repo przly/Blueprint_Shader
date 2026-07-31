@@ -52,14 +52,17 @@ if (!localStorage.getItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY)) {
   localStorage.setItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY, '1');
 }
 
-// One-time migration: Space-to-pan now persists modelOffsetX/Y on every
-// drag (see schedulePanSync below), so any browser that was used to test it
-// likely has a stale panned-away position saved — same reasoning as the
-// migrations above, drop it once so the model position defaults back to 0,0.
+// One-time cleanup: the model's X/Y/Z position used to persist across
+// reloads (see modelOffsetXPercent etc.), but that meant a page reload could
+// reopen wherever a previous session's camera move/pan happened to leave
+// it — position is now always session-only, starting at 0 every load (see
+// modelOffsetXPercent's declaration), so any browser with an old persisted
+// value just has dead, never-read localStorage entries; drop them once.
 const MODEL_OFFSET_RESET_MIGRATION_KEY = 'iconMosaic.modelOffsetDefaultResetV1';
 if (!localStorage.getItem(MODEL_OFFSET_RESET_MIGRATION_KEY)) {
   localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetX');
   localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetY');
+  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'modelOffsetZ');
   localStorage.setItem(MODEL_OFFSET_RESET_MIGRATION_KEY, '1');
 }
 
@@ -790,19 +793,29 @@ function updateCubeProjection(aspect) {
 const CUBE_SCALE = (1 / 3) * 0.1;
 
 // Model's on-canvas X/Y position, as a slider value from -300 to 300 applied
-// as a view-space translate in renderCubeFrame (i.e. after rotation, so
-// panning always moves the model along screen axes regardless of its
-// current rotation). MODEL_POSITION_RANGE converts that value into
-// view-space units (divided by 100, so ±100 — a third of the slider's
-// travel — is where the offset just carries the model past the ortho
-// frustum's edge, i.e. CUBE_ORTHO_HALF_SIZE plus roughly the default-size
-// model's own half-extent); the rest of the range up to ±300 keeps panning
-// it well off-canvas.
+// as an object-space translate *inside* rotation in renderCubeFrame (i.e.
+// before rotation, so it's rigid with the model — see getObjectSpacePan for
+// why). MODEL_POSITION_RANGE converts that value into view-space units
+// (divided by 100, so ±100 — a third of the slider's travel — is where the
+// offset just carries the model past the ortho frustum's edge, i.e.
+// CUBE_ORTHO_HALF_SIZE plus roughly the default-size model's own
+// half-extent); the rest of the range up to ±300 keeps panning it well
+// off-canvas. Deliberately session-only (not persisted/restored via
+// localStorage like the other sliders) — always starts at 0,0 on a fresh
+// page load rather than reopening wherever a previous session's camera
+// move/pan happened to leave it.
 const MODEL_POSITION_MIN = -300;
 const MODEL_POSITION_MAX = 300;
 const MODEL_POSITION_RANGE = CUBE_ORTHO_HALF_SIZE * 1.2;
-let modelOffsetXPercent = restoreNumber('modelOffsetX', 0);
-let modelOffsetYPercent = restoreNumber('modelOffsetY', 0);
+let modelOffsetXPercent = 0;
+let modelOffsetYPercent = 0;
+// Third pan axis, same range/units/session-only persistence as X/Y — unused
+// by the default isometric view (there's no "Model Z position" slider), but
+// driven by vertical drag while the bird's-eye camera (Space held — see the
+// Space keydown handler) is active, since at a 90° top-down pitch it's this
+// axis, not Y, that reads as forward/back movement across the ground plane
+// on screen.
+let modelOffsetZPercent = 0;
 
 function clampModelPosition(percent) {
   return Math.max(MODEL_POSITION_MIN, Math.min(MODEL_POSITION_MAX, percent));
@@ -811,20 +824,25 @@ function clampModelPosition(percent) {
 function setModelOffsetXPercent(percent) {
   const clamped = clampModelPosition(percent);
   modelOffsetXPercent = clamped;
-  persistNumber('modelOffsetX', clamped);
   return clamped;
 }
 
 function setModelOffsetYPercent(percent) {
   const clamped = clampModelPosition(percent);
   modelOffsetYPercent = clamped;
-  persistNumber('modelOffsetY', clamped);
+  return clamped;
+}
+
+function setModelOffsetZPercent(percent) {
+  const clamped = clampModelPosition(percent);
+  modelOffsetZPercent = clamped;
   return clamped;
 }
 
 function resetModelPosition() {
   setModelOffsetXPercent(0);
   setModelOffsetYPercent(0);
+  setModelOffsetZPercent(0);
 }
 
 // Shared by renderCubeFrame and raycastGreenMesh's unprojection so the two
@@ -832,7 +850,11 @@ function resetModelPosition() {
 // translate the render pass applies, or drawing on a panned model would hit
 // the wrong spot.
 function getModelViewOffset() {
-  return [(modelOffsetXPercent / 100) * MODEL_POSITION_RANGE, (modelOffsetYPercent / 100) * MODEL_POSITION_RANGE];
+  return [
+    (modelOffsetXPercent / 100) * MODEL_POSITION_RANGE,
+    (modelOffsetYPercent / 100) * MODEL_POSITION_RANGE,
+    (modelOffsetZPercent / 100) * MODEL_POSITION_RANGE,
+  ];
 }
 
 // Camera depth in view space — how far back the "camera" sits from the
@@ -855,35 +877,46 @@ let cameraOffsetZ = -5;
 const CUBE_ISO_YAW = Math.PI / 4;
 const CUBE_ISO_PITCH = Math.atan(1 / Math.SQRT2);
 
+// Bird's-eye camera: straight down (90° pitch) with yaw reset to 0, used
+// while Space is held (see the Space keydown/keyup handlers below) so the
+// user can fly over and navigate the scene from directly above. Yaw is
+// zeroed (not left at whatever it currently is) specifically so the ground
+// plane isn't left sitting at a diagonal — with no yaw, object-space X and Z
+// map cleanly onto screen-horizontal and screen-vertical, which is what lets
+// the Space-drag pan below move along X/Z (ground-plane, "left/right" and
+// "up/down through the scene") instead of the default view's X/Y.
+const CUBE_BIRDSEYE_YAW = 0;
+const CUBE_BIRDSEYE_PITCH = Math.PI / 2;
+
 let cubeRotX = CUBE_ISO_PITCH;
 let cubeRotY = CUBE_ISO_YAW;
 let cubeDragging = false;
 let cubeLastPointer = null;
 
-// Space-to-pan: holding Space and dragging moves the model on the view's X/Y
-// plane (via the same modelOffsetXPercent/YPercent the "Model X/Y position"
-// sliders drive — see setModelOffsetXPercent/YPercent below) instead of
-// rotating it, regardless of whether click-drag rotation is enabled. Takes
-// priority over rotation-drag while held (see the pointerdown handler below).
+// Space-to-fly: holding Space rises into a bird's-eye view (see
+// tweenCubeRotationTo/CUBE_BIRDSEYE_PITCH below) and dragging moves the
+// model on the ground plane (modelOffsetXPercent/ZPercent — X has its own
+// "Model X position" slider, Z has none since it's bird's-eye-only) instead
+// of rotating it, regardless of whether click-drag rotation is enabled.
+// Takes priority over rotation-drag while held (see the pointerdown handler
+// below).
 let spaceHeld = false;
 let panDragging = false;
 let panLastPointer = null;
 let panSyncRAF = null; // see schedulePanSync below
 
-// setModelOffsetXPercent/YPercent do a synchronous localStorage write plus a
-// full panel re-render on every call — fine for the sliders (one call per
-// user action), but calling them on every single pointermove while panning
-// made the drag visibly janky, since a pointer can fire many move events per
-// rendered frame. Panning instead mutates the raw percent variables directly
-// (cheap) and batches the persist+notify side effects to once per animation
-// frame via this, with pointerup doing one final synchronous flush so the
-// panel/localStorage never lag behind once the drag actually stops.
+// setModelOffsetXPercent/YPercent/ZPercent trigger a full panel re-render on
+// every call — fine for the sliders (one call per user action), but calling
+// them on every single pointermove while panning made the drag visibly
+// janky, since a pointer can fire many move events per rendered frame.
+// Panning instead mutates the raw percent variables directly (cheap) and
+// batches the panel notify to once per animation frame via this, with
+// pointerup doing one final synchronous flush so the panel never lags
+// behind once the drag actually stops.
 function schedulePanSync() {
   if (panSyncRAF !== null) return;
   panSyncRAF = requestAnimationFrame(() => {
     panSyncRAF = null;
-    persistNumber('modelOffsetX', modelOffsetXPercent);
-    persistNumber('modelOffsetY', modelOffsetYPercent);
     notifyModelState();
   });
 }
@@ -892,8 +925,6 @@ function flushPanSync() {
     cancelAnimationFrame(panSyncRAF);
     panSyncRAF = null;
   }
-  persistNumber('modelOffsetX', modelOffsetXPercent);
-  persistNumber('modelOffsetY', modelOffsetYPercent);
   notifyModelState();
 }
 
@@ -910,18 +941,22 @@ let cubeParallaxTargetY = 0;
 let cubeParallaxX = 0;
 let cubeParallaxY = 0;
 
-// Snaps the model back to its default framed angle — both the drag rotation
+// Tweens the model to a given rotation angle — both the drag rotation
 // (cubeRotX/Y) and the ambient parallax tilt (cubeParallaxX/Y and its
-// target). Animated as a fast ease (see the tween applied in
-// renderCubeFrame) rather than an instant jump, so it reads as a deliberate
-// snap instead of a jarring cut. Shared by the "Reset rotation" button,
-// enabling "Pause hover movement" below, and Space down/up (see the
-// keydown/keyup handlers below).
+// target) ease toward the target/zero respectively. Animated as a fast ease
+// (see the tween applied in renderCubeFrame) rather than an instant jump, so
+// it reads as a deliberate snap instead of a jarring cut. Used both for
+// snapping back to the default framed angle (resetCubeRotation, below —
+// shared by the "Reset rotation" button, enabling "Pause hover movement",
+// Shift+R, and Space-up) and for rising into the bird's-eye view on
+// Space-down (see the keydown/keyup handlers below).
 const CUBE_ROT_RESET_MS = 180; // fast — quicker than the modal open duration, barely more than a frame or two of "not instant"
 let cubeRotResetStartTime = null;
-let cubeRotResetFrom = null; // { rotX, rotY, parX, parY, parTargetX, parTargetY } snapshot taken at reset time
+let cubeRotResetFrom = null; // { rotX, rotY, parX, parY, parTargetX, parTargetY } snapshot taken at tween start
+let cubeRotResetTargetX = CUBE_ISO_PITCH;
+let cubeRotResetTargetY = CUBE_ISO_YAW;
 
-function resetCubeRotation() {
+function tweenCubeRotationTo(targetRotX, targetRotY) {
   cubeRotResetFrom = {
     rotX: cubeRotX,
     rotY: cubeRotY,
@@ -930,7 +965,13 @@ function resetCubeRotation() {
     parTargetX: cubeParallaxTargetX,
     parTargetY: cubeParallaxTargetY,
   };
+  cubeRotResetTargetX = targetRotX;
+  cubeRotResetTargetY = targetRotY;
   cubeRotResetStartTime = performance.now();
+}
+
+function resetCubeRotation() {
+  tweenCubeRotationTo(CUBE_ISO_PITCH, CUBE_ISO_YAW);
 }
 
 // "Pause hover movement" control: freezes the ambient parallax tilt so the
@@ -959,10 +1000,12 @@ function setRotationDisabled(value) {
 
 updateCubeCursor();
 
-// Held Space overrides whatever cursor/tool state rotation-drag would
-// otherwise show, same as the space-pan idiom in Figma/Photoshop. Guarded
-// against inputs/textareas/selects so it doesn't fight typing a value into a
-// slider or the model-name select, and preventDefault stops the page from
+// Held Space rises into a bird's-eye view (straight-down pitch, zero yaw —
+// see CUBE_BIRDSEYE_PITCH/YAW) to fly over and navigate the scene, same
+// spirit as the space-pan idiom in Figma/Photoshop but repurposed for a
+// top-down look instead of a same-angle pan. Guarded against
+// inputs/textareas/selects so it doesn't fight typing a value into a slider
+// or the model-name select, and preventDefault stops the page from
 // scrolling (there's normally nothing to scroll, but also stops Space from
 // re-clicking whatever button last had focus).
 window.addEventListener('keydown', (event) => {
@@ -971,19 +1014,20 @@ window.addEventListener('keydown', (event) => {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   event.preventDefault();
   spaceHeld = true;
-  resetCubeRotation(); // start every pan from the default framed angle, not wherever drag/hover left it
+  tweenCubeRotationTo(CUBE_BIRDSEYE_PITCH, CUBE_BIRDSEYE_YAW);
   if (!cubeDragging) updateCubeCursor();
   notifyModelState(); // panel's "Press space to move" indicator flips to "Release to enter rotation mode"
 });
 window.addEventListener('keyup', (event) => {
   if (event.code !== 'Space') return;
   spaceHeld = false;
-  resetCubeRotation(); // settle back to the framed angle on release too, same fast ease as the down-press
+  resetCubeRotation(); // back down to the default framed angle, same fast ease as the rise on Space-down
   if (!panDragging) updateCubeCursor();
   notifyModelState();
 });
 // Dropping focus (e.g. alt-tabbing away) mid-hold never fires a matching
-// keyup — without this, spaceHeld/panDragging could get stuck on.
+// keyup — without this, spaceHeld/panDragging could get stuck on, and the
+// camera could get stranded up in the bird's-eye view.
 window.addEventListener('blur', () => {
   const wasSpaceHeld = spaceHeld;
   spaceHeld = false;
@@ -991,8 +1035,52 @@ window.addEventListener('blur', () => {
     panDragging = false;
     flushPanSync();
   }
-  if (wasSpaceHeld) notifyModelState();
+  if (wasSpaceHeld) {
+    resetCubeRotation();
+    notifyModelState();
+  }
   updateCubeCursor();
+});
+
+// Held R is a quick, temporary "enable rotation" shortcut — click-drag
+// rotation turns on for as long as it's held and back off the moment it's
+// released, regardless of whatever the panel's "Disable rotation" switch is
+// set to. Unlike Space, it never resets rotation on its own — pressing or
+// releasing R always leaves the model at whatever angle it was already at.
+// rKeyHeld (separate from rotationDisabled itself) exists purely to ignore
+// keyboard auto-repeat's duplicate keydown events while held.
+let rKeyHeld = false;
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyR') return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  // Shift+R is a one-shot "reset orientation to default" shortcut,
+  // independent of the plain-R hold-to-rotate gesture below.
+  if (event.shiftKey) {
+    event.preventDefault();
+    resetCubeRotation();
+    return;
+  }
+  if (rKeyHeld) return;
+  rKeyHeld = true;
+  setRotationDisabled(false);
+  notifyModelState();
+});
+window.addEventListener('keyup', (event) => {
+  if (event.code !== 'KeyR' || !rKeyHeld) return;
+  rKeyHeld = false;
+  setRotationDisabled(true);
+  // Unlike Space, releasing R does NOT reset rotation — whatever angle the
+  // user left it at while rotating should stick.
+  notifyModelState();
+});
+// Same reasoning as the Space blur handler above — alt-tabbing away mid-hold
+// never fires a matching keyup.
+window.addEventListener('blur', () => {
+  if (!rKeyHeld) return;
+  rKeyHeld = false;
+  setRotationDisabled(true);
+  notifyModelState();
 });
 
 canvas.addEventListener('pointerdown', (event) => {
@@ -1013,17 +1101,22 @@ window.addEventListener('pointermove', (event) => {
   if (panDragging) {
     // 1:1 with the cursor: convert the pixel delta to view-space units via
     // the ortho frustum's actual on-screen size, then to the same percent
-    // scale setModelOffsetXPercent/YPercent (and the panel's sliders) use.
-    // View-space +Y is up (see raycastGreenMesh's NDC conversion below), so
-    // dragging down (+clientY) has to *subtract* from the Y offset to make
-    // the model follow the cursor instead of moving the opposite way.
+    // scale setModelOffsetXPercent/ZPercent (and MODEL_POSITION_RANGE) use.
+    // This only ever runs while the bird's-eye camera is active (Space
+    // held — see the keydown handler above), looking straight down with
+    // zero yaw, so screen-horizontal drag maps to object-space X and
+    // screen-vertical drag maps to object-space Z (the ground plane's other
+    // axis) rather than Y, which at a 90° pitch would move things in depth,
+    // not across the screen. Dragging right adds to X the same way it
+    // always has; dragging down adds to Z (opposite sign from the old Y
+    // mapping) to make the ground follow the cursor instead of the camera.
     const dxPix = event.clientX - panLastPointer.x;
     const dyPix = event.clientY - panLastPointer.y;
     panLastPointer = { x: event.clientX, y: event.clientY };
     const percentPerPixelX = ((cubeProjectionHalfX * 2) / window.innerWidth) * (100 / MODEL_POSITION_RANGE);
     const percentPerPixelY = ((cubeProjectionHalfY * 2) / window.innerHeight) * (100 / MODEL_POSITION_RANGE);
     modelOffsetXPercent = clampModelPosition(modelOffsetXPercent + dxPix * percentPerPixelX);
-    modelOffsetYPercent = clampModelPosition(modelOffsetYPercent - dyPix * percentPerPixelY);
+    modelOffsetZPercent = clampModelPosition(modelOffsetZPercent + dyPix * percentPerPixelY);
     schedulePanSync();
     return;
   }
@@ -1036,11 +1129,12 @@ window.addEventListener('pointermove', (event) => {
   // Keep the model perfectly still while tracing an arrow onto it, or while
   // trying to click one precisely in select mode — ambient parallax tilt
   // shifting the surface under the cursor would make either one hard to do.
-  // Also suspended for as long as Space is held (spaceHeld covers both the
-  // pre-drag hold and the pan-drag itself) so it doesn't fight the manual
-  // pan; it simply stops updating its target rather than resetting, so it
-  // resumes smoothly from wherever it was once Space is released.
-  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld) return;
+  // Also suspended for as long as Space or R is held (spaceHeld covers both
+  // the pre-drag hold and the pan-drag itself, rKeyHeld the same for
+  // rotate-drag) so neither fights the manual pan/rotate; it simply stops
+  // updating its target rather than resetting, so it resumes smoothly from
+  // wherever it was once the key is released.
+  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
   cubeParallaxTargetY = nx * CUBE_PARALLAX_MAX_RAD;
@@ -1373,6 +1467,7 @@ const CAMERA_TARGET_ZOOM_MAX = 5;
 function getModelState() {
   return {
     spaceHeld,
+    rotationDisabled,
     customModelReady,
     useCustomModel,
     cubeModelStatus,
@@ -1437,7 +1532,7 @@ let greenTriObjectIndexCache = null; // one entry per green triangle, parallel t
 // Uploads an already-parsed model (see parseObj) to the custom-model GPU
 // buffers and flips on the "use custom model" toggle. Shared by the file
 // picker and drag-and-drop paths (see loadModelFromFiles below).
-function applyParsedModel(parsed, objName, mtlName) {
+function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null, null, null]) {
   if (!parsed) {
     customModelReady = false;
     useCustomModel = false;
@@ -1469,9 +1564,12 @@ function applyParsedModel(parsed, objName, mtlName) {
   customModelLinePositionsCache = parsed.linePositions;
 
   // A newly loaded model's object names/centroids have nothing to do with
-  // whatever the previous model's camera-target assignments pointed at.
+  // whatever the previous model's camera-target assignments pointed at —
+  // defaultCameraTargets (only ever passed by loadBundledDefaultModel, since
+  // it's the only caller that knows its model's object names up front) seeds
+  // fresh slots instead of leaving them empty.
   customModelObjects = parsed.objects;
-  cameraTargetSlots = [null, null, null];
+  cameraTargetSlots = [...defaultCameraTargets];
   cameraTargetActiveIndex = null;
   cameraTargetCurrent = [0, 0, 0];
   cameraTargetZoomCurrent = 1;
@@ -1552,7 +1650,7 @@ async function loadBundledDefaultModel() {
     // size. This shrinks the model itself, independent of the "Model size"
     // slider, which still starts at its usual 100%.
     const parsed = parseObj(objText, materials, 0.35);
-    applyParsedModel(parsed, 'for_home.obj', 'for_home.mtl');
+    applyParsedModel(parsed, 'for_home.obj', 'for_home.mtl', ['EV_Charger_Body', 'EV_Car_01_Body', 'House_01_Primary']);
     applyDefaultModelFlowPath();
   } catch (err) {
     console.error(err);
@@ -1605,7 +1703,7 @@ const DEFAULT_MODEL_FLOW_PATH_DATA = [];
 const MODEL_FLOW_MIN_POINT_SPACING = 0.03; // object-space units — only record a new drag sample once the hit point has moved this far
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
 const MODEL_FLOW_ARROW_COLOR = [1, 0, 0]; // bright red guide line for unselected/dragged arrow overlays
-const MODEL_FLOW_ARROW_SELECTED_COLOR = [1, 0.85, 0.15]; // amber highlight for the currently selected arrow
+const MODEL_FLOW_ARROW_SELECTED_COLOR = [0.15, 0.55, 1]; // blue highlight for the currently selected arrow
 const MODEL_FLOW_ARROW_HALF_WIDTH_PX = 5; // half-width of the ribbon built in buildArrowRibbonNDC below
 // Furthest an object-space click can land from an arrow's polyline and still
 // count as selecting it (see nearestPointOnPath3D) — beyond this, a click in
@@ -1630,6 +1728,45 @@ let selectedFlowArrowIndex = null; // index into modelFlowPaths, or null if noth
 let modelFlowSelectDownPos = null; // { x, y } clientX/Y at pointerdown, while in select mode — distinguishes a click from a drag
 let showModelFlowArrow = false;
 const modelFlowOverlayBuffer = gl.createBuffer(); // small, rebuilt-on-demand buffer for drawing the arrow guide ribbon
+
+// Pivot indicator: a small yellow orb marking exactly what point drag/hover
+// rotation and the "Model size" zoom pivot around (see getObjectSpacePan) —
+// its object-space location moves with pan/camera-target, but (being the
+// pivot) always projects to the same fixed on-screen point. Built the same
+// way as the flow-arrow ribbon above (a flat NDC-space triangle list,
+// projected on the CPU via the same projection*modelView `combined` matrix,
+// so it respects the model's depth buffer instead of always drawing on
+// top), just a small radial-gradient disc instead of a ribbon — that
+// gradient (bright center fading to a darker gold edge) is what reads as a
+// lit sphere rather than a flat dot, without needing an actual 3D mesh or a
+// dedicated shader.
+const PIVOT_ORB_RADIUS_PX = 5;
+const PIVOT_ORB_SEGMENTS = 20;
+const PIVOT_ORB_COLOR_CENTER = [1, 0.95, 0.55]; // bright yellow highlight
+const PIVOT_ORB_COLOR_EDGE = [0.72, 0.52, 0.04]; // darker gold, fakes falloff toward the sphere's silhouette
+const pivotOrbBuffer = gl.createBuffer();
+
+// centerNDC is [x, y, z] already in NDC/clip space (see its call site —
+// projected via `combined`, same as buildArrowRibbonNDC's ribbon points).
+// Returns interleaved [x, y, z, r, g, b] vertices (unlike the ribbon's
+// position-only buffer) since each vertex needs its own color for the
+// center-to-edge gradient rather than one flat gl.vertexAttrib3f color.
+function buildPivotOrbNDC(centerNDC, canvasWidth, canvasHeight, radiusPx) {
+  const halfW = canvasWidth / 2, halfH = canvasHeight / 2;
+  const rx = radiusPx / halfW, ry = radiusPx / halfH;
+  const [cx, cy, cz] = centerNDC;
+  const verts = [];
+  for (let i = 0; i < PIVOT_ORB_SEGMENTS; i++) {
+    const a0 = (i / PIVOT_ORB_SEGMENTS) * Math.PI * 2;
+    const a1 = ((i + 1) / PIVOT_ORB_SEGMENTS) * Math.PI * 2;
+    verts.push(
+      cx, cy, cz, ...PIVOT_ORB_COLOR_CENTER,
+      cx + Math.cos(a0) * rx, cy + Math.sin(a0) * ry, cz, ...PIVOT_ORB_COLOR_EDGE,
+      cx + Math.cos(a1) * rx, cy + Math.sin(a1) * ry, cz, ...PIVOT_ORB_COLOR_EDGE,
+    );
+  }
+  return new Float32Array(verts);
+}
 
 // Builds every drawn arrow as one combined ribbon of triangles with a
 // constant on-screen pixel width, rather than gl.LINES — WebGL's line width
@@ -1713,16 +1850,16 @@ function rotateYVec3(v, theta) {
 }
 
 // Inverse of renderCubeFrame's modelView build (translate(ox,oy,oz) *
-// rotateX(rx) * rotateY(ry) * translate(panX,panY,0) * scale(s)) applied to a
-// single view-space point, undone in reverse order: un-translate(o),
+// rotateX(rx) * rotateY(ry) * translate(panX,panY,panZ) * scale(s)) applied
+// to a single view-space point, undone in reverse order: un-translate(o),
 // un-rotateX, un-rotateY, un-translate(pan), un-scale. The manual-pan
 // translate sits *inside* the rotation (undone before un-scaling, after the
 // rotations) rather than outside it — see getObjectSpacePan below for why.
-function unprojectViewPointToObject(pv, rx, ry, s, ox, oy, oz, panX, panY) {
+function unprojectViewPointToObject(pv, rx, ry, s, ox, oy, oz, panX, panY, panZ) {
   const untranslated = [pv[0] - ox, pv[1] - oy, pv[2] - oz]; // inverse of mat4Translate(ox, oy, oz)
   const unrotatedX = rotateXVec3(untranslated, -rx);
   const unrotatedY = rotateYVec3(unrotatedX, -ry);
-  const unpanned = [unrotatedY[0] - panX, unrotatedY[1] - panY, unrotatedY[2]]; // inverse of mat4Translate(panX, panY, 0)
+  const unpanned = [unrotatedY[0] - panX, unrotatedY[1] - panY, unrotatedY[2] - panZ]; // inverse of mat4Translate(panX, panY, panZ)
   return [unpanned[0] / s, unpanned[1] / s, unpanned[2] / s];
 }
 
@@ -1755,8 +1892,9 @@ function getCurrentCameraOffset(rx, ry, s) {
   return [-viewPoint[0], -viewPoint[1]];
 }
 
-// The manual "Model X/Y position" pan (slider- or Space-drag-driven; see
-// getModelViewOffset) — unlike getCurrentCameraOffset above, this is applied
+// The manual "Model X/Y position" pan, plus the Z axis Space-drag alone
+// drives (slider- or Space-drag-driven; see getModelViewOffset) — unlike
+// getCurrentCameraOffset above, this is applied
 // *inside* rotation (see renderCubeFrame/unprojectViewPointToObject), so it's
 // rigid with the model instead of counteracting rotation: rotating (drag or
 // hover) always pivots around the model's true center regardless of how far
@@ -1766,7 +1904,7 @@ function getCurrentCameraOffset(rx, ry, s) {
 // above, and combining both would fight over the same screen position.
 function getObjectSpacePan() {
   const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
-  return activeTargetName ? [0, 0] : getModelViewOffset();
+  return activeTargetName ? [0, 0, 0] : getModelViewOffset();
 }
 
 // Möller–Trumbore ray-triangle intersection. tris is a flat Float32Array of
@@ -1821,11 +1959,11 @@ function raycastGreenMesh(clientX, clientY) {
   // zoom multiplier) or raycasting drifts out of sync with what's on screen.
   const rx = cubeRotX + cubeParallaxX, ry = cubeRotY + cubeParallaxY, s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [ox, oy] = getCurrentCameraOffset(rx, ry, s);
-  const [panX, panY] = getObjectSpacePan();
+  const [panX, panY, panZ] = getObjectSpacePan();
   const originView = [ndcX * cubeProjectionHalfX, ndcY * cubeProjectionHalfY, -0.1];
   const farView = [originView[0], originView[1], -50];
-  const originObj = unprojectViewPointToObject(originView, rx, ry, s, ox, oy, cameraOffsetZ, panX, panY);
-  const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy, cameraOffsetZ, panX, panY);
+  const originObj = unprojectViewPointToObject(originView, rx, ry, s, ox, oy, cameraOffsetZ, panX, panY, panZ);
+  const farObj = unprojectViewPointToObject(farView, rx, ry, s, ox, oy, cameraOffsetZ, panX, panY, panZ);
   const dir = [farObj[0] - originObj[0], farObj[1] - originObj[1], farObj[2] - originObj[2]];
 
   let bestT = Infinity, bestPoint = null, bestObjectIndex = -1;
@@ -2010,6 +2148,17 @@ function setModelFlowDraw(value) {
   if (value) {
     modelFlowSelectMode = false;
     selectedFlowArrowIndex = null;
+    // Start every drawing session from a clean, centered, default-angle
+    // view — same as holding Space does — since panned off-center or held
+    // at a leftover angle makes tracing a path accurately onto the green
+    // surface harder than it needs to be.
+    resetModelPosition();
+    resetCubeRotation();
+  } else {
+    // Leaving draw mode snaps back to the framed default angle and locks
+    // rotation again, same as a fresh page load.
+    resetCubeRotation();
+    setRotationDisabled(true);
   }
   notifyModelState();
 }
@@ -2107,13 +2256,13 @@ function renderCubeFrame() {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   if (cubeRotResetStartTime !== null) {
-    // Fast ease-out cubic from the snapshot taken in resetCubeRotation to the
-    // default framed angle/zero tilt — overrides the normal per-frame
-    // parallax easing below until the tween finishes.
+    // Fast ease-out cubic from the snapshot taken in tweenCubeRotationTo to
+    // its target angle/zero tilt — overrides the normal per-frame parallax
+    // easing below until the tween finishes.
     const t = Math.min(1, (performance.now() - cubeRotResetStartTime) / CUBE_ROT_RESET_MS);
     const eased = 1 - (1 - t) ** 3;
-    cubeRotX = cubeRotResetFrom.rotX + (CUBE_ISO_PITCH - cubeRotResetFrom.rotX) * eased;
-    cubeRotY = cubeRotResetFrom.rotY + (CUBE_ISO_YAW - cubeRotResetFrom.rotY) * eased;
+    cubeRotX = cubeRotResetFrom.rotX + (cubeRotResetTargetX - cubeRotResetFrom.rotX) * eased;
+    cubeRotY = cubeRotResetFrom.rotY + (cubeRotResetTargetY - cubeRotResetFrom.rotY) * eased;
     cubeParallaxTargetX = cubeRotResetFrom.parTargetX * (1 - eased);
     cubeParallaxTargetY = cubeRotResetFrom.parTargetY * (1 - eased);
     cubeParallaxX = cubeRotResetFrom.parX * (1 - eased);
@@ -2152,12 +2301,12 @@ function renderCubeFrame() {
   cameraTargetZoomCurrent += (zoomGoal - cameraTargetZoomCurrent) * CAMERA_TARGET_SMOOTHING;
   const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [offsetX, offsetY] = getCurrentCameraOffset(rx, ry, s);
-  const [panX, panY] = getObjectSpacePan();
+  const [panX, panY, panZ] = getObjectSpacePan();
 
   let modelView = mat4Translate(offsetX, offsetY, cameraOffsetZ);
   modelView = mat4Multiply(modelView, mat4RotateX(rx));
   modelView = mat4Multiply(modelView, mat4RotateY(ry));
-  modelView = mat4Multiply(modelView, mat4Translate(panX, panY, 0));
+  modelView = mat4Multiply(modelView, mat4Translate(panX, panY, panZ));
   modelView = mat4Multiply(modelView, mat4Scale(s));
 
   gl.useProgram(cubeProgram);
@@ -2287,8 +2436,14 @@ function renderCubeFrame() {
     }
     if (modelFlowDrag && modelFlowDrag.points.length >= 2) unselectedPointLists.push(modelFlowDrag.points);
 
+    // Shared by the arrow ribbon below and the pivot orb further down —
+    // projects object-space points straight to NDC/clip space on the CPU
+    // (see buildArrowRibbonNDC's comment for why: an orthographic
+    // projection composed with rotate/scale/translate always has clip.w=1,
+    // so this *is* the final NDC position, no perspective divide needed).
+    const combined = mat4Multiply(cubeProjection, modelView);
+
     if (unselectedPointLists.length > 0 || selectedPointList) {
-      const combined = mat4Multiply(cubeProjection, modelView);
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
       gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
       gl.enableVertexAttribArray(aLinePosition);
@@ -2311,6 +2466,30 @@ function renderCubeFrame() {
         gl.vertexAttrib3f(aLineColor, MODEL_FLOW_ARROW_SELECTED_COLOR[0], MODEL_FLOW_ARROW_SELECTED_COLOR[1], MODEL_FLOW_ARROW_SELECTED_COLOR[2]);
         gl.drawArrays(gl.TRIANGLES, 0, ribbon.length / 3);
       }
+    }
+
+    // Pivot orb (see buildPivotOrbNDC above): object-space location of the
+    // point drag/hover rotation and zoom pivot around — the model's own
+    // center offset by the inverse of the current pan (see
+    // getObjectSpacePan's comment for why that's the pivot), or the active
+    // camera target's centroid when one's selected, since that's what
+    // camera-target mode locks to screen-center instead.
+    {
+      const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
+      const pivotObj = activeTargetName ? cameraTargetCurrent : [-panX / s, -panY / s, -panZ / s];
+      const cx = combined[0] * pivotObj[0] + combined[4] * pivotObj[1] + combined[8] * pivotObj[2] + combined[12];
+      const cy = combined[1] * pivotObj[0] + combined[5] * pivotObj[1] + combined[9] * pivotObj[2] + combined[13];
+      const cz = combined[2] * pivotObj[0] + combined[6] * pivotObj[1] + combined[10] * pivotObj[2] + combined[14];
+      const orb = buildPivotOrbNDC([cx, cy, cz], canvas.width, canvas.height, PIVOT_ORB_RADIUS_PX);
+      gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
+      gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
+      gl.bindBuffer(gl.ARRAY_BUFFER, pivotOrbBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, orb, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(aLinePosition);
+      gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 24, 0);
+      gl.enableVertexAttribArray(aLineColor);
+      gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 24, 12);
+      gl.drawArrays(gl.TRIANGLES, 0, orb.length / 6);
     }
   }
 }
