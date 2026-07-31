@@ -298,9 +298,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Model size</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Model size</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.cubeSize}%</span>
                 </div>
                 <Slider
@@ -316,9 +316,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Model X position</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Model X position</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetX}</span>
                 </div>
                 <Slider
@@ -334,9 +334,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Model Y position</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Model Y position</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.modelOffsetY}</span>
                 </div>
                 <Slider
@@ -480,9 +480,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Line frequency</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Line frequency</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.lineFrequency}</span>
                 </div>
                 <Slider
@@ -498,9 +498,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Dot frequency</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Dot frequency</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.dotFrequency}</span>
                 </div>
                 <Slider
@@ -516,9 +516,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Dot size</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Dot size</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.dotSize}%</span>
                 </div>
                 <Slider
@@ -534,9 +534,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Plus frequency</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Plus frequency</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.plusFrequency}</span>
                 </div>
                 <Slider
@@ -552,9 +552,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Plus size</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Plus size</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.plusSize}%</span>
                 </div>
                 <Slider
@@ -574,9 +574,9 @@ export function Panel() {
             <h2 className="font-semibold text-base text-foreground">Light controls</h2>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Light azimuth</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Light azimuth</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.lightAzimuth}°</span>
                 </div>
                 <Slider
@@ -593,9 +593,9 @@ export function Panel() {
             </div>
 
             <div className="flex items-center gap-4">
-              <Field className="flex-1">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Light elevation</FieldLabel>
+                  <FieldLabel className="text-xs sm:text-xs">Light elevation</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.lightElevation}°</span>
                 </div>
                 <Slider
@@ -778,9 +778,9 @@ export function Panel() {
                 }}
                 value={state.pulseWidth}
               >
-                <div className="mb-2 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs">Pulse width</FieldLabel>
-                  <SliderValue className="text-muted-foreground text-xs" />
+                <div className="mb-3 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Pulse width</FieldLabel>
+                  <SliderValue className="text-xs text-muted-foreground" />
                 </div>
               </Slider>
             </Field>

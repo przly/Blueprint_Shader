@@ -2513,9 +2513,9 @@ function recordAndDisplayFrameTiming(now) {
     perfMaxMs = Math.max(perfMaxMs, avgFrameMs);
     updateDynamicRenderScale(avgFrameMs);
     perfMonitorEl.textContent =
-      `${fps.toFixed(0)} FPS (${perfMinFps.toFixed(0)}–${perfMaxFps.toFixed(0)})\n` +
+      `${Math.round(renderScale * 100)}% res\n` +
       `${avgFrameMs.toFixed(1)} ms (${perfMinMs.toFixed(1)}–${perfMaxMs.toFixed(1)})\n` +
-      `${Math.round(renderScale * 100)}% res`;
+      `${fps.toFixed(0)} FPS (${perfMinFps.toFixed(0)}–${perfMaxFps.toFixed(0)})`;
 
     perfHistory.push({ time: now, fps });
     const historyStart = now - PERF_HISTORY_WINDOW_MS;
