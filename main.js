@@ -1099,7 +1099,7 @@ function parseMtl(text) {
   return materials;
 }
 
-function parseObj(text, materials) {
+function parseObj(text, materials, baseScaleMultiplier = 1) {
   const positions = [];
   const normals = [];
   const outPositions = [];
@@ -1236,7 +1236,9 @@ function parseObj(text, materials) {
   // 10x the built-in cube's normalized envelope — a custom model's intended
   // physical size relative to the cube, independent of CUBE_SCALE (which
   // still applies equally on top of this to both the cube and custom models).
-  const scale = (2 / extent) * 10;
+  // baseScaleMultiplier (default 1, i.e. no-op) lets a specific caller shrink
+  // or grow that intended size further — see loadBundledDefaultModel.
+  const scale = (2 / extent) * 10 * baseScaleMultiplier;
   for (let i = 0; i < outPositions.length; i += 3) {
     outPositions[i] = (outPositions[i] - cx) * scale;
     outPositions[i + 1] = (outPositions[i + 1] - cy) * scale;
@@ -1544,7 +1546,12 @@ async function loadBundledDefaultModel() {
       fetch('/models/for_home.mtl').then((r) => r.text()),
     ]);
     const materials = parseMtl(mtlText);
-    const parsed = parseObj(objText, materials);
+    // On top of parseObj's usual extent normalization — for_home.obj's scene
+    // (house, car, charger) is laid out much larger/more spread out than a
+    // typical upload, so it reads too large/zoomed in at the normal baseline
+    // size. This shrinks the model itself, independent of the "Model size"
+    // slider, which still starts at its usual 100%.
+    const parsed = parseObj(objText, materials, 0.35);
     applyParsedModel(parsed, 'for_home.obj', 'for_home.mtl');
     applyDefaultModelFlowPath();
   } catch (err) {
