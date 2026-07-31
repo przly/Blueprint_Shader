@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { Menu } from "lucide-react";
 import { ArrowBigRightDashIcon, type ArrowBigRightDashIconHandle } from "@/components/ui/arrow-big-right-dash";
 import { Button } from "@/components/ui/button";
 import { DeleteIcon, type DeleteIconHandle } from "@/components/ui/delete";
@@ -202,18 +201,6 @@ export function Panel() {
         </div>
       )}
 
-      <Button
-        aria-label="Toggle controls"
-        aria-pressed={hidden}
-        className="fixed top-4 left-4 z-10 bg-popover/80 backdrop-blur-sm"
-        onClick={() => setHidden((h) => !h)}
-        size="icon-sm"
-        title="Toggle controls (H)"
-        variant="outline"
-      >
-        <Menu />
-      </Button>
-
       {panelPhase !== "closed" && (
         <div className="pointer-events-none fixed top-1/2 left-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
           <svg
@@ -238,7 +225,7 @@ export function Panel() {
         <div className="pointer-events-none fixed bottom-6 left-1/2 z-10 -translate-x-1/2">
           <div
             className={cn(
-              "t-fade-center overflow-hidden rounded-full border px-4 py-2 font-medium text-sm shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
+              "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
               spaceIndicator.displayed
                 ? "border-transparent bg-white text-black"
                 : "border-input bg-popover/80 text-foreground",
@@ -254,7 +241,7 @@ export function Panel() {
                   (state.spaceHeld ? "is-enter-from-bottom" : "is-enter-from-top"),
               )}
             >
-              {spaceIndicator.displayed ? "Release to enter rotation mode" : "Press space to move"}
+              {spaceIndicator.displayed ? "Release to enter rotation mode" : "Press space to move around"}
             </span>
           </div>
         </div>
@@ -263,12 +250,12 @@ export function Panel() {
       {panelPhase !== "closed" && (
         <div
           className={cn(
-            "t-panel t-panel-left fixed top-14 left-4 z-10 max-h-[calc(100vh-4.5rem)] w-[min(92vw,28rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",
+            "t-panel t-panel-left fixed top-4 left-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,17rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",
             panelPhase === "open" && "is-open",
             panelPhase === "closing" && "is-closing",
           )}
         >
-          <div className="panel-scrollbar flex h-full max-h-[calc(100vh-4.5rem)] flex-col gap-6 overflow-y-auto p-6">
+          <div className="panel-scrollbar flex h-full max-h-[calc(100vh-2rem)] flex-col gap-6 overflow-y-auto p-6">
             <h2 className="font-semibold text-base text-foreground">Model Controls</h2>
 
             <div className="flex flex-wrap items-center gap-4">
@@ -675,7 +662,7 @@ export function Panel() {
       {panelPhase !== "closed" && (
         <div
           className={cn(
-            "t-panel t-panel-right fixed top-4 right-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,22rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",
+            "t-panel t-panel-right fixed top-4 right-4 z-10 max-h-[calc(100vh-2rem)] w-[min(92vw,13rem)] overflow-hidden rounded-[24px] border border-border bg-popover/80 text-popover-foreground text-sm shadow-lg backdrop-blur-sm",
             panelPhase === "open" && "is-open",
             panelPhase === "closing" && "is-closing",
           )}

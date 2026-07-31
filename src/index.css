@@ -364,30 +364,45 @@
   transition: none;
 }
 
-/* transitions.dev — floating control panels (src/panel.tsx), same tokens as
-   the modal above. Each panel scales/fades from the corner it's anchored to
-   so it reads as growing out of its own trigger rather than teleporting in. */
+/* transitions.dev — floating control panels (src/panel.tsx). Own tokens,
+   decoupled from the --modal-* ones above: these panels are large,
+   corner-anchored surfaces (closer to a menu-dropdown than a centered modal),
+   so they get the dropdown's subtler open/close scale plus a cross-blur
+   (panel-reveal, 07-panel-reveal.md) for polish, and quicker durations since
+   a big surface reads "instant" at modal speed but "laggy" past ~200ms. */
+:root {
+  --panel-open-dur: 180ms;
+  --panel-close-dur: 120ms;
+  --panel-open-scale: 0.97;
+  --panel-close-scale: 0.99;
+  --panel-blur: 2px;
+}
 .t-panel {
   opacity: 0;
-  transform: scale(var(--modal-scale)) translateY(-8px);
+  transform: scale(var(--panel-open-scale)) translateY(-8px);
+  filter: blur(var(--panel-blur));
   pointer-events: none;
   transition:
-    transform var(--modal-open-dur) var(--modal-ease),
-    opacity   var(--modal-open-dur) var(--modal-ease);
-  will-change: transform, opacity;
+    transform var(--panel-open-dur) var(--modal-ease),
+    opacity   var(--panel-open-dur) var(--modal-ease),
+    filter    var(--panel-open-dur) var(--modal-ease);
+  will-change: transform, opacity, filter;
 }
 .t-panel.is-open {
   transform: scale(1) translateY(0);
   opacity: 1;
+  filter: blur(0);
   pointer-events: auto;
 }
 .t-panel.is-closing {
-  transform: scale(var(--modal-scale-close)) translateY(-8px);
+  transform: scale(var(--panel-close-scale)) translateY(-8px);
   opacity: 0;
+  filter: blur(var(--panel-blur));
   pointer-events: none;
   transition:
-    transform var(--modal-close-dur) var(--modal-ease),
-    opacity   var(--modal-close-dur) var(--modal-ease);
+    transform var(--panel-close-dur) var(--modal-ease),
+    opacity   var(--panel-close-dur) var(--modal-ease),
+    filter    var(--panel-close-dur) var(--modal-ease);
 }
 .t-panel-left {
   transform-origin: top left;
