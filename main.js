@@ -102,12 +102,15 @@ const CUBE_SIZE_MAX = 1000;
 let cubeSizePercent = restoreNumber('cubeSize', 100);
 let cubeSizeScale = cubeSizePercent / 100;
 
-function setCubeSizePercent(percent) {
+// Shared by setCubeSizePercent (the "Model size" slider) and the scroll-to-
+// zoom handler below — clamps and applies the scale, without either one's
+// own persist/notify timing (the slider wants both immediately; the wheel
+// handler batches them — see scheduleWheelZoomSync).
+function applyCubeSizePercent(percent) {
   const clamped = Math.max(CUBE_SIZE_MIN, Math.min(CUBE_SIZE_MAX, percent));
   const previousScale = cubeSizeScale;
   cubeSizePercent = clamped;
   cubeSizeScale = clamped / 100;
-  persistNumber('cubeSize', clamped);
 
   // Zoom into the pivot crosshair (screen-center — see getObjectSpacePan)
   // rather than the model's own origin: rescale the manual pan by the same
@@ -116,10 +119,17 @@ function setCubeSizePercent(percent) {
   // drifting as the model grows/shrinks around its own center.
   if (previousScale > 0 && cubeSizeScale !== previousScale) {
     const ratio = cubeSizeScale / previousScale;
-    setModelOffsetXPercent(modelOffsetXPercent * ratio);
-    setModelOffsetYPercent(modelOffsetYPercent * ratio);
+    modelOffsetXPercent = clampModelPosition(modelOffsetXPercent * ratio);
+    modelOffsetYPercent = clampModelPosition(modelOffsetYPercent * ratio);
+    modelOffsetZPercent = clampModelPosition(modelOffsetZPercent * ratio);
   }
 
+  return clamped;
+}
+
+function setCubeSizePercent(percent) {
+  const clamped = applyCubeSizePercent(percent);
+  persistNumber('cubeSize', clamped);
   notifyModelState();
   return clamped;
 }
@@ -1082,6 +1092,37 @@ window.addEventListener('blur', () => {
   setRotationDisabled(true);
   notifyModelState();
 });
+
+// Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
+// and out, reusing the exact same underlying scale as the "Model size"
+// slider (see applyCubeSizePercent) — so it zooms into the pivot crosshair
+// for free, the same way that slider already does, and the slider stays
+// live-in-sync with whatever the wheel does. Exponential rather than linear
+// (each wheel "notch" scales by a fixed *ratio*, not a fixed amount) so it
+// feels consistent whether zoomed way in or way out, across
+// CUBE_SIZE_MIN..CUBE_SIZE_MAX's wide range. Bound to the canvas
+// specifically (not window) so scrolling the side panels' own overflowing
+// content doesn't also zoom the 3D view underneath them.
+const CUBE_WHEEL_ZOOM_SPEED = 0.0018; // tuned so one typical mouse-wheel notch (~100 deltaY) feels like one comfortable zoom step
+let wheelZoomSyncRAF = null;
+function scheduleWheelZoomSync() {
+  if (wheelZoomSyncRAF !== null) return;
+  wheelZoomSyncRAF = requestAnimationFrame(() => {
+    wheelZoomSyncRAF = null;
+    persistNumber('cubeSize', cubeSizePercent);
+    notifyModelState();
+  });
+}
+canvas.addEventListener(
+  'wheel',
+  (event) => {
+    event.preventDefault();
+    const factor = Math.exp(-event.deltaY * CUBE_WHEEL_ZOOM_SPEED);
+    applyCubeSizePercent(cubeSizePercent * factor);
+    scheduleWheelZoomSync();
+  },
+  { passive: false },
+);
 
 canvas.addEventListener('pointerdown', (event) => {
   if (modelFlowDrawMode || modelFlowSelectMode) return;
