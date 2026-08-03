@@ -365,6 +365,12 @@ const CUBE_FRAGMENT_SHADER = `
   uniform float uPlusFrequency;
   uniform float uPlusArmHalf;
   uniform float uPlusThickness;
+  // When true, skip all normal shading and output just the flow pulse's own
+  // color/intensity (black everywhere else) — used for a separate low-res
+  // render pass (see renderCubeFrame/BLOOM_DOWNSCALE) that gets blurred and
+  // added back additively over the real frame, for actual light-bleed bloom
+  // instead of the pulse just being a bright patch on the model's own faces.
+  uniform bool uGlowOnly;
 
   // Shared by all three fill patterns below (lines/dots/plus): projects
   // object-space position onto the two axes spanning the face (dropping
@@ -456,7 +462,29 @@ const CUBE_FRAGMENT_SHADER = `
     float resolved = smoothstep(FILL_ALIASED_PERIOD_PX, FILL_MIN_RESOLVED_PERIOD_PX, periodPx);
     return mix(flatCoverage, crispPlus, resolved);
   }
+  // Traveling energy-pulse intensity along a user-drawn arrow, restricted to
+  // green (flagged) parts that some arrow actually touches — a Gaussian band
+  // that travels along the arrow over time, driven by a 3D arc-length
+  // coordinate (aFlowCoord). Vertices on a green part no arrow was ever drawn
+  // on get a negative aFlowCoord (see recomputeModelFlowCoords) so they never
+  // light up, rather than defaulting to 0 and falsely flashing whenever the
+  // pulse happens to pass near the start of some other part's arrow. Shared
+  // by the normal shaded pass and the glow-only bloom-source pass below.
+  float flowPulseIntensity() {
+    if (!(uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0)) return 0.0;
+    float d = vFlowCoord - uFlowPulseCenter;
+    return exp(-(d * d) / (2.0 * uFlowSigma * uFlowSigma));
+  }
+
   void main() {
+    if (uGlowOnly) {
+      // uFlowColor is pre-boosted (see BLOOM_SOURCE_BOOST in renderCubeFrame)
+      // brighter than what's actually drawn on the model, since blurring
+      // dims the peak — everything else renders black so the blur only
+      // picks up the pulse itself, not the model's own fill/wireframe.
+      gl_FragColor = vec4(uFlowColor * flowPulseIntensity(), 1.0);
+      return;
+    }
     float diff = max(dot(normalize(vNormal), normalize(uLightDir)), 0.0) * uLightIntensity;
     float brightness = 0.2 + diff * 0.8;
     // Blueprint mode: ignore the material/cube color entirely and shade a
@@ -470,19 +498,7 @@ const CUBE_FRAGMENT_SHADER = `
     // faces stay bright too, not just the lit ones.
     float shade = uBlueprint ? (0.3 + diff * 1.1) : brightness;
     vec3 color = base * shade;
-    // Traveling energy-pulse glow along a user-drawn arrow, restricted to
-    // green (flagged) parts that some arrow actually touches — a Gaussian
-    // band that travels along the arrow over time, driven by a 3D arc-length
-    // coordinate (aFlowCoord). Vertices on a green part no arrow was ever
-    // drawn on get a negative aFlowCoord (see recomputeModelFlowCoords) so
-    // they never light up, rather than defaulting to 0 and falsely flashing
-    // whenever the pulse happens to pass near the start of some other part's
-    // arrow.
-    if (uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0) {
-      float d = vFlowCoord - uFlowPulseCenter;
-      float intensity = exp(-(d * d) / (2.0 * uFlowSigma * uFlowSigma));
-      color += uFlowColor * intensity;
-    }
+    color += uFlowColor * flowPulseIntensity();
     // Fill-pattern-flagged faces (see aFillPattern / materialFillPatternId)
     // get uHatchLineColor drawn on top of everything above in whichever
     // pattern their material selected, so it reads on top of blueprint
@@ -777,6 +793,7 @@ const uDotRadius = gl.getUniformLocation(cubeProgram, 'uDotRadius');
 const uPlusFrequency = gl.getUniformLocation(cubeProgram, 'uPlusFrequency');
 const uPlusArmHalf = gl.getUniformLocation(cubeProgram, 'uPlusArmHalf');
 const uPlusThickness = gl.getUniformLocation(cubeProgram, 'uPlusThickness');
+const uGlowOnly = gl.getUniformLocation(cubeProgram, 'uGlowOnly');
 
 const aLinePosition = gl.getAttribLocation(lineProgram, 'aLinePosition');
 const aLineColor = gl.getAttribLocation(lineProgram, 'aLineColor');
@@ -1737,6 +1754,9 @@ function getModelState() {
         enabled: path.enabledObjectIndices.includes(idx),
       }));
     })(),
+    // Drives the "Reverse flow" button's active/inactive look (see
+    // reverseSelectedFlowArrow) — false whenever nothing's selected.
+    selectedFlowArrowReversed: !!(selectedFlowArrowIndex !== null && modelFlowPaths[selectedFlowArrowIndex]?.reversed),
   };
 }
 
@@ -1959,11 +1979,19 @@ const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path
 // are always in [0, 1]; the fragment shader's `vFlowCoord >= 0.0` check is
 // what actually keeps these vertices dark, this just has to stay negative.
 const MODEL_FLOW_NO_ARROW_COORD = -1;
-const MODEL_FLOW_ARROW_COLOR = [1, 1, 1]; // white guide line for finalized, unselected arrows
-const MODEL_FLOW_ARROW_SELECTED_COLOR = [0.15, 0.55, 1]; // blue highlight for the currently selected arrow
-const MODEL_FLOW_ARROW_DRAG_COLOR = [1, 0, 0]; // red for the not-yet-finalized in-progress drag — turns white once double-clicked to confirm
+const MODEL_FLOW_ARROW_COLOR = [0.2, 0.45, 0.95]; // blue guide line for finalized, unselected arrows
+const MODEL_FLOW_ARROW_SELECTED_COLOR = [1, 0.55, 0.1]; // orange highlight for the currently selected arrow/branch — distinct from the plain finished-arrow blue above
+const MODEL_FLOW_ARROW_DRAG_COLOR = [1, 0, 0]; // red for the not-yet-finalized in-progress drag — turns blue once double-clicked to confirm
 const MODEL_FLOW_ARROW_HALF_WIDTH_PX = 3; // half-width of the ribbon built in buildArrowRibbonNDC below
 const MODEL_FLOW_ARROW_OPACITY = 0.75; // applied to all three ribbon batches (finalized/selected/in-progress) via uLineAlpha
+// Rubber-band cursor preview (see modelFlowHoverClientPos): a dashed line
+// from the last placed point out to wherever the cursor currently raycasts,
+// previewing the segment a click would add before it's actually placed.
+// Same red as the in-progress drag ribbon, dashed instead of solid so it
+// reads as "not yet real" even at a glance.
+const MODEL_FLOW_HOVER_LINE_HALF_WIDTH_PX = MODEL_FLOW_ARROW_HALF_WIDTH_PX * 0.75;
+const MODEL_FLOW_HOVER_DASH_LENGTH_PX = 8;
+const MODEL_FLOW_HOVER_DASH_GAP_PX = 6;
 // Furthest an object-space click can land from an arrow's polyline and still
 // count as selecting it (see nearestPointOnPath3D) — beyond this, a click in
 // select mode is treated as clicking empty space and clears the selection.
@@ -1983,17 +2011,30 @@ const MODEL_FLOW_DRAW_DOUBLE_CLICK_MAX_DRIFT_PX = 6;
 // tail instead of popping straight from invisible to full brightness at the
 // loop.
 const FLOW_PULSE_PERIOD_BASE_MS = 3000;
-const FLOW_PULSE_PAD_SIGMAS = 3;
+const FLOW_PULSE_PAD_SIGMAS = 5;
 
 let modelFlowDrawMode = false;
 let modelFlowSelectMode = false;
-let modelFlowDrag = null; // { points: [[x,y,z], ...] } object-space, while actively building one new arrow click-by-click
+// While actively building one new (possibly multi-branch) arrow
+// click-by-click, object-space: { points, pointObjectIndices, touchedObjects,
+// startingJunction, completedBranches, pendingJunctions } — see
+// finalizeModelFlowDrag/the draw-mode pointerdown handler for the
+// shift+click-junction state machine.
+let modelFlowDrag = null;
 let modelFlowLastClickTime = null; // performance.now() of the last point-dropping click, for double-click-to-finish detection
 let modelFlowLastClickPos = null; // { x, y } clientX/Y of that same click
-let modelFlowPaths = []; // [{ points: [[x,y,z], ...], cumLen: number[], totalLen }, ...] one entry per finalized arrow
+// [{ points: [[x,y,z], ...], cumLen: number[], totalLen, sourceOffset,
+// masterTotalLen }, ...] one entry per finalized branch (a single-branch
+// arrow is just one entry; a branching one is several, sharing a junction
+// point — see sourceOffset/masterTotalLen in finalizeModelFlowDrag).
+let modelFlowPaths = [];
 let selectedFlowArrowIndex = null; // index into modelFlowPaths, or null if nothing selected
 let modelFlowSelectDownPos = null; // { x, y } clientX/Y at pointerdown, while in select mode — distinguishes a click from a drag
 let showModelFlowArrow = false;
+// Independent of showModelFlowArrow — lets the click-point/junction dots
+// (see the draw-mode render block) be hidden on their own while the
+// in-progress drag ribbon stays visible, or vice versa.
+let showModelFlowPoints = true;
 const modelFlowOverlayBuffer = gl.createBuffer(); // small, rebuilt-on-demand buffer for drawing the arrow guide ribbon
 
 // Pivot indicator: a small yellow orb marking exactly what point drag/hover
@@ -2061,9 +2102,54 @@ function buildPointMarkersNDC(pointsObjectSpace, combined, canvasWidth, canvasHe
   return new Float32Array(verts);
 }
 
+// Shared by every point/junction dot batch below (drag-in-progress and
+// finalized alike) — builds the marker geometry and immediately draws it
+// through modelFlowPointsBuffer. Assumes the caller already set up
+// uLineModelView/uLineProjection (IDENTITY_MAT4) and enabled
+// aLinePosition/aLineColor once for the whole stretch of batches.
+function drawPointMarkerBatch(points, combined, radiusPx, colorCenter, colorEdge) {
+  if (points.length === 0) return;
+  const markers = buildPointMarkersNDC(points, combined, canvas.width, canvas.height, radiusPx, colorCenter, colorEdge);
+  gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowPointsBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, markers, gl.DYNAMIC_DRAW);
+  gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 24, 0);
+  gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 24, 12);
+  gl.drawArrays(gl.TRIANGLES, 0, markers.length / 6);
+}
+
 const MODEL_FLOW_POINT_RADIUS_PX = 12;
 const MODEL_FLOW_POINT_COLOR_CENTER = [1, 1, 1]; // white highlight, reads clearly against the red guide ribbon
 const MODEL_FLOW_POINT_COLOR_EDGE = [0.55, 0.55, 0.55];
+// Junction points (see shift+click in the draw-mode pointerdown handler)
+// render as their own, slightly larger dots instead of a plain white click
+// point — red while still waiting on their second branch (see
+// pendingJunctions), yellow once that branch is double-click finished (see
+// closedJunctions) — so it's obvious at a glance which splits still need
+// closing out before the whole arrow can finalize.
+const MODEL_FLOW_JUNCTION_RADIUS_PX = MODEL_FLOW_POINT_RADIUS_PX * 1.35;
+const MODEL_FLOW_JUNCTION_UNFINISHED_COLOR_CENTER = [1, 0.35, 0.3];
+const MODEL_FLOW_JUNCTION_UNFINISHED_COLOR_EDGE = [0.7, 0.1, 0.05];
+const MODEL_FLOW_JUNCTION_CLOSED_COLOR_CENTER = [1, 0.92, 0.3];
+const MODEL_FLOW_JUNCTION_CLOSED_COLOR_EDGE = [0.75, 0.6, 0.05];
+// The arrow's one true source/origin point (see sourceOffset === 0 in
+// finalizeModelFlowDrag — the very first point of the very first branch,
+// where the pulse actually starts) — an orange dot, distinct from the plain
+// white points and red/yellow junctions.
+const MODEL_FLOW_ORIGIN_RADIUS_PX = MODEL_FLOW_JUNCTION_RADIUS_PX;
+const MODEL_FLOW_ORIGIN_COLOR_CENTER = [1, 0.55, 0.1];
+const MODEL_FLOW_ORIGIN_COLOR_EDGE = [0.65, 0.3, 0.02];
+// A finalized branch's own last point (where its arrowhead points) — its
+// finishing point for the flow, per branch (a branching arrow has more than
+// one). Blue, matching MODEL_FLOW_ARROW_COLOR's finished-arrow blue. Only
+// meaningful once finalized (see the finished-arrows marker section) — an
+// in-progress branch's last point can still be extended further, so it
+// isn't a real "finish" yet.
+const MODEL_FLOW_ENDPOINT_RADIUS_PX = MODEL_FLOW_JUNCTION_RADIUS_PX;
+const MODEL_FLOW_ENDPOINT_COLOR_CENTER = [0.3, 0.55, 1];
+const MODEL_FLOW_ENDPOINT_COLOR_EDGE = [0.1, 0.25, 0.7];
+// Shared by all three marker draws below (plain click points, unfinished
+// junctions, closed junctions) — each just re-uploads its own data into it
+// right before its own draw call, so one buffer covers all of them.
 const modelFlowPointsBuffer = gl.createBuffer();
 
 // Floor guide: a dashed yellow line straight down (object-space Y=0 is the
@@ -2351,6 +2437,20 @@ function nearestPointOnPath3D(path, point) {
   return { arcLen: bestArcLen, distSq: bestDistSq };
 }
 
+// Raw (un-fudged) arc length of a polyline — unlike buildPathMetrics'
+// totalLen, this doesn't floor a genuinely-zero length up to 1 (that floor
+// exists purely so totalLen can be safely used as a division denominator
+// elsewhere; a junction's sourceOffset below is a plain additive distance,
+// where a floored zero would silently overcount).
+function pathArcLength(points) {
+  let len = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    len += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  }
+  return len;
+}
+
 function buildPathMetrics(points) {
   const cumLen = [0];
   for (let i = 1; i < points.length; i++) {
@@ -2366,18 +2466,25 @@ function buildPathMetrics(points) {
 // modelFlowPaths it's actually nearest to (see nearestPointOnPath3D) among
 // those whose enabledObjectIndices includes the vertex's own object (see
 // setFlowArrowObjectEnabled — lets one arrow drawn across several objects
-// pulse only some of them), then stores its arc length *normalized by that
-// path's own totalLen* — a 0-1 fraction rather than an absolute distance —
-// so every arrow shares the same pulse timing/width regardless of how many
-// arrows exist or how long each one is (see the flowSigma/flowPulseCenter
-// math in renderCubeFrame, which is expressed in this same normalized
-// space). Non-green vertices and vertices whose object has no eligible path
-// at all get a negative sentinel (MODEL_FLOW_NO_ARROW_COORD) rather than 0 —
-// see the fragment shader's `vFlowCoord >= 0.0` gate, which is what actually
-// keeps the glow off those parts. Defaulting to a real 0 (a valid arc
-// position) used to make every arrow-less part flash in sync whenever the
-// traveling pulse passed the start of its cycle, since 0 looked exactly like
-// "sitting at the start of some arrow".
+// pulse only some of them), then stores its arc length *from that arrow's
+// true source, normalized by masterTotalLen* — a 0-1 fraction rather than an
+// absolute distance — so every arrow shares the same pulse timing/width
+// regardless of how many arrows exist or how long each one is (see the
+// flowSigma/flowPulseCenter math in renderCubeFrame, which is expressed in
+// this same normalized space). sourceOffset/masterTotalLen (see
+// finalizeModelFlowDrag) are what let a branching arrow's pulse actually
+// travel from its one true source, through a junction, before splitting —
+// each branch measures from the same source rather than restarting at 0 the
+// moment it's nearest, which would make every branch light up from its own
+// start at the very beginning of the cycle regardless of how far that
+// branch actually sits from the source. Non-green vertices and vertices
+// whose object has no eligible path at all get a negative sentinel
+// (MODEL_FLOW_NO_ARROW_COORD) rather than 0 — see the fragment shader's
+// `vFlowCoord >= 0.0` gate, which is what actually keeps the glow off those
+// parts. Defaulting to a real 0 (a valid arc position) used to make every
+// arrow-less part flash in sync whenever the traveling pulse passed the
+// start of its cycle, since 0 looked exactly like "sitting at the start of
+// some arrow".
 // Called whenever an arrow is drawn/cleared/reconfigured and once after a
 // model (re)loads a restored path.
 function recomputeModelFlowCoords() {
@@ -2396,7 +2503,8 @@ function recomputeModelFlowCoords() {
         const { arcLen, distSq } = nearestPointOnPath3D(path, p);
         if (distSq < bestDistSq) {
           bestDistSq = distSq;
-          bestFrac = path.totalLen > 0 ? arcLen / path.totalLen : 0;
+          const masterTotalLen = path.masterTotalLen || path.totalLen;
+          bestFrac = masterTotalLen > 0 ? ((path.sourceOffset || 0) + arcLen) / masterTotalLen : 0;
         }
       }
       flowCoords[i] = bestFrac;
@@ -2414,6 +2522,8 @@ function saveModelFlowPath() {
         points: path.points,
         touchedObjectIndices: path.touchedObjectIndices,
         enabledObjectIndices: path.enabledObjectIndices,
+        sourceOffset: path.sourceOffset,
+        masterTotalLen: path.masterTotalLen,
       }))),
     );
   } else {
@@ -2436,11 +2546,20 @@ function clearModelFlowPath() {
 // shape built by the pointerup handler that finalizes a hand-drawn arrow
 // (buildPathMetrics + touched/enabledObjectIndices).
 function applyDefaultModelFlowPath() {
-  modelFlowPaths = DEFAULT_MODEL_FLOW_PATH_DATA.map((data) => ({
-    ...buildPathMetrics(data.points),
-    touchedObjectIndices: data.touchedObjectIndices,
-    enabledObjectIndices: data.enabledObjectIndices,
-  }));
+  modelFlowPaths = DEFAULT_MODEL_FLOW_PATH_DATA.map((data) => {
+    const metrics = buildPathMetrics(data.points);
+    return {
+      ...metrics,
+      touchedObjectIndices: data.touchedObjectIndices,
+      enabledObjectIndices: data.enabledObjectIndices,
+      // No branching here — each entry is its own independent arrow, so its
+      // source is its own start (see sourceOffset/masterTotalLen in
+      // finalizeModelFlowDrag).
+      sourceOffset: 0,
+      masterTotalLen: metrics.totalLen,
+      reversed: false,
+    };
+  });
   modelFlowDrag = null;
   selectedFlowArrowIndex = null;
   saveModelFlowPath();
@@ -2452,15 +2571,77 @@ function applyDefaultModelFlowPath() {
 // finalized — see the draw-mode pointerdown handler), undo drops just the
 // last placed point instead of the whole arrow, so a stray click can be
 // walked back one step at a time without losing everything drawn so far.
-// Only once the drag is empty (or there's no drag at all) does undo fall
-// back to dropping the most recently finalized arrow.
+// Two ways this can hand a junction back to pendingJunctions rather than
+// losing it (see hasOpenJunction — only one junction can be open at a time,
+// so undo re-opening one is also what allows a fresh shift+click again):
+//  - popping the point that's still awaiting its explicitly-resumed branch
+//    (shift-clicked but never resumed yet) drops it out of pendingJunctions
+//    directly;
+//  - popping the current branch down to nothing when it's itself that
+//    explicitly-resumed branch (isResumedFromPending — started at the
+//    junction, never got any point past that seed) re-queues that same
+//    junction instead of silently discarding it.
+// A third case — undoing away the *automatic continuation* a shift+click
+// creates (isResumedFromPending false but startingJunction set) — removes
+// the junction from pendingJunctions instead of re-adding it: that branch
+// never popped it off in the first place (see the pointerdown handler), so
+// undoing it away means undoing the split itself, not offering it for
+// another resume.
+// Once the current branch empties out with no junction of its own to
+// restore, undo walks back into the previous branch this session already
+// closed off (see completedBranches/closeCurrentBranchIntoCompleted),
+// reopening it for further undo. Only once there's neither a current branch
+// nor any completed one left this session does undo fall back to dropping
+// the most recently finalized arrow.
 function undoLastModelFlowArrow() {
   if (modelFlowDrag && modelFlowDrag.points.length > 0) {
-    modelFlowDrag.points.pop();
+    const poppedPoint = modelFlowDrag.points.pop();
     modelFlowDrag.pointObjectIndices.pop();
     modelFlowDrag.touchedObjects = new Set(modelFlowDrag.pointObjectIndices);
+    const pendingIndex = modelFlowDrag.pendingJunctions.findIndex((j) => j.point === poppedPoint);
+    if (pendingIndex !== -1) modelFlowDrag.pendingJunctions.splice(pendingIndex, 1);
+    // Undoing back down to just the junction's own seed point un-commits the
+    // resumed branch — it turns red again (see the pointerdown handler's
+    // "grew past the seed" check, which is what turned it yellow).
+    if (modelFlowDrag.points.length === 1 && modelFlowDrag.isResumedFromPending && modelFlowDrag.startingJunction) {
+      const closedIndex = modelFlowDrag.closedJunctions.indexOf(modelFlowDrag.startingJunction);
+      if (closedIndex !== -1) modelFlowDrag.closedJunctions.splice(closedIndex, 1);
+    }
     if (modelFlowDrag.points.length === 0) {
-      modelFlowDrag = null;
+      if (modelFlowDrag.startingJunction) {
+        if (modelFlowDrag.isResumedFromPending) {
+          // This now-empty branch was the explicitly-resumed one (started at
+          // the junction, undone away before it grew any further) — put the
+          // junction back rather than dropping it.
+          modelFlowDrag.pendingJunctions.push(modelFlowDrag.startingJunction);
+        } else {
+          // This now-empty branch was the automatic continuation a
+          // shift+click creates alongside its junction (see the pointerdown
+          // handler) — that junction is still sitting in pendingJunctions
+          // from that same click, so undoing this branch away undoes the
+          // split itself: remove it again instead of duplicating it.
+          const idx = modelFlowDrag.pendingJunctions.indexOf(modelFlowDrag.startingJunction);
+          if (idx !== -1) modelFlowDrag.pendingJunctions.splice(idx, 1);
+        }
+      }
+      if (modelFlowDrag.completedBranches.length > 0) {
+        const prev = modelFlowDrag.completedBranches.pop();
+        modelFlowDrag.points = prev.points;
+        modelFlowDrag.pointObjectIndices = prev.pointObjectIndices;
+        modelFlowDrag.touchedObjects = prev.touchedObjects;
+        modelFlowDrag.startingJunction = prev.startingJunction;
+        modelFlowDrag.isResumedFromPending = prev.isResumedFromPending;
+        modelFlowDrag.branchSourceOffset = prev.sourceOffset;
+        if (prev.startingJunction && prev.isResumedFromPending) {
+          modelFlowDrag.pendingJunctions.push(prev.startingJunction);
+          // Un-completing this branch reopens the junction it closed — back
+          // to red (see closedJunctions' rendering) until it's redrawn.
+          const closedIndex = modelFlowDrag.closedJunctions.indexOf(prev.startingJunction);
+          if (closedIndex !== -1) modelFlowDrag.closedJunctions.splice(closedIndex, 1);
+        }
+      } else {
+        modelFlowDrag = null;
+      }
       modelFlowLastClickTime = null;
       modelFlowLastClickPos = null;
     }
@@ -2484,6 +2665,31 @@ function deleteSelectedModelFlowArrow() {
   if (selectedFlowArrowIndex === null) return;
   modelFlowPaths.splice(selectedFlowArrowIndex, 1);
   selectedFlowArrowIndex = null;
+  saveModelFlowPath();
+  recomputeModelFlowCoords();
+  notifyModelState();
+}
+
+// Flips which end of the currently-selected branch the flow travels toward
+// — reversing the points array (and rebuilding cumLen/totalLen from it) is
+// all that's needed: buildArrowRibbonNDC always draws its arrowhead at the
+// *last* point, so it now points the other way automatically, and
+// recomputeModelFlowCoords's arc length is now measured from the opposite
+// end too. sourceOffset/masterTotalLen are deliberately left untouched —
+// they still anchor this branch's timing to the same physical distance
+// range from the arrow's true source (see finalizeModelFlowDrag), just with
+// the two ends' timing swapped, which is what makes the reversed branch
+// still meet its junction (if any) as part of the same pulse cycle rather
+// than running on its own unrelated schedule.
+function reverseSelectedFlowArrow() {
+  if (selectedFlowArrowIndex === null) return;
+  const path = modelFlowPaths[selectedFlowArrowIndex];
+  if (!path) return;
+  path.points.reverse();
+  const metrics = buildPathMetrics(path.points);
+  path.cumLen = metrics.cumLen;
+  path.totalLen = metrics.totalLen;
+  path.reversed = !path.reversed;
   saveModelFlowPath();
   recomputeModelFlowCoords();
   notifyModelState();
@@ -2559,33 +2765,100 @@ function setModelFlowArrowVisible(value) {
   showModelFlowArrow = value;
 }
 
+function setModelFlowPointsVisible(value) {
+  showModelFlowPoints = value;
+}
+
 // Suppress the browser's right-click menu while drawing so right-drag reads
 // as a rotate gesture instead of popping up a context menu mid-drag.
 canvas.addEventListener('contextmenu', (event) => {
   if (modelFlowDrawMode) event.preventDefault();
 });
 
-// Finalizes whatever arrow is currently being built click-by-click (see the
-// draw-mode pointerdown handler below) into modelFlowPaths, provided it has
-// at least the two points needed to form a line; a lone first click with no
-// second point (e.g. a stray double-click right at the start) is simply
-// dropped instead of producing a degenerate zero-length arrow.
+// Pushes the current branch onto completedBranches, provided it has the 2+
+// points needed to form a real line — a lone point (e.g. a junction that
+// was itself the very first click ever) is simply dropped instead of
+// producing a degenerate zero-length branch. Shared by finalizeModelFlowDrag
+// (a real double-click finish) and the shift+click handler below (which
+// closes off the current branch immediately, right at the new junction,
+// rather than waiting for a double-click — see its own comment for why).
+function closeCurrentBranchIntoCompleted(drag) {
+  if (drag.points.length < 2) return;
+  drag.completedBranches.push({
+    points: drag.points,
+    pointObjectIndices: drag.pointObjectIndices,
+    touchedObjects: drag.touchedObjects,
+    startingJunction: drag.startingJunction,
+    isResumedFromPending: drag.isResumedFromPending,
+    sourceOffset: drag.branchSourceOffset,
+  });
+}
+
+// Double-click-to-finish (see the draw-mode pointerdown handler below):
+// closes off whichever branch is currently being built click-by-click (see
+// closeCurrentBranchIntoCompleted). If a shift-clicked junction is still
+// waiting on its second (explicitly resumed) branch — see hasOpenJunction,
+// an arrow can have any number of junctions but only one open/uncommitted at
+// a time — drawing resumes from it instead of finishing for good. Only once
+// every junction from this session is closed does the whole session's
+// branches all become real, independent entries in modelFlowPaths — a
+// branch simply sharing its start point with whatever it split from is what
+// reads as the flow splitting in two there, so no other code
+// (buildPathMetrics/recomputeModelFlowCoords/buildArrowRibbonNDC/rendering/
+// save-load) needs to know branching exists at all.
 function finalizeModelFlowDrag() {
-  if (modelFlowDrag && modelFlowDrag.points.length >= 2) {
-    const path = buildPathMetrics(modelFlowDrag.points);
+  if (!modelFlowDrag) return;
+  closeCurrentBranchIntoCompleted(modelFlowDrag);
+  if (modelFlowDrag.pendingJunctions.length > 0) {
+    const junction = modelFlowDrag.pendingJunctions.pop();
+    modelFlowDrag.points = [junction.point];
+    modelFlowDrag.pointObjectIndices = [junction.objectIndex];
+    modelFlowDrag.touchedObjects = new Set([junction.objectIndex]);
+    modelFlowDrag.startingJunction = junction;
+    modelFlowDrag.isResumedFromPending = true;
+    modelFlowDrag.branchSourceOffset = junction.sourceOffset;
+    // Otherwise the click that resumes the new branch (right where the
+    // finishing double-click just landed) could itself read as another
+    // double-click and immediately re-finish a 1-point branch.
+    modelFlowLastClickTime = null;
+    modelFlowLastClickPos = null;
+    notifyModelState();
+    return;
+  }
+  // Every branch's flow coordinate is measured from the one true source (see
+  // sourceOffset/branchSourceOffset above), not restarted at 0 per branch —
+  // so the pulse only actually reaches a junction, and splits into its
+  // branches, once it's traveled the real distance there. masterTotalLen
+  // (shared by every branch from this arrow) is set by whichever branch
+  // reaches farthest from the source, so a full 0-1 pulse cycle corresponds
+  // to the flow crossing the arrow's single longest source-to-end distance;
+  // shorter branches simply go dark once the pulse passes their own (nearer)
+  // endpoint, which is exactly what a "finishing point" means with more than
+  // one of them.
+  let masterTotalLen = 0;
+  for (const branch of modelFlowDrag.completedBranches) {
+    masterTotalLen = Math.max(masterTotalLen, branch.sourceOffset + pathArcLength(branch.points));
+  }
+  for (const branch of modelFlowDrag.completedBranches) {
+    const path = buildPathMetrics(branch.points);
     // Every object a click actually raycasted onto — the pulse applies to
     // all of them by default (see setFlowArrowObjectEnabled for narrowing
     // this down to just some of them after the fact).
-    path.touchedObjectIndices = [...modelFlowDrag.touchedObjects];
-    path.enabledObjectIndices = [...modelFlowDrag.touchedObjects];
+    path.touchedObjectIndices = [...branch.touchedObjects];
+    path.enabledObjectIndices = [...branch.touchedObjects];
+    path.sourceOffset = branch.sourceOffset;
+    path.masterTotalLen = masterTotalLen || 1;
+    path.reversed = false; // see reverseSelectedFlowArrow
     modelFlowPaths.push(path);
+  }
+  if (modelFlowDrag.completedBranches.length > 0) {
     saveModelFlowPath();
     recomputeModelFlowCoords();
-    notifyModelState();
   }
   modelFlowDrag = null;
   modelFlowLastClickTime = null;
   modelFlowLastClickPos = null;
+  notifyModelState();
 }
 
 canvas.addEventListener('pointerdown', (event) => {
@@ -2615,16 +2888,128 @@ canvas.addEventListener('pointerdown', (event) => {
     return;
   }
   if (!modelFlowDrag) {
-    modelFlowDrag = { points: [hit.point], pointObjectIndices: [hit.objectIndex], touchedObjects: new Set([hit.objectIndex]) };
+    modelFlowDrag = {
+      points: [hit.point],
+      pointObjectIndices: [hit.objectIndex],
+      touchedObjects: new Set([hit.objectIndex]),
+      // Which junction (if any) this current branch starts at — null for the
+      // session's very first branch (see isResumedFromPending for the two
+      // ways a branch can end up starting at one). Carried onto
+      // completedBranches (see closeCurrentBranchIntoCompleted) so undo can
+      // restore it if the user un-draws all the way back past it.
+      startingJunction: null,
+      // Whether startingJunction (if set) came from explicitly resuming a
+      // queued split (popped off pendingJunctions in finalizeModelFlowDrag —
+      // "Branch 3"/"Branch 4" in a junction-then-junction diagram) versus
+      // being the automatic continuation created the instant its junction
+      // was shift-clicked (see the shift+click handling below — "Branch
+      // 2" in that same diagram: it still starts at a junction, but was
+      // never actually popped off pendingJunctions). Matters for exactly two
+      // things: only a resumed branch growing past its seed closes its
+      // junction (see the "grew past the seed" check below — the automatic
+      // continuation isn't the side that resolves the split), and undo needs
+      // to know whether to push the junction back onto pendingJunctions or
+      // just remove it again (see undoLastModelFlowArrow).
+      isResumedFromPending: false,
+      // Cumulative arc length from the whole arrow's true source (the very
+      // first point of its first branch) to this branch's own start point —
+      // 0 for the first branch, or a junction's own sourceOffset when
+      // starting at one (see finalizeModelFlowDrag/the shift+click handling
+      // below). Lets every branch's flow coordinate be measured from the one
+      // true source rather than restarting at 0, so the traveling pulse only
+      // reaches a junction (and splits into its branches) once it's actually
+      // traveled there — see masterTotalLen in
+      // finalizeModelFlowDrag/recomputeModelFlowCoords.
+      branchSourceOffset: 0,
+      // Branches already closed off this session (see
+      // closeCurrentBranchIntoCompleted) but not yet pushed to
+      // modelFlowPaths — held back until every junction closes (see
+      // finalizeModelFlowDrag/pendingJunctions).
+      completedBranches: [],
+      // At most one entry at a time — only one junction can be open
+      // (awaiting its second, explicitly-resumed branch) at once, so each
+      // one still only ever splits two ways — but the session can work
+      // through any number of them sequentially, since a new shift+click is
+      // allowed again as soon as the previous one closes (see
+      // hasOpenJunction below). Kept as an array (rather than a single
+      // nullable field) since finalizeModelFlowDrag/undoLastModelFlowArrow
+      // already just push/pop/splice it either way.
+      pendingJunctions: [],
+      // Every junction from this session whose explicitly-resumed branch has
+      // since grown past its seed point (see the "grew past the seed" check
+      // below) — rendered as a yellow dot instead of pendingJunctions' red.
+      // Purely a display concern.
+      closedJunctions: [],
+    };
   } else {
     modelFlowDrag.points.push(hit.point);
     modelFlowDrag.pointObjectIndices.push(hit.objectIndex);
     modelFlowDrag.touchedObjects.add(hit.objectIndex);
+    // The current branch just grew past its junction seed point (i.e. this
+    // is the resumed branch's first real point, not just the auto-seeded
+    // junction itself) — the junction is committed to now, so it turns
+    // yellow immediately rather than waiting for this branch to be
+    // double-click finished (see closedJunctions' rendering). Scoped to
+    // isResumedFromPending: the automatic continuation created alongside a
+    // brand-new junction (see below) also starts at 1 point and would
+    // otherwise trip this same check the moment it gets its own next click —
+    // but that's not the side that resolves the split, its sibling branch is.
+    if (modelFlowDrag.isResumedFromPending && modelFlowDrag.startingJunction && modelFlowDrag.points.length === 2 && !modelFlowDrag.closedJunctions.includes(modelFlowDrag.startingJunction)) {
+      modelFlowDrag.closedJunctions.push(modelFlowDrag.startingJunction);
+    }
+  }
+  // Shift+click makes the just-placed point a junction — and, unlike a plain
+  // click, closes off the branch here immediately (see
+  // closeCurrentBranchIntoCompleted) rather than letting it keep going
+  // through the junction: a branch is only ever the stretch between one
+  // junction (or the true source) and wherever it next ends, whether that's
+  // an arrowhead or another junction — never a through-line straddling one.
+  // A fresh branch then starts right away at this same point (the
+  // "automatic continuation" — whatever's clicked next), while the junction
+  // itself is queued in pendingJunctions for its second, explicitly-resumed
+  // branch once the continuation is eventually finished (see
+  // finalizeModelFlowDrag). Only allowed while no other junction from this
+  // session is still open (pending, or resumed but not yet grown past its
+  // seed point) — once one closes (turns yellow), a fresh shift+click can
+  // open the next one, so one arrow can carry any number of splits, just
+  // never two unresolved at once.
+  const hasOpenJunction =
+    modelFlowDrag.pendingJunctions.length > 0 ||
+    (modelFlowDrag.startingJunction && !modelFlowDrag.closedJunctions.includes(modelFlowDrag.startingJunction));
+  if (event.shiftKey && !hasOpenJunction) {
+    // sourceOffset: how far the true source is from *this* point — the
+    // current branch's own offset plus the arc length walked within this
+    // branch so far (points already includes the just-placed point above).
+    const sourceOffset = modelFlowDrag.branchSourceOffset + pathArcLength(modelFlowDrag.points);
+    const junction = { point: hit.point, objectIndex: hit.objectIndex, sourceOffset };
+    closeCurrentBranchIntoCompleted(modelFlowDrag);
+    modelFlowDrag.points = [junction.point];
+    modelFlowDrag.pointObjectIndices = [junction.objectIndex];
+    modelFlowDrag.touchedObjects = new Set([junction.objectIndex]);
+    modelFlowDrag.startingJunction = junction;
+    modelFlowDrag.isResumedFromPending = false;
+    modelFlowDrag.branchSourceOffset = junction.sourceOffset;
+    modelFlowDrag.pendingJunctions.push(junction);
   }
   modelFlowLastClickTime = now;
   modelFlowLastClickPos = { x: event.clientX, y: event.clientY };
 });
 
+// Rubber-band preview: while a branch is mid-drag, renderCubeFrame draws a
+// dashed line from the last placed point out to wherever the cursor
+// currently raycasts onto the green mesh — showing where the next click
+// would land before it's actually confirmed. raycastGreenMesh linearly
+// scans every green triangle, so it's deliberately NOT run per mousemove
+// event (which can fire far faster than the display refreshes) — this just
+// records the latest client position cheaply, and renderCubeFrame raycasts
+// it at most once per rendered frame, see modelFlowHoverClientPos below.
+let modelFlowHoverClientPos = null;
+canvas.addEventListener('pointermove', (event) => {
+  modelFlowHoverClientPos = modelFlowDrawMode && modelFlowDrag ? { x: event.clientX, y: event.clientY } : null;
+});
+canvas.addEventListener('pointerleave', () => {
+  modelFlowHoverClientPos = null;
+});
 window.addEventListener('pointerup', (event) => {
   if (modelFlowSelectDownPos) {
     const dx = event.clientX - modelFlowSelectDownPos.x, dy = event.clientY - modelFlowSelectDownPos.y;
@@ -2728,6 +3113,152 @@ function drawAxisGizmo(rx, ry) {
       axisGizmoCtx.fillText(tip.label, lx, ly);
     }
   }
+}
+
+// Real bloom for the flow pulse (see uGlowOnly in CUBE_FRAGMENT_SHADER):
+// render just the pulse's own color/intensity — nothing else — to a small
+// offscreen texture (BLOOM_DOWNSCALE below full resolution, cheap to blur),
+// blur it in two separable passes (horizontal then vertical, ping-ponging
+// between two more render targets), then composite the result additively
+// over the finished frame. Unlike the earlier in-shader "wider Gaussian"
+// approximation, this actually bleeds light across the model's silhouette
+// rather than just widening the lit patch on the pulse's own faces.
+const BLOOM_DOWNSCALE = 4;
+// Boosts the glow-only pass's color before it's blurred — blurring a small
+// bright dot spreads its energy over a much larger area, which dims its
+// peak brightness proportionally, so this compensates to keep the bloom
+// actually visible rather than washed out to near-black.
+const BLOOM_SOURCE_BOOST = 4.0;
+
+// Creates an RGBA render target (texture + the framebuffer that renders into
+// it) at the given size, with its own depth renderbuffer attached — the
+// glow-only pass (see below) needs real depth testing too, so a pulse on a
+// part of the model that's actually hidden behind another part doesn't
+// still bleed bloom through it. LINEAR filtering lets the blur shader's
+// bilinear sampling do half its work for free (see BLUR_FRAGMENT_SHADER's
+// 5-tap offsets, which rely on it). CLAMP_TO_EDGE avoids wrap-around
+// bleeding at the downsampled texture's edges.
+function createRenderTarget(width, height) {
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const depthBuffer = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+  const framebuffer = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { texture, framebuffer, width, height };
+}
+
+// Recreated lazily whenever the canvas's backing-store size changes (see
+// ensureBloomTargets, called each frame from renderCubeFrame) rather than
+// tied into resize()/applyCanvasSize directly, since renderScale (dynamic
+// resolution scaling) changes canvas.width/height independently of a real
+// window resize.
+let bloomSource = null; // the glow-only pass renders here, at 1/BLOOM_DOWNSCALE resolution
+let bloomBlurA = null; // horizontal blur pass output / vertical blur pass input
+let bloomBlurB = null; // vertical blur pass output — this is what gets composited back
+let bloomWidth = 0;
+let bloomHeight = 0;
+
+function ensureBloomTargets() {
+  const w = Math.max(1, Math.round(canvas.width / BLOOM_DOWNSCALE));
+  const h = Math.max(1, Math.round(canvas.height / BLOOM_DOWNSCALE));
+  if (w === bloomWidth && h === bloomHeight && bloomSource) return;
+  bloomWidth = w;
+  bloomHeight = h;
+  bloomSource = createRenderTarget(w, h);
+  bloomBlurA = createRenderTarget(w, h);
+  bloomBlurB = createRenderTarget(w, h);
+}
+
+// Fullscreen-triangle vertex shader shared by the blur and composite passes
+// below — a single triangle that overshoots the [-1,1] clip-space square on
+// two sides is the standard trick to cover the viewport with no seam down
+// the middle (unlike two triangles sharing a diagonal edge).
+const POST_VERTEX_SHADER = `
+  attribute vec2 aPostPosition;
+  varying vec2 vUv;
+  void main() {
+    vUv = aPostPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPostPosition, 0.0, 1.0);
+  }
+`;
+
+// Separable Gaussian blur, one direction per draw call (uDirection is (1,0)
+// for the horizontal pass, (0,1) for the vertical one) — the classic 5-tap
+// linear-sampled approximation (weights/offsets from the well-known
+// "efficient Gaussian blur with linear sampling" technique), which gets a
+// 9-tap-wide blur out of 5 texture reads by landing each sample between two
+// texels and letting the GPU's bilinear filtering blend them. Also doubles
+// as the final composite copy (see renderCubeFrame): with uDirection at
+// (0,0) every offset collapses to zero and the weights still sum to 1, so
+// it passes the texture through unblurred.
+const BLUR_FRAGMENT_SHADER = `
+  precision mediump float;
+  varying vec2 vUv;
+  uniform sampler2D uTexture;
+  uniform vec2 uTexelSize;
+  uniform vec2 uDirection;
+  void main() {
+    vec2 off1 = uDirection * uTexelSize * 1.3846153846;
+    vec2 off2 = uDirection * uTexelSize * 3.2307692308;
+    vec4 sum = texture2D(uTexture, vUv) * 0.2270270270;
+    sum += texture2D(uTexture, vUv + off1) * 0.3162162162;
+    sum += texture2D(uTexture, vUv - off1) * 0.3162162162;
+    sum += texture2D(uTexture, vUv + off2) * 0.0702702703;
+    sum += texture2D(uTexture, vUv - off2) * 0.0702702703;
+    gl_FragColor = sum;
+  }
+`;
+
+const postProgram = gl.createProgram();
+gl.attachShader(postProgram, compileShader(gl.VERTEX_SHADER, POST_VERTEX_SHADER));
+gl.attachShader(postProgram, compileShader(gl.FRAGMENT_SHADER, BLUR_FRAGMENT_SHADER));
+// Pinned to an attribute index (7) well past cubeProgram/lineProgram's own
+// handful of attributes (0-5ish, implementation-assigned) — vertex attrib
+// enable/pointer state lives per-index, not per-program, so if this instead
+// happened to land on the same index as e.g. cubeProgram's aPosition,
+// binding it here would silently corrupt the main scene's own attribute
+// once rendering switches back to cubeProgram after the blur passes. Must
+// be called before linking for it to take effect.
+gl.bindAttribLocation(postProgram, 7, 'aPostPosition');
+gl.linkProgram(postProgram);
+if (!gl.getProgramParameter(postProgram, gl.LINK_STATUS)) {
+  throw new Error(gl.getProgramInfoLog(postProgram));
+}
+const aPostPosition = gl.getAttribLocation(postProgram, 'aPostPosition');
+const uPostTexture = gl.getUniformLocation(postProgram, 'uTexture');
+const uPostTexelSize = gl.getUniformLocation(postProgram, 'uTexelSize');
+const uPostDirection = gl.getUniformLocation(postProgram, 'uDirection');
+
+// Single overscanned triangle covering clip space — see POST_VERTEX_SHADER.
+const POST_TRIANGLE = new Float32Array([-1, -1, 3, -1, -1, 3]);
+const postTriangleBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, postTriangleBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, POST_TRIANGLE, gl.STATIC_DRAW);
+
+// One blur pass: binds `target`'s framebuffer, samples `source`'s texture,
+// blurring along `direction` ((1,0) or (0,1); (0,0) for an unblurred copy —
+// see BLUR_FRAGMENT_SHADER). Assumes postProgram is already the active
+// program and the vertex attrib/buffer are already bound (see their one-time
+// setup just above and in renderCubeFrame's composite call) — every caller
+// this frame shares that same state, so there's no point rebinding per call.
+function drawPostPass(source, target, direction) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.framebuffer : null);
+  gl.viewport(0, 0, target ? target.width : canvas.width, target ? target.height : canvas.height);
+  gl.bindTexture(gl.TEXTURE_2D, source.texture);
+  gl.uniform1i(uPostTexture, 0);
+  gl.uniform2f(uPostTexelSize, 1 / source.width, 1 / source.height);
+  gl.uniform2f(uPostDirection, direction[0], direction[1]);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
 function renderCubeFrame() {
@@ -2872,6 +3403,51 @@ function renderCubeFrame() {
     gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
   }
 
+  // Real bloom for the flow pulse (see uGlowOnly/BLOOM_DOWNSCALE above):
+  // render the pulse-only glow to a small offscreen target, blur it, and
+  // leave the result in bloomBlurB for the composite draw at the end of
+  // this function. Reuses the same attribs/modelView/projection already
+  // bound above — just a framebuffer/viewport/uniform swap around one extra
+  // draw call of the same geometry. Skipped entirely when there's no pulse.
+  if (flowActive) {
+    ensureBloomTargets();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bloomSource.framebuffer);
+    gl.viewport(0, 0, bloomSource.width, bloomSource.height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.uniform1i(uGlowOnly, 1);
+    gl.uniform3f(
+      uFlowColor,
+      BLUEPRINT_FLOW_COLOR[0] * BLOOM_SOURCE_BOOST,
+      BLUEPRINT_FLOW_COLOR[1] * BLOOM_SOURCE_BOOST,
+      BLUEPRINT_FLOW_COLOR[2] * BLOOM_SOURCE_BOOST,
+    );
+    if (showCustomModel) {
+      gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
+    } else {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
+      gl.drawElements(gl.TRIANGLES, CUBE_INDICES.length, gl.UNSIGNED_SHORT, 0);
+    }
+    gl.uniform1i(uGlowOnly, 0);
+    gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
+
+    gl.useProgram(postProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, postTriangleBuffer);
+    gl.enableVertexAttribArray(aPostPosition);
+    gl.vertexAttribPointer(aPostPosition, 2, gl.FLOAT, false, 0, 0);
+    // Depth-testing a fullscreen blur pass against whatever the (unrelated)
+    // target's depth buffer happens to hold makes no sense — off for both
+    // blur passes, restored before returning to the real scene render.
+    gl.disable(gl.DEPTH_TEST);
+    drawPostPass(bloomSource, bloomBlurA, [1, 0]);
+    drawPostPass(bloomBlurA, bloomBlurB, [0, 1]);
+    gl.enable(gl.DEPTH_TEST);
+
+    gl.useProgram(cubeProgram);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+
   // In blueprint mode the filled pass is nudged back with polygon offset so
   // the wireframe (drawn without it, right after) sits cleanly on top
   // instead of z-fighting with the coplanar filled faces underneath it.
@@ -2917,16 +3493,35 @@ function renderCubeFrame() {
     // highlight color so it's obviously distinct before deleting it. The
     // in-progress drag (not yet double-clicked to finish — see
     // finalizeModelFlowDrag) is also its own batch, in gray, so it reads as
-    // "still being drawn" until it's confirmed and turns white like the rest.
+    // "still being drawn" until it's confirmed and turns blue like the rest.
     const unselectedPointLists = [];
     let selectedPointList = null;
+    // Every finalized arrow's true source point (sourceOffset === 0 — the
+    // very first point of the very first branch, see finalizeModelFlowDrag)
+    // — collected here (where the actual path objects, not just their
+    // .points arrays, are in scope) for the black origin dot below.
+    const finishedOriginPoints = [];
     if (showModelFlowArrow) {
       modelFlowPaths.forEach((path, i) => {
         if (i === selectedFlowArrowIndex) selectedPointList = path.points;
         else unselectedPointLists.push(path.points);
+        if (path.sourceOffset === 0) finishedOriginPoints.push(path.points[0]);
       });
     }
-    const dragPointList = modelFlowDrag && modelFlowDrag.points.length >= 2 ? modelFlowDrag.points : null;
+    // Every branch from this drawing session that isn't in modelFlowPaths
+    // yet — branches already double-click-finished but still waiting on a
+    // pending junction (see completedBranches/finalizeModelFlowDrag), plus
+    // whichever branch is currently being clicked out — all rendered as one
+    // batch so a multi-branch arrow reads as a single in-progress unit. Tied
+    // to showModelFlowArrow same as finalized arrows below, so "Show arrows"
+    // is a single master visibility switch rather than only hiding the ones
+    // already finished.
+    const dragPointLists = modelFlowDrag && showModelFlowArrow
+      ? [
+          ...modelFlowDrag.completedBranches.map((b) => b.points),
+          ...(modelFlowDrag.points.length >= 2 ? [modelFlowDrag.points] : []),
+        ]
+      : [];
 
     // Shared by the arrow ribbon below and the pivot orb further down —
     // projects object-space points straight to NDC/clip space on the CPU
@@ -2935,7 +3530,7 @@ function renderCubeFrame() {
     // so this *is* the final NDC position, no perspective divide needed).
     const combined = mat4Multiply(cubeProjection, modelView);
 
-    if (unselectedPointLists.length > 0 || selectedPointList || dragPointList) {
+    if (unselectedPointLists.length > 0 || selectedPointList || dragPointLists.length > 0) {
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
       gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
       gl.enableVertexAttribArray(aLinePosition);
@@ -2965,8 +3560,8 @@ function renderCubeFrame() {
         gl.drawArrays(gl.TRIANGLES, 0, ribbon.length / 3);
       }
 
-      if (dragPointList) {
-        const ribbon = buildArrowRibbonNDC([dragPointList], combined, canvas.width, canvas.height, MODEL_FLOW_ARROW_HALF_WIDTH_PX);
+      if (dragPointLists.length > 0) {
+        const ribbon = buildArrowRibbonNDC(dragPointLists, combined, canvas.width, canvas.height, MODEL_FLOW_ARROW_HALF_WIDTH_PX);
         gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowOverlayBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, ribbon, gl.DYNAMIC_DRAW);
         gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
@@ -2978,23 +3573,124 @@ function renderCubeFrame() {
       gl.uniform1f(uLineAlpha, 1.0);
     }
 
-    // Click-point markers for the arrow currently being drawn (see
-    // buildPointMarkersNDC above) — only while draw mode is on, so they
-    // never linger over a finalized arrow that's no longer editable.
-    if (modelFlowDrawMode && modelFlowDrag && modelFlowDrag.points.length > 0) {
-      const markers = buildPointMarkersNDC(
-        modelFlowDrag.points, combined, canvas.width, canvas.height,
-        MODEL_FLOW_POINT_RADIUS_PX, MODEL_FLOW_POINT_COLOR_CENTER, MODEL_FLOW_POINT_COLOR_EDGE,
+    // Rubber-band preview: a dashed line from the last placed point out to
+    // wherever the cursor currently raycasts (see modelFlowHoverClientPos —
+    // raycast here, at most once per rendered frame, rather than per raw
+    // mousemove event), previewing the segment a click would add next. Not
+    // folded into the ribbon block above since it needs to show from the
+    // very first point placed — before dragPointLists has the 2 points it
+    // requires for an actual ribbon segment to exist yet.
+    const hoverHit = showModelFlowArrow && modelFlowDrawMode && modelFlowDrag && modelFlowDrag.points.length > 0 && modelFlowHoverClientPos
+      ? raycastGreenMesh(modelFlowHoverClientPos.x, modelFlowHoverClientPos.y)
+      : null;
+    if (hoverHit) {
+      const lastPoint = modelFlowDrag.points[modelFlowDrag.points.length - 1];
+      const dashes = buildDashedLineNDC(
+        lastPoint, hoverHit.point, combined, canvas.width, canvas.height,
+        MODEL_FLOW_HOVER_LINE_HALF_WIDTH_PX, MODEL_FLOW_HOVER_DASH_LENGTH_PX, MODEL_FLOW_HOVER_DASH_GAP_PX,
       );
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
       gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
-      gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowPointsBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, markers, gl.DYNAMIC_DRAW);
       gl.enableVertexAttribArray(aLinePosition);
-      gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 24, 0);
+      gl.disableVertexAttribArray(aLineColor);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.uniform1f(uLineAlpha, MODEL_FLOW_ARROW_OPACITY);
+      gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowOverlayBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, dashes, gl.DYNAMIC_DRAW);
+      gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+      gl.vertexAttrib3f(aLineColor, MODEL_FLOW_ARROW_DRAG_COLOR[0], MODEL_FLOW_ARROW_DRAG_COLOR[1], MODEL_FLOW_ARROW_DRAG_COLOR[2]);
+      gl.drawArrays(gl.TRIANGLES, 0, dashes.length / 3);
+      gl.disable(gl.BLEND);
+      gl.uniform1f(uLineAlpha, 1.0);
+    }
+
+    // Point/junction dots — gated on showModelFlowPoints alone (independent
+    // of "Show arrows"/showModelFlowArrow, which only covers the
+    // ribbon/finalized-arrow lines themselves), covering two disjoint sets:
+    // finalized arrows (below) and whichever branch is still being drawn
+    // (further below, also requires draw mode). Shared uLineModelView/
+    // uLineProjection/attrib setup, since both sections use the same
+    // identity-projection NDC-marker technique.
+    if (showModelFlowPoints && (unselectedPointLists.length > 0 || selectedPointList || (modelFlowDrawMode && modelFlowDrag && modelFlowDrag.points.length > 0))) {
+      gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
+      gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
+      gl.enableVertexAttribArray(aLinePosition);
       gl.enableVertexAttribArray(aLineColor);
-      gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 24, 12);
-      gl.drawArrays(gl.TRIANGLES, 0, markers.length / 6);
+
+      // Finalized arrows: a point is inferred to be a (necessarily already
+      // closed) junction purely by appearing in more than one path's own
+      // points array — the exact same point object is shared across a
+      // session's branches when one resumes from another (see
+      // finalizeModelFlowDrag) — so no extra bookkeeping survives
+      // finalizing an arrow, this is just reference-counting it back out.
+      // Priority when a point qualifies as more than one (e.g. a junction
+      // shift-clicked right before the branch it's on was itself finished
+      // there): origin > junction > endpoint > plain.
+      const finishedPathsPoints = selectedPointList ? [...unselectedPointLists, selectedPointList] : unselectedPointLists;
+      if (finishedPathsPoints.length > 0) {
+        const originRefs = new Set(finishedOriginPoints);
+        const endpointRefs = new Set(finishedPathsPoints.map((points) => points[points.length - 1]));
+        const refCounts = new Map();
+        for (const points of finishedPathsPoints) {
+          for (const p of points) {
+            if (originRefs.has(p)) continue; // origin gets its own orange dot below, takes priority over the rest
+            refCounts.set(p, (refCounts.get(p) || 0) + 1);
+          }
+        }
+        const finishedPlainPoints = [];
+        const finishedJunctionPoints = [];
+        const finishedEndpointPoints = [];
+        for (const [p, count] of refCounts) {
+          if (count >= 2) finishedJunctionPoints.push(p);
+          else if (endpointRefs.has(p)) finishedEndpointPoints.push(p);
+          else finishedPlainPoints.push(p);
+        }
+        drawPointMarkerBatch(finishedPlainPoints, combined, MODEL_FLOW_POINT_RADIUS_PX, MODEL_FLOW_POINT_COLOR_CENTER, MODEL_FLOW_POINT_COLOR_EDGE);
+        drawPointMarkerBatch(finishedJunctionPoints, combined, MODEL_FLOW_JUNCTION_RADIUS_PX, MODEL_FLOW_JUNCTION_CLOSED_COLOR_CENTER, MODEL_FLOW_JUNCTION_CLOSED_COLOR_EDGE);
+        drawPointMarkerBatch(finishedEndpointPoints, combined, MODEL_FLOW_ENDPOINT_RADIUS_PX, MODEL_FLOW_ENDPOINT_COLOR_CENTER, MODEL_FLOW_ENDPOINT_COLOR_EDGE);
+        drawPointMarkerBatch(finishedOriginPoints, combined, MODEL_FLOW_ORIGIN_RADIUS_PX, MODEL_FLOW_ORIGIN_COLOR_CENTER, MODEL_FLOW_ORIGIN_COLOR_EDGE);
+      }
+
+      // The arrow currently being drawn (see the draw-mode pointerdown
+      // handler) — every point from every branch in this session, not just
+      // the current one, so a closed-off junction's point stays visibly
+      // marked while its sibling branch is being drawn. Only while draw
+      // mode is on, so these never linger once nothing's actually mid-drag.
+      if (modelFlowDrawMode && modelFlowDrag && modelFlowDrag.points.length > 0) {
+        const unfinishedJunctionPoints = [
+          ...modelFlowDrag.pendingJunctions.map((j) => j.point),
+          // Still unfinished the moment it's resumed (popped off
+          // pendingJunctions) and until the branch drawn from it actually
+          // completes — see closedJunctions in finalizeModelFlowDrag.
+          ...(modelFlowDrag.startingJunction && !modelFlowDrag.closedJunctions.includes(modelFlowDrag.startingJunction)
+            ? [modelFlowDrag.startingJunction.point]
+            : []),
+        ];
+        const closedJunctionPoints = modelFlowDrag.closedJunctions.map((j) => j.point);
+        const junctionPointRefs = new Set([...unfinishedJunctionPoints, ...closedJunctionPoints]);
+
+        // The session's one true source point: the very first point of the
+        // very first branch (the one branch — current or already completed
+        // — whose own startingJunction is null, i.e. it never resumed from
+        // anywhere). Excluded below like the junctions, for its own black dot.
+        const dragOriginBranch = modelFlowDrag.startingJunction === null
+          ? modelFlowDrag
+          : modelFlowDrag.completedBranches.find((b) => b.startingJunction === null);
+        const dragOriginPoint = dragOriginBranch ? dragOriginBranch.points[0] : null;
+
+        // Plain click points exclude junctions and the origin — those get
+        // their own red/yellow/black dot below instead of a generic white one.
+        const allDragPoints = modelFlowDrag.completedBranches
+          .flatMap((b) => b.points)
+          .concat(modelFlowDrag.points)
+          .filter((p) => !junctionPointRefs.has(p) && p !== dragOriginPoint);
+
+        drawPointMarkerBatch(allDragPoints, combined, MODEL_FLOW_POINT_RADIUS_PX, MODEL_FLOW_POINT_COLOR_CENTER, MODEL_FLOW_POINT_COLOR_EDGE);
+        drawPointMarkerBatch(unfinishedJunctionPoints, combined, MODEL_FLOW_JUNCTION_RADIUS_PX, MODEL_FLOW_JUNCTION_UNFINISHED_COLOR_CENTER, MODEL_FLOW_JUNCTION_UNFINISHED_COLOR_EDGE);
+        drawPointMarkerBatch(closedJunctionPoints, combined, MODEL_FLOW_JUNCTION_RADIUS_PX, MODEL_FLOW_JUNCTION_CLOSED_COLOR_CENTER, MODEL_FLOW_JUNCTION_CLOSED_COLOR_EDGE);
+        drawPointMarkerBatch(dragOriginPoint ? [dragOriginPoint] : [], combined, MODEL_FLOW_ORIGIN_RADIUS_PX, MODEL_FLOW_ORIGIN_COLOR_CENTER, MODEL_FLOW_ORIGIN_COLOR_EDGE);
+      }
     }
 
     // Pivot orb + floor guide (see buildPivotOrbNDC/buildDashedLineNDC
@@ -3039,6 +3735,26 @@ function renderCubeFrame() {
       gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 24, 12);
       gl.drawArrays(gl.TRIANGLES, 0, orb.length / 6);
     }
+  }
+
+  // Composite the blurred flow-pulse bloom (see the glow-only render+blur
+  // pass above) additively over the finished frame — last thing drawn
+  // before the (separate, 2D-canvas) axis gizmo, so it sits on top of the
+  // fill/wireframe/arrow overlays/pivot orb alike.
+  if (flowActive) {
+    gl.useProgram(postProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, postTriangleBuffer);
+    gl.enableVertexAttribArray(aPostPosition);
+    gl.vertexAttribPointer(aPostPosition, 2, gl.FLOAT, false, 0, 0);
+    // A fullscreen additive pass has no business depth-testing against
+    // whatever the real scene left in the depth buffer — every pixel of the
+    // bloom should add, regardless of what's nearest there.
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    drawPostPass(bloomBlurB, null, [0, 0]); // direction (0,0): unblurred copy (see BLUR_FRAGMENT_SHADER)
+    gl.disable(gl.BLEND);
+    gl.enable(gl.DEPTH_TEST);
   }
 
   drawAxisGizmo(rx, ry);
@@ -3351,6 +4067,7 @@ export const controls = {
       plusSizeMax: PLUS_SIZE_MAX,
       hoverMovementPaused,
       rotationDisabled,
+      showModelFlowPoints,
       ...getModelState(),
     };
   },
@@ -3382,10 +4099,12 @@ export const controls = {
   setModelFlowDraw,
   setModelFlowSelectMode,
   deleteSelectedModelFlowArrow,
+  reverseSelectedFlowArrow,
   setFlowArrowObjectEnabled,
   clearModelFlow: clearModelFlowPath,
   undoModelFlowArrow: undoLastModelFlowArrow,
   setModelFlowArrowVisible,
+  setModelFlowPointsVisible,
   setHoverMovementPaused,
   setRotationDisabled,
   resetRotation: resetCubeRotation,

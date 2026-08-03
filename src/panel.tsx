@@ -1,3 +1,4 @@
+import { ArrowLeftRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ArrowBigRightDashIcon, type ArrowBigRightDashIconHandle } from "@/components/ui/arrow-big-right-dash";
 import { Button } from "@/components/ui/button";
@@ -770,6 +771,17 @@ export function Panel() {
               </Label>
               <Label className={cn("gap-2.5 text-xs", !state.showModelFlowArrow && "opacity-40")}>
                 <Switch
+                  checked={state.showModelFlowPoints}
+                  disabled={!state.showModelFlowArrow}
+                  onCheckedChange={(checked: boolean) => {
+                    controls.setModelFlowPointsVisible(checked);
+                    setState((s) => ({ ...s, showModelFlowPoints: checked }));
+                  }}
+                />
+                Show points &amp; junctions
+              </Label>
+              <Label className={cn("gap-2.5 text-xs", !state.showModelFlowArrow && "opacity-40")}>
+                <Switch
                   checked={!!state.modelFlowSelectMode}
                   disabled={!state.showModelFlowArrow}
                   onCheckedChange={(checked: boolean) => controls.setModelFlowSelectMode(checked)}
@@ -791,6 +803,15 @@ export function Panel() {
                 <DeleteIcon className="size-3" ref={deleteArrowIconPress.ref} />
                 Delete selected
                 <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Del</Kbd>
+              </Button>
+              <Button
+                disabled={state.selectedFlowArrowIndex == null}
+                onClick={() => controls.reverseSelectedFlowArrow()}
+                size="xs"
+                variant={state.selectedFlowArrowReversed ? "default" : "outline"}
+              >
+                <ArrowLeftRight className="size-3" />
+                Reverse flow
               </Button>
               <Button
                 onClick={() => controls.undoModelFlowArrow()}
