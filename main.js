@@ -228,6 +228,21 @@ function setLightElevation(value) {
   persistNumber('lightElevation', value);
 }
 
+// Scales the directional light's diffuse contribution (see uLightIntensity
+// in CUBE_FRAGMENT_SHADER), as a percent — 100 matches the original
+// fixed-brightness look, higher pushes lit faces brighter/unlit faces
+// darker, lower flattens the shading toward a uniform flat fill.
+const LIGHT_INTENSITY_MIN = 0;
+const LIGHT_INTENSITY_MAX = 200;
+let lightIntensityPercent = restoreNumber('lightIntensity', 100);
+
+function setLightIntensityPercent(value) {
+  const clamped = Math.max(LIGHT_INTENSITY_MIN, Math.min(LIGHT_INTENSITY_MAX, value));
+  lightIntensityPercent = clamped;
+  persistNumber('lightIntensity', clamped);
+  return clamped;
+}
+
 // Cube mode's "Blueprint mode" checkbox: dims the model to a flat navy fill
 // and overlays a crease/boundary-edge wireframe in bright cyan, on a navy
 // background — see renderCubeFrame and buildCreaseEdgeLines.
@@ -238,6 +253,20 @@ let blueprintEnabled = storedBlueprint !== null ? storedBlueprint === 'true' : t
 function setBlueprintEnabled(value) {
   blueprintEnabled = value;
   localStorage.setItem(BLUEPRINT_STORAGE_KEY, String(blueprintEnabled));
+}
+
+// Blueprint shader theme: which background/fill palette renderCubeFrame uses
+// (see BLUEPRINT_THEMES below). Green-material parts and the wireframe line
+// color stay the same across themes — only the "paper" the drawing sits on
+// changes.
+const SHADER_THEME_STORAGE_KEY = 'iconMosaic.shaderTheme';
+const storedShaderTheme = localStorage.getItem(SHADER_THEME_STORAGE_KEY);
+let shaderTheme = storedShaderTheme === 'light' ? 'light' : 'dark';
+
+function setShaderTheme(value) {
+  shaderTheme = value === 'light' ? 'light' : 'dark';
+  localStorage.setItem(SHADER_THEME_STORAGE_KEY, shaderTheme);
+  refreshBlueprintLineColors();
 }
 
 // --- Source: rotating WebGL cube (the only mode this app renders) ---------
@@ -321,6 +350,7 @@ const CUBE_FRAGMENT_SHADER = `
   varying vec3 vPosition;
   varying float vFillPattern;
   uniform vec3 uLightDir;
+  uniform float uLightIntensity;
   uniform bool uBlueprint;
   uniform vec3 uBlueprintFillColor;
   uniform vec3 uBlueprintFillColorGreen;
@@ -427,7 +457,7 @@ const CUBE_FRAGMENT_SHADER = `
     return mix(flatCoverage, crispPlus, resolved);
   }
   void main() {
-    float diff = max(dot(normalize(vNormal), normalize(uLightDir)), 0.0);
+    float diff = max(dot(normalize(vNormal), normalize(uLightDir)), 0.0) * uLightIntensity;
     float brightness = 0.2 + diff * 0.8;
     // Blueprint mode: ignore the material/cube color entirely and shade a
     // flat fill instead (navy, or green for green-material parts), dimmed
@@ -441,9 +471,14 @@ const CUBE_FRAGMENT_SHADER = `
     float shade = uBlueprint ? (0.3 + diff * 1.1) : brightness;
     vec3 color = base * shade;
     // Traveling energy-pulse glow along a user-drawn arrow, restricted to
-    // green (flagged) parts — a Gaussian band that travels along the arrow
-    // over time, driven by a 3D arc-length coordinate (aFlowCoord).
-    if (uBlueprint && uFlowActive && vIsGreen > 0.5) {
+    // green (flagged) parts that some arrow actually touches — a Gaussian
+    // band that travels along the arrow over time, driven by a 3D arc-length
+    // coordinate (aFlowCoord). Vertices on a green part no arrow was ever
+    // drawn on get a negative aFlowCoord (see recomputeModelFlowCoords) so
+    // they never light up, rather than defaulting to 0 and falsely flashing
+    // whenever the pulse happens to pass near the start of some other part's
+    // arrow.
+    if (uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0) {
       float d = vFlowCoord - uFlowPulseCenter;
       float intensity = exp(-(d * d) / (2.0 * uFlowSigma * uFlowSigma));
       color += uFlowColor * intensity;
@@ -578,16 +613,26 @@ const cubeIndexBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, CUBE_INDICES, gl.STATIC_DRAW);
 
-// Blueprint palette: fill uses a dark navy background, default wireframe
-// lines use a mid gray. Green-material parts (see isGreenDominant) instead
-// get a green fill (BLUEPRINT_FILL_COLOR_GREEN) with black edges
-// (BLUEPRINT_LINE_COLOR_GREEN_PART) so they read as a distinct, "called out"
-// element rather than blending into the rest of the drawing. Defined here
-// (ahead of CUBE_LINES below, which needs these at load time) rather than
-// down near the other uniform lookups.
-const BLUEPRINT_BG_COLOR = [0.02, 0.09, 0.2];
-const BLUEPRINT_FILL_COLOR = [4 / 255, 28 / 255, 44 / 255]; // #041C2C
-const BLUEPRINT_LINE_COLOR = [124 / 255, 134 / 255, 142 / 255]; // #7C868E
+// Two selectable blueprint palettes (see shaderTheme/setShaderTheme above) —
+// "dark" is the original navy fill with gray wireframe lines, "light" is a
+// pale gray fill with dark navy wireframe lines. Green-material parts (see
+// isGreenDominant) ignore both and always get a green fill
+// (BLUEPRINT_FILL_COLOR_GREEN) with black edges (BLUEPRINT_LINE_COLOR_GREEN_PART)
+// so they read as a distinct, "called out" element regardless of theme.
+// Defined here (ahead of CUBE_LINES below, which needs these at load time)
+// rather than down near the other uniform lookups.
+const BLUEPRINT_THEMES = {
+  dark: {
+    bg: [0.02, 0.09, 0.2],
+    fill: [4 / 255, 28 / 255, 44 / 255], // #041C2C
+    line: [124 / 255, 134 / 255, 142 / 255], // #7C868E
+  },
+  light: {
+    bg: [244 / 255, 246 / 255, 247 / 255], // #F4F6F7
+    fill: [244 / 255, 246 / 255, 247 / 255], // #F4F6F7
+    line: [4 / 255, 28 / 255, 44 / 255], // #041C2C
+  },
+};
 const BLUEPRINT_FILL_COLOR_GREEN = [68 / 255, 214 / 255, 44 / 255]; // #44D62C
 const BLUEPRINT_LINE_COLOR_GREEN_PART = [0, 0, 0];
 // Bright additive glow color for the traveling flow pulse — added on top of
@@ -645,18 +690,37 @@ function buildCreaseEdgeLines(flatPositions, triIndices, triIsGreen) {
   }
 
   const lines = [];
-  const colors = [];
+  const lineIsGreen = [];
   for (const { i0, i1, count, minDot, isGreen } of edgeMap.values()) {
     if (count === 1 || minDot < CREASE_ANGLE_DOT_THRESHOLD) {
       lines.push(
         flatPositions[i0 * 3], flatPositions[i0 * 3 + 1], flatPositions[i0 * 3 + 2],
         flatPositions[i1 * 3], flatPositions[i1 * 3 + 1], flatPositions[i1 * 3 + 2],
       );
-      const c = isGreen ? BLUEPRINT_LINE_COLOR_GREEN_PART : BLUEPRINT_LINE_COLOR;
-      colors.push(c[0], c[1], c[2], c[0], c[1], c[2]);
+      lineIsGreen.push(isGreen);
     }
   }
-  return { positions: new Float32Array(lines), colors: new Float32Array(colors) };
+  return {
+    positions: new Float32Array(lines),
+    isGreen: lineIsGreen,
+    colors: buildLineColors(lineIsGreen, BLUEPRINT_THEMES[shaderTheme].line),
+  };
+}
+
+// Per-vertex color buffer for a buildCreaseEdgeLines result — green-flagged
+// edges always render in BLUEPRINT_LINE_COLOR_GREEN_PART (black) regardless
+// of theme, everything else gets the current theme's line color. Split out
+// from buildCreaseEdgeLines so switching shaderTheme can recolor the existing
+// edge geometry (see setShaderTheme) without re-deriving creases/boundaries.
+function buildLineColors(lineIsGreen, lineColor) {
+  const colors = new Float32Array(lineIsGreen.length * 6);
+  for (let i = 0; i < lineIsGreen.length; i++) {
+    const c = lineIsGreen[i] ? BLUEPRINT_LINE_COLOR_GREEN_PART : lineColor;
+    const o = i * 6;
+    colors[o] = c[0]; colors[o + 1] = c[1]; colors[o + 2] = c[2];
+    colors[o + 3] = c[0]; colors[o + 4] = c[1]; colors[o + 5] = c[2];
+  }
+  return colors;
 }
 
 const CUBE_LINES = buildCreaseEdgeLines(CUBE_POSITIONS, CUBE_INDICES);
@@ -667,6 +731,20 @@ const cubeLineColorBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, cubeLineColorBuffer);
 gl.bufferData(gl.ARRAY_BUFFER, CUBE_LINES.colors, gl.STATIC_DRAW);
 const cubeLineVertexCount = CUBE_LINES.positions.length / 3;
+
+// Re-uploads cubeLineColorBuffer/customModelLineColorBuffer from the cached
+// per-edge isGreen flags (edge geometry never changes on a theme switch,
+// only which color each non-green edge gets) — see setShaderTheme.
+function refreshBlueprintLineColors() {
+  const lineColor = BLUEPRINT_THEMES[shaderTheme].line;
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeLineColorBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, buildLineColors(CUBE_LINES.isGreen, lineColor), gl.STATIC_DRAW);
+  if (customModelLineIsGreenCache) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineColorBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, buildLineColors(customModelLineIsGreenCache, lineColor), gl.STATIC_DRAW);
+  }
+}
+
 const cubeFlowCoordBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, cubeFlowCoordBuffer);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(24), gl.STATIC_DRAW);
@@ -680,6 +758,7 @@ const aFillPattern = gl.getAttribLocation(cubeProgram, 'aFillPattern');
 const uModelView = gl.getUniformLocation(cubeProgram, 'uModelView');
 const uProjection = gl.getUniformLocation(cubeProgram, 'uProjection');
 const uLightDir = gl.getUniformLocation(cubeProgram, 'uLightDir');
+const uLightIntensity = gl.getUniformLocation(cubeProgram, 'uLightIntensity');
 const uBlueprint = gl.getUniformLocation(cubeProgram, 'uBlueprint');
 const uBlueprintFillColor = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColor');
 const uBlueprintFillColorGreen = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColorGreen');
@@ -1119,6 +1198,18 @@ window.addEventListener('blur', () => {
   if (!zDragging) updateCubeCursor();
 });
 
+// A is a plain toggle (unlike Space/R/Z's hold gestures) for the "Draw flow
+// arrow" mode — press to enter, press again to leave. setModelFlowDraw
+// already handles the enter/leave side effects (resetting position/rotation,
+// dropping an in-progress arrow) and notifies the panel, same as its Switch.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyA' || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  setModelFlowDraw(!modelFlowDrawMode);
+});
+
 // Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
 // and out, reusing the exact same underlying scale as the "Model size"
 // slider (see applyCubeSizePercent) — so it zooms into the pivot crosshair
@@ -1151,7 +1242,17 @@ canvas.addEventListener(
 );
 
 canvas.addEventListener('pointerdown', (event) => {
-  if (modelFlowDrawMode || modelFlowSelectMode) return;
+  if (modelFlowSelectMode) return;
+  if (modelFlowDrawMode) {
+    // Left button is reserved for tracing an arrow (see the draw-mode
+    // pointerdown handler below); right button still rotates the model so a
+    // drawing session isn't stuck at whatever angle it started at.
+    if (event.button !== 2) return;
+    cubeDragging = true;
+    cubeLastPointer = { x: event.clientX, y: event.clientY };
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
   if (zKeyHeld) {
     zDragging = true;
     zLastPointer = { x: event.clientX, y: event.clientY };
@@ -1505,6 +1606,7 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
     fillPattern: new Float32Array(outFillPattern),
     linePositions: lineData.positions,
     lineColors: lineData.colors,
+    lineIsGreen: lineData.isGreen,
     hasMaterials: Object.keys(materials).length > 0,
     objects,
   };
@@ -1631,6 +1733,7 @@ let customModelPositionsCache = null;
 let customModelIsGreenCache = null;
 let customModelObjectIndexCache = null; // one entry per vertex — see parseObj's outObjectIndex
 let customModelLinePositionsCache = null;
+let customModelLineIsGreenCache = null; // one entry per line-position pair — see buildLineColors
 let greenTriPositionsCache = null; // Float32Array, only the triangles flagged green, for cheap raycasting
 let greenTriObjectIndexCache = null; // one entry per green triangle, parallel to greenTriPositionsCache — which object each hit belongs to
 
@@ -1667,6 +1770,7 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null
   customModelIsGreenCache = parsed.isGreen;
   customModelObjectIndexCache = parsed.objectIndex;
   customModelLinePositionsCache = parsed.linePositions;
+  customModelLineIsGreenCache = parsed.lineIsGreen;
 
   // A newly loaded model's object names/centroids have nothing to do with
   // whatever the previous model's camera-target assignments pointed at —
@@ -1810,8 +1914,12 @@ const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // re-bake it here (see saveModelFlowPath) if you want a fresh
 // out-of-the-box arrow.
 const DEFAULT_MODEL_FLOW_PATH_DATA = [];
-const MODEL_FLOW_MIN_POINT_SPACING = 0.03; // object-space units — only record a new drag sample once the hit point has moved this far
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
+// Sentinel aFlowCoord for a green vertex no arrow reaches (no path enables
+// its object) — any negative value works since real arc-length fractions
+// are always in [0, 1]; the fragment shader's `vFlowCoord >= 0.0` check is
+// what actually keeps these vertices dark, this just has to stay negative.
+const MODEL_FLOW_NO_ARROW_COORD = -1;
 const MODEL_FLOW_ARROW_COLOR = [1, 0, 0]; // bright red guide line for unselected/dragged arrow overlays
 const MODEL_FLOW_ARROW_SELECTED_COLOR = [0.15, 0.55, 1]; // blue highlight for the currently selected arrow
 const MODEL_FLOW_ARROW_HALF_WIDTH_PX = 5; // half-width of the ribbon built in buildArrowRibbonNDC below
@@ -1822,6 +1930,12 @@ const MODEL_FLOW_SELECT_MAX_DIST = 0.2;
 // Furthest a pointerdown->pointerup pair can drift (screen pixels) and still
 // count as a click rather than a drag, while in select mode.
 const MODEL_FLOW_SELECT_CLICK_MAX_DRIFT_PX = 6;
+// Draw mode drops one arrow point per click, chaining point 1 -> point 2 ->
+// point 3 etc.; a double-click (two clicks landing within this many ms, this
+// close together on screen) finalizes the arrow at whatever point the first
+// of that pair already added, rather than starting yet another segment.
+const MODEL_FLOW_DRAW_DOUBLE_CLICK_MAX_MS = 400;
+const MODEL_FLOW_DRAW_DOUBLE_CLICK_MAX_DRIFT_PX = 6;
 // The traveling glow pulse loops over this period (scaled by the
 // user-adjustable flowSpeedPercent — see setFlowSpeedPercent) and pads this
 // many sigmas past each end of the path, so it fades in/out via the Gaussian
@@ -1832,7 +1946,9 @@ const FLOW_PULSE_PAD_SIGMAS = 3;
 
 let modelFlowDrawMode = false;
 let modelFlowSelectMode = false;
-let modelFlowDrag = null; // { points: [[x,y,z], ...] } object-space, while actively dragging one new arrow
+let modelFlowDrag = null; // { points: [[x,y,z], ...] } object-space, while actively building one new arrow click-by-click
+let modelFlowLastClickTime = null; // performance.now() of the last point-dropping click, for double-click-to-finish detection
+let modelFlowLastClickPos = null; // { x, y } clientX/Y of that same click
 let modelFlowPaths = []; // [{ points: [[x,y,z], ...], cumLen: number[], totalLen }, ...] one entry per finalized arrow
 let selectedFlowArrowIndex = null; // index into modelFlowPaths, or null if nothing selected
 let modelFlowSelectDownPos = null; // { x, y } clientX/Y at pointerdown, while in select mode — distinguishes a click from a drag
@@ -2183,21 +2299,26 @@ function buildPathMetrics(points) {
 // so every arrow shares the same pulse timing/width regardless of how many
 // arrows exist or how long each one is (see the flowSigma/flowPulseCenter
 // math in renderCubeFrame, which is expressed in this same normalized
-// space). Non-green vertices and vertices with no eligible path at all get
-// 0 — harmless since the fill shader gates the glow behind isGreen anyway.
+// space). Non-green vertices and vertices whose object has no eligible path
+// at all get a negative sentinel (MODEL_FLOW_NO_ARROW_COORD) rather than 0 —
+// see the fragment shader's `vFlowCoord >= 0.0` gate, which is what actually
+// keeps the glow off those parts. Defaulting to a real 0 (a valid arc
+// position) used to make every arrow-less part flash in sync whenever the
+// traveling pulse passed the start of its cycle, since 0 looked exactly like
+// "sitting at the start of some arrow".
 // Called whenever an arrow is drawn/cleared/reconfigured and once after a
 // model (re)loads a restored path.
 function recomputeModelFlowCoords() {
   if (!customModelReady || !customModelPositionsCache) return;
 
   const vertexCount = customModelPositionsCache.length / 3;
-  const flowCoords = new Float32Array(vertexCount);
+  const flowCoords = new Float32Array(vertexCount).fill(MODEL_FLOW_NO_ARROW_COORD);
   if (modelFlowPaths.length > 0) {
     for (let i = 0; i < vertexCount; i++) {
       if (!customModelIsGreenCache[i]) continue;
       const vertexObjectIndex = customModelObjectIndexCache[i];
       const p = [customModelPositionsCache[i * 3], customModelPositionsCache[i * 3 + 1], customModelPositionsCache[i * 3 + 2]];
-      let bestFrac = 0, bestDistSq = Infinity;
+      let bestFrac = MODEL_FLOW_NO_ARROW_COORD, bestDistSq = Infinity;
       for (const path of modelFlowPaths) {
         if (path.enabledObjectIndices && !path.enabledObjectIndices.includes(vertexObjectIndex)) continue;
         const { arcLen, distSq } = nearestPointOnPath3D(path, p);
@@ -2284,7 +2405,7 @@ function deleteSelectedModelFlowArrow() {
 // objects it was drawn over — lets one arrow spanning several objects (e.g.
 // its screen-space path crosses from one green part onto an adjacent one)
 // pulse only some of them. objectIndex must be one of that arrow's own
-// touchedObjectIndices (see the pointerup drag-finalize handler above); the
+// touchedObjectIndices (see finalizeModelFlowDrag below); the
 // panel only ever offers those as choices.
 function setFlowArrowObjectEnabled(objectIndex, enabled) {
   if (selectedFlowArrowIndex === null) return;
@@ -2314,7 +2435,13 @@ function setModelFlowDraw(value) {
     resetCubeRotation();
   } else {
     // Leaving draw mode snaps back to the framed default angle and locks
-    // rotation again, same as a fresh page load.
+    // rotation again, same as a fresh page load. Also drop any arrow that
+    // was still being built click-by-click and never got double-clicked to
+    // finish — otherwise it'd sit around, invisible (not yet in
+    // modelFlowPaths), until a later drawing session picked it back up.
+    modelFlowDrag = null;
+    modelFlowLastClickTime = null;
+    modelFlowLastClickPos = null;
     resetCubeRotation();
     setRotationDisabled(true);
   }
@@ -2336,6 +2463,35 @@ function setModelFlowArrowVisible(value) {
   showModelFlowArrow = value;
 }
 
+// Suppress the browser's right-click menu while drawing so right-drag reads
+// as a rotate gesture instead of popping up a context menu mid-drag.
+canvas.addEventListener('contextmenu', (event) => {
+  if (modelFlowDrawMode) event.preventDefault();
+});
+
+// Finalizes whatever arrow is currently being built click-by-click (see the
+// draw-mode pointerdown handler below) into modelFlowPaths, provided it has
+// at least the two points needed to form a line; a lone first click with no
+// second point (e.g. a stray double-click right at the start) is simply
+// dropped instead of producing a degenerate zero-length arrow.
+function finalizeModelFlowDrag() {
+  if (modelFlowDrag && modelFlowDrag.points.length >= 2) {
+    const path = buildPathMetrics(modelFlowDrag.points);
+    // Every object a click actually raycasted onto — the pulse applies to
+    // all of them by default (see setFlowArrowObjectEnabled for narrowing
+    // this down to just some of them after the fact).
+    path.touchedObjectIndices = [...modelFlowDrag.touchedObjects];
+    path.enabledObjectIndices = [...modelFlowDrag.touchedObjects];
+    modelFlowPaths.push(path);
+    saveModelFlowPath();
+    recomputeModelFlowCoords();
+    notifyModelState();
+  }
+  modelFlowDrag = null;
+  modelFlowLastClickTime = null;
+  modelFlowLastClickPos = null;
+}
+
 canvas.addEventListener('pointerdown', (event) => {
   if (!blueprintEnabled) return;
   if (modelFlowSelectMode) {
@@ -2344,21 +2500,31 @@ canvas.addEventListener('pointerdown', (event) => {
     return;
   }
   if (!modelFlowDrawMode) return;
+  if (event.button !== 0) return; // right button rotates instead (see the other pointerdown handler)
   const hit = raycastGreenMesh(event.clientX, event.clientY);
   if (!hit) return;
-  modelFlowDrag = { points: [hit.point], touchedObjects: new Set([hit.objectIndex]) };
   event.stopPropagation();
-});
-
-window.addEventListener('pointermove', (event) => {
-  if (!modelFlowDrag) return;
-  const hit = raycastGreenMesh(event.clientX, event.clientY);
-  if (!hit) return;
-  const last = modelFlowDrag.points[modelFlowDrag.points.length - 1];
-  if (Math.hypot(hit.point[0] - last[0], hit.point[1] - last[1], hit.point[2] - last[2]) >= MODEL_FLOW_MIN_POINT_SPACING) {
+  const now = performance.now();
+  // A second click landing quickly and in nearly the same screen spot as the
+  // previous one is read as "double-click to finish here" rather than
+  // "add another point" — the point it's finishing at was already added by
+  // the first click of that pair, so this one only finalizes.
+  if (
+    modelFlowDrag &&
+    modelFlowLastClickTime !== null &&
+    now - modelFlowLastClickTime <= MODEL_FLOW_DRAW_DOUBLE_CLICK_MAX_MS &&
+    Math.hypot(event.clientX - modelFlowLastClickPos.x, event.clientY - modelFlowLastClickPos.y) <= MODEL_FLOW_DRAW_DOUBLE_CLICK_MAX_DRIFT_PX
+  ) {
+    finalizeModelFlowDrag();
+    return;
+  }
+  if (!modelFlowDrag) modelFlowDrag = { points: [hit.point], touchedObjects: new Set([hit.objectIndex]) };
+  else {
     modelFlowDrag.points.push(hit.point);
     modelFlowDrag.touchedObjects.add(hit.objectIndex);
   }
+  modelFlowLastClickTime = now;
+  modelFlowLastClickPos = { x: event.clientX, y: event.clientY };
 });
 
 window.addEventListener('pointerup', (event) => {
@@ -2386,22 +2552,10 @@ window.addEventListener('pointerup', (event) => {
     }
     selectedFlowArrowIndex = newIndex;
     notifyModelState();
-    return;
   }
-  if (!modelFlowDrag) return;
-  if (modelFlowDrag.points.length >= 2) {
-    const path = buildPathMetrics(modelFlowDrag.points);
-    // Every object the drag actually raycasted onto — the pulse applies to
-    // all of them by default (see setFlowArrowObjectEnabled for narrowing
-    // this down to just some of them after the fact).
-    path.touchedObjectIndices = [...modelFlowDrag.touchedObjects];
-    path.enabledObjectIndices = [...modelFlowDrag.touchedObjects];
-    modelFlowPaths.push(path);
-    saveModelFlowPath();
-    recomputeModelFlowCoords();
-    notifyModelState();
-  }
-  modelFlowDrag = null;
+  // Arrow points are now dropped on click (pointerdown) and finalized on
+  // double-click, both handled in the pointerdown listener above — pointerup
+  // has nothing left to do for draw mode itself.
 });
 
 // Bottom-right axis gizmo: a small always-visible indicator of which way
@@ -2481,7 +2635,8 @@ function drawAxisGizmo(rx, ry) {
 function renderCubeFrame() {
   gl.viewport(0, 0, canvas.width, canvas.height);
   if (blueprintEnabled) {
-    gl.clearColor(BLUEPRINT_BG_COLOR[0], BLUEPRINT_BG_COLOR[1], BLUEPRINT_BG_COLOR[2], 1);
+    const bg = BLUEPRINT_THEMES[shaderTheme].bg;
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
   } else {
     gl.clearColor(0, 0, 0, 1);
   }
@@ -2547,10 +2702,13 @@ function renderCubeFrame() {
   const azRad = (lightAzimuthValue * Math.PI) / 180;
   const elRad = (lightElevationValue * Math.PI) / 180;
   gl.uniform3f(uLightDir, Math.cos(elRad) * Math.cos(azRad), Math.sin(elRad), Math.cos(elRad) * Math.sin(azRad));
+  gl.uniform1f(uLightIntensity, lightIntensityPercent / 100);
   gl.uniform1i(uBlueprint, blueprintEnabled ? 1 : 0);
-  gl.uniform3f(uBlueprintFillColor, BLUEPRINT_FILL_COLOR[0], BLUEPRINT_FILL_COLOR[1], BLUEPRINT_FILL_COLOR[2]);
+  const blueprintFillColor = BLUEPRINT_THEMES[shaderTheme].fill;
+  gl.uniform3f(uBlueprintFillColor, blueprintFillColor[0], blueprintFillColor[1], blueprintFillColor[2]);
   gl.uniform3f(uBlueprintFillColorGreen, BLUEPRINT_FILL_COLOR_GREEN[0], BLUEPRINT_FILL_COLOR_GREEN[1], BLUEPRINT_FILL_COLOR_GREEN[2]);
-  gl.uniform3f(uHatchLineColor, BLUEPRINT_LINE_COLOR[0], BLUEPRINT_LINE_COLOR[1], BLUEPRINT_LINE_COLOR[2]);
+  const blueprintLineColor = BLUEPRINT_THEMES[shaderTheme].line;
+  gl.uniform3f(uHatchLineColor, blueprintLineColor[0], blueprintLineColor[1], blueprintLineColor[2]);
   gl.uniform1f(uLineFrequency, lineFrequencyValue);
   gl.uniform1f(uDotFrequency, dotFrequencyValue);
   gl.uniform1f(uDotRadius, dotSizePercent / 100);
@@ -3032,7 +3190,11 @@ export const controls = {
       lightAzimuthMax: LIGHT_AZIMUTH_MAX,
       lightElevationMin: LIGHT_ELEVATION_MIN,
       lightElevationMax: LIGHT_ELEVATION_MAX,
+      lightIntensity: lightIntensityPercent,
+      lightIntensityMin: LIGHT_INTENSITY_MIN,
+      lightIntensityMax: LIGHT_INTENSITY_MAX,
       blueprintEnabled,
+      shaderTheme,
       lineFrequency: lineFrequencyValue,
       lineFrequencyMin: LINE_FREQUENCY_MIN,
       lineFrequencyMax: LINE_FREQUENCY_MAX,
@@ -3069,7 +3231,9 @@ export const controls = {
   resetModelPosition,
   setLightAzimuth,
   setLightElevation,
+  setLightIntensityPercent,
   setBlueprintEnabled,
+  setShaderTheme,
   setLineFrequency,
   setDotFrequency,
   setDotSizePercent,

@@ -3,6 +3,7 @@ import { ArrowBigRightDashIcon, type ArrowBigRightDashIconHandle } from "@/compo
 import { Button } from "@/components/ui/button";
 import { DeleteIcon, type DeleteIconHandle } from "@/components/ui/delete";
 import { Field, FieldLabel } from "@/components/ui/field";
+import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Slider, SliderValue } from "@/components/ui/slider";
@@ -483,6 +484,36 @@ export function Panel() {
 
             <div className="flex items-center gap-4">
               <Field className="flex-1 gap-3">
+                <FieldLabel className="text-xs sm:text-xs">Shader theme</FieldLabel>
+                <div className="flex gap-2">
+                  <Button
+                    className="flex-1"
+                    onClick={() => {
+                      controls.setShaderTheme("dark");
+                      setState((s) => ({ ...s, shaderTheme: "dark" }));
+                    }}
+                    size="xs"
+                    variant={state.shaderTheme === "dark" ? "default" : "outline"}
+                  >
+                    Dark
+                  </Button>
+                  <Button
+                    className="flex-1"
+                    onClick={() => {
+                      controls.setShaderTheme("light");
+                      setState((s) => ({ ...s, shaderTheme: "light" }));
+                    }}
+                    size="xs"
+                    variant={state.shaderTheme === "light" ? "default" : "outline"}
+                  >
+                    Light
+                  </Button>
+                </div>
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Field className="flex-1 gap-3">
                 <div className="flex w-full items-center justify-between gap-1">
                   <FieldLabel className="text-xs sm:text-xs">Line frequency</FieldLabel>
                   <span className="text-muted-foreground text-xs tabular-nums">{state.lineFrequency}</span>
@@ -613,6 +644,24 @@ export function Panel() {
               </Field>
             </div>
 
+            <div className="flex items-center gap-4">
+              <Field className="flex-1 gap-3">
+                <div className="flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Light intensity</FieldLabel>
+                  <span className="text-muted-foreground text-xs tabular-nums">{state.lightIntensity}%</span>
+                </div>
+                <Slider
+                  max={state.lightIntensityMax}
+                  min={state.lightIntensityMin}
+                  onValueChange={(value: number | readonly number[]) => {
+                    const clamped = controls.setLightIntensityPercent(value as number);
+                    setState((s) => ({ ...s, lightIntensity: clamped }));
+                  }}
+                  value={state.lightIntensity}
+                />
+              </Field>
+            </div>
+
             <Separator />
 
             <h2 className="font-semibold text-base text-foreground">Interaction Controls</h2>
@@ -673,24 +722,27 @@ export function Panel() {
             <h2 className="font-semibold text-base text-foreground">Flow Controls</h2>
 
             <div className="flex flex-wrap items-center gap-4">
-              <Label className="gap-2.5 text-xs">
-                <Switch
-                  checked={!!state.modelFlowDrawMode}
-                  onCheckedChange={(checked: boolean) => {
-                    controls.setModelFlowDraw(checked);
-                    // main.js resets position on enable, and disables
-                    // rotation again on disable — mirror that here too, same
-                    // as the dedicated "Reset position"/rotation controls do.
-                    setState((s) => ({
-                      ...s,
-                      modelOffsetX: checked ? 0 : s.modelOffsetX,
-                      modelOffsetY: checked ? 0 : s.modelOffsetY,
-                      rotationDisabled: checked ? s.rotationDisabled : true,
-                    }));
-                  }}
-                />
-                Draw flow arrow
-              </Label>
+              <Button
+                onClick={() => {
+                  const next = !state.modelFlowDrawMode;
+                  controls.setModelFlowDraw(next);
+                  // main.js resets position on enable, and disables rotation
+                  // again on disable — mirror that here too, same as the
+                  // dedicated "Reset position"/rotation controls do.
+                  setState((s) => ({
+                    ...s,
+                    modelFlowDrawMode: next,
+                    modelOffsetX: next ? 0 : s.modelOffsetX,
+                    modelOffsetY: next ? 0 : s.modelOffsetY,
+                    rotationDisabled: next ? s.rotationDisabled : true,
+                  }));
+                }}
+                size="xs"
+                variant={state.modelFlowDrawMode ? "default" : "outline"}
+              >
+                Flow Draw Mode
+                <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">A</Kbd>
+              </Button>
               <Label className="gap-2.5 text-xs">
                 <Switch
                   checked={!!state.modelFlowSelectMode}
