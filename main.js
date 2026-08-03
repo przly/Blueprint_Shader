@@ -215,8 +215,8 @@ const LIGHT_AZIMUTH_MIN = 0;
 const LIGHT_AZIMUTH_MAX = 360;
 const LIGHT_ELEVATION_MIN = -90;
 const LIGHT_ELEVATION_MAX = 90;
-let lightAzimuthValue = restoreNumber('lightAzimuth', 170);
-let lightElevationValue = restoreNumber('lightElevation', 30);
+let lightAzimuthValue = restoreNumber('lightAzimuth', 160);
+let lightElevationValue = restoreNumber('lightElevation', 50);
 
 function setLightAzimuth(value) {
   lightAzimuthValue = value;
@@ -529,11 +529,15 @@ const LINE_VERTEX_SHADER = `
 
 // Flat, unlit — the flow pulse only shows on the fill (see CUBE_FRAGMENT_SHADER),
 // so the wireframe/edge lines never carry it regardless of green-flagged status.
+// uLineAlpha defaults to 1 (fully opaque, e.g. the model wireframe) — the
+// flow-arrow ribbons (see renderCubeFrame) lower it and enable gl.BLEND
+// around their draw calls to render at partial opacity over the scene.
 const LINE_FRAGMENT_SHADER = `
   precision mediump float;
   varying vec3 vLineColor;
+  uniform float uLineAlpha;
   void main() {
-    gl_FragColor = vec4(vLineColor, 1.0);
+    gl_FragColor = vec4(vLineColor, uLineAlpha);
   }
 `;
 
@@ -778,6 +782,7 @@ const aLinePosition = gl.getAttribLocation(lineProgram, 'aLinePosition');
 const aLineColor = gl.getAttribLocation(lineProgram, 'aLineColor');
 const uLineModelView = gl.getUniformLocation(lineProgram, 'uLineModelView');
 const uLineProjection = gl.getUniformLocation(lineProgram, 'uLineProjection');
+const uLineAlpha = gl.getUniformLocation(lineProgram, 'uLineAlpha');
 
 gl.enable(gl.DEPTH_TEST);
 gl.clearColor(0, 0, 0, 1);
@@ -1180,9 +1185,10 @@ window.addEventListener('blur', () => {
 
 // Held Z is its own drag gesture, independent of Space/bird's-eye: click and drag
 // while it's held adjusts object-space Y (height) directly — see
-// zDragging's pointerdown/pointermove/pointerup handling below.
+// zDragging's pointerdown/pointermove/pointerup handling below. Excludes
+// Cmd/Ctrl+Z, which is the flow-arrow undo shortcut below instead.
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyZ' || zKeyHeld) return;
+  if (event.code !== 'KeyZ' || zKeyHeld || event.metaKey || event.ctrlKey) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   zKeyHeld = true;
@@ -1196,6 +1202,34 @@ window.addEventListener('keyup', (event) => {
 window.addEventListener('blur', () => {
   zKeyHeld = false;
   if (!zDragging) updateCubeCursor();
+});
+
+// Cmd+Z (Mac) / Ctrl+Z (Windows/Linux) undoes the most recently finalized
+// flow arrow — same action as the panel's "Undo last arrow" button, just
+// without needing draw mode active first (matches that button, which is
+// always clickable). preventDefault stops the browser's own undo from also
+// firing (e.g. undoing an accidental text selection).
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyZ' || !(event.metaKey || event.ctrlKey) || event.shiftKey) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  undoLastModelFlowArrow();
+});
+
+// Delete/Backspace removes whichever flow arrow is currently selected (see
+// setModelFlowSelectMode/the select-mode click handler) — same action as the
+// panel's "Delete selected" button. A no-op (deleteSelectedModelFlowArrow
+// itself just returns) when nothing's selected, so this never fights
+// Backspace's normal job of erasing text in a focused field — the
+// input/textarea/select guard below covers that anyway.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'Delete' && event.code !== 'Backspace') return;
+  if (selectedFlowArrowIndex === null) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  deleteSelectedModelFlowArrow();
 });
 
 // A is a plain toggle (unlike Space/R/Z's hold gestures) for the "Draw flow
@@ -1685,6 +1719,11 @@ function getModelState() {
     selectedFlowArrowIndex,
     modelFlowDrawMode,
     modelFlowSelectMode,
+    // Included (not just in getInitialState) so entering draw mode — which
+    // force-enables this (see setModelFlowDraw) — keeps the panel's "Show
+    // flow arrows" switch in sync even when toggled via the A-key shortcut
+    // rather than the panel's own button.
+    showModelFlowArrow,
     // Per-object pulse toggles for whichever arrow is selected — one entry
     // per object that arrow's drag actually touched, [] if nothing's
     // selected or the selected arrow only ever touched one object (nothing
@@ -1920,9 +1959,11 @@ const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path
 // are always in [0, 1]; the fragment shader's `vFlowCoord >= 0.0` check is
 // what actually keeps these vertices dark, this just has to stay negative.
 const MODEL_FLOW_NO_ARROW_COORD = -1;
-const MODEL_FLOW_ARROW_COLOR = [1, 0, 0]; // bright red guide line for unselected/dragged arrow overlays
+const MODEL_FLOW_ARROW_COLOR = [1, 1, 1]; // white guide line for finalized, unselected arrows
 const MODEL_FLOW_ARROW_SELECTED_COLOR = [0.15, 0.55, 1]; // blue highlight for the currently selected arrow
-const MODEL_FLOW_ARROW_HALF_WIDTH_PX = 5; // half-width of the ribbon built in buildArrowRibbonNDC below
+const MODEL_FLOW_ARROW_DRAG_COLOR = [1, 0, 0]; // red for the not-yet-finalized in-progress drag — turns white once double-clicked to confirm
+const MODEL_FLOW_ARROW_HALF_WIDTH_PX = 3; // half-width of the ribbon built in buildArrowRibbonNDC below
+const MODEL_FLOW_ARROW_OPACITY = 0.75; // applied to all three ribbon batches (finalized/selected/in-progress) via uLineAlpha
 // Furthest an object-space click can land from an arrow's polyline and still
 // count as selecting it (see nearestPointOnPath3D) — beyond this, a click in
 // select mode is treated as clicking empty space and clears the selection.
@@ -1977,7 +2018,12 @@ const pivotOrbBuffer = gl.createBuffer();
 // Returns interleaved [x, y, z, r, g, b] vertices (unlike the ribbon's
 // position-only buffer) since each vertex needs its own color for the
 // center-to-edge gradient rather than one flat gl.vertexAttrib3f color.
-function buildPivotOrbNDC(centerNDC, canvasWidth, canvasHeight, radiusPx) {
+// Factored out of buildPivotOrbNDC so buildPointMarkersNDC below (the
+// flow-draw click-point dots) can reuse the same radial-gradient-disc
+// geometry with its own radius/colors instead of the pivot's fixed gold.
+// Returns a plain array (not yet a typed Float32Array) so multi-point
+// callers can concatenate several discs cheaply before making one.
+function buildOrbVertsNDC(centerNDC, canvasWidth, canvasHeight, radiusPx, colorCenter, colorEdge) {
   const halfW = canvasWidth / 2, halfH = canvasHeight / 2;
   const rx = radiusPx / halfW, ry = radiusPx / halfH;
   const [cx, cy, cz] = centerNDC;
@@ -1986,13 +2032,39 @@ function buildPivotOrbNDC(centerNDC, canvasWidth, canvasHeight, radiusPx) {
     const a0 = (i / PIVOT_ORB_SEGMENTS) * Math.PI * 2;
     const a1 = ((i + 1) / PIVOT_ORB_SEGMENTS) * Math.PI * 2;
     verts.push(
-      cx, cy, cz, ...PIVOT_ORB_COLOR_CENTER,
-      cx + Math.cos(a0) * rx, cy + Math.sin(a0) * ry, cz, ...PIVOT_ORB_COLOR_EDGE,
-      cx + Math.cos(a1) * rx, cy + Math.sin(a1) * ry, cz, ...PIVOT_ORB_COLOR_EDGE,
+      cx, cy, cz, ...colorCenter,
+      cx + Math.cos(a0) * rx, cy + Math.sin(a0) * ry, cz, ...colorEdge,
+      cx + Math.cos(a1) * rx, cy + Math.sin(a1) * ry, cz, ...colorEdge,
     );
+  }
+  return verts;
+}
+
+function buildPivotOrbNDC(centerNDC, canvasWidth, canvasHeight, radiusPx) {
+  return new Float32Array(buildOrbVertsNDC(centerNDC, canvasWidth, canvasHeight, radiusPx, PIVOT_ORB_COLOR_CENTER, PIVOT_ORB_COLOR_EDGE));
+}
+
+// One small disc per placed point of the in-progress flow-arrow drag (see
+// the draw-mode pointerdown handler), so a click's exact landing spot stays
+// visible while the arrow is still being built — not just the ribbon
+// connecting them. pointsObjectSpace/combined follow buildArrowRibbonNDC's
+// convention: object-space points projected to NDC on the CPU via the same
+// projection*modelView matrix used for the rest of the overlay.
+function buildPointMarkersNDC(pointsObjectSpace, combined, canvasWidth, canvasHeight, radiusPx, colorCenter, colorEdge) {
+  const verts = [];
+  for (const p of pointsObjectSpace) {
+    const px = combined[0] * p[0] + combined[4] * p[1] + combined[8] * p[2] + combined[12];
+    const py = combined[1] * p[0] + combined[5] * p[1] + combined[9] * p[2] + combined[13];
+    const pz = combined[2] * p[0] + combined[6] * p[1] + combined[10] * p[2] + combined[14];
+    verts.push(...buildOrbVertsNDC([px, py, pz], canvasWidth, canvasHeight, radiusPx, colorCenter, colorEdge));
   }
   return new Float32Array(verts);
 }
+
+const MODEL_FLOW_POINT_RADIUS_PX = 12;
+const MODEL_FLOW_POINT_COLOR_CENTER = [1, 1, 1]; // white highlight, reads clearly against the red guide ribbon
+const MODEL_FLOW_POINT_COLOR_EDGE = [0.55, 0.55, 0.55];
+const modelFlowPointsBuffer = gl.createBuffer();
 
 // Floor guide: a dashed yellow line straight down (object-space Y=0 is the
 // floor — see CUSTOM_MODEL_ROTATE_Y_RAD) from the pivot orb to the floor
@@ -2376,9 +2448,25 @@ function applyDefaultModelFlowPath() {
   notifyModelState();
 }
 
-// Drops only the most recently finalized arrow, leaving any earlier ones
-// (and an in-progress drag, if the user is mid-arrow) untouched.
+// While an arrow is mid-drag (points placed click-by-click, not yet
+// finalized — see the draw-mode pointerdown handler), undo drops just the
+// last placed point instead of the whole arrow, so a stray click can be
+// walked back one step at a time without losing everything drawn so far.
+// Only once the drag is empty (or there's no drag at all) does undo fall
+// back to dropping the most recently finalized arrow.
 function undoLastModelFlowArrow() {
+  if (modelFlowDrag && modelFlowDrag.points.length > 0) {
+    modelFlowDrag.points.pop();
+    modelFlowDrag.pointObjectIndices.pop();
+    modelFlowDrag.touchedObjects = new Set(modelFlowDrag.pointObjectIndices);
+    if (modelFlowDrag.points.length === 0) {
+      modelFlowDrag = null;
+      modelFlowLastClickTime = null;
+      modelFlowLastClickPos = null;
+    }
+    notifyModelState();
+    return;
+  }
   if (modelFlowPaths.length === 0) return;
   modelFlowPaths.pop();
   // The removed arrow was always the last index — if that's what was
@@ -2427,6 +2515,10 @@ function setModelFlowDraw(value) {
   if (value) {
     modelFlowSelectMode = false;
     selectedFlowArrowIndex = null;
+    // Otherwise a new arrow could be traced without ever seeing the ones
+    // already drawn (e.g. right after loading a model with "Show flow
+    // arrows" still off) — drawing needs them visible to trace against.
+    showModelFlowArrow = true;
     // Start every drawing session from a clean, centered, default-angle
     // view — same as holding Space does — since panned off-center or held
     // at a leftover angle makes tracing a path accurately onto the green
@@ -2442,6 +2534,10 @@ function setModelFlowDraw(value) {
     modelFlowDrag = null;
     modelFlowLastClickTime = null;
     modelFlowLastClickPos = null;
+    // Mirrors the force-on above — draw mode is what turned this on, so
+    // leaving it turns it back off rather than leaving arrows on-screen
+    // after the user's done drawing.
+    showModelFlowArrow = false;
     resetCubeRotation();
     setRotationDisabled(true);
   }
@@ -2518,9 +2614,11 @@ canvas.addEventListener('pointerdown', (event) => {
     finalizeModelFlowDrag();
     return;
   }
-  if (!modelFlowDrag) modelFlowDrag = { points: [hit.point], touchedObjects: new Set([hit.objectIndex]) };
-  else {
+  if (!modelFlowDrag) {
+    modelFlowDrag = { points: [hit.point], pointObjectIndices: [hit.objectIndex], touchedObjects: new Set([hit.objectIndex]) };
+  } else {
     modelFlowDrag.points.push(hit.point);
+    modelFlowDrag.pointObjectIndices.push(hit.objectIndex);
     modelFlowDrag.touchedObjects.add(hit.objectIndex);
   }
   modelFlowLastClickTime = now;
@@ -2795,6 +2893,7 @@ function renderCubeFrame() {
     gl.useProgram(lineProgram);
     gl.uniformMatrix4fv(uLineModelView, false, modelView);
     gl.uniformMatrix4fv(uLineProjection, false, cubeProjection);
+    gl.uniform1f(uLineAlpha, 1.0);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelLineBuffer : cubeLineBuffer);
     gl.enableVertexAttribArray(aLinePosition);
@@ -2815,7 +2914,10 @@ function renderCubeFrame() {
     // projection: the ribbon's vertices are already fully projected on the
     // CPU, so the shader must not reproject them. The selected arrow (see
     // setModelFlowSelectMode) is drawn as a separate batch in an amber
-    // highlight color so it's obviously distinct before deleting it.
+    // highlight color so it's obviously distinct before deleting it. The
+    // in-progress drag (not yet double-clicked to finish — see
+    // finalizeModelFlowDrag) is also its own batch, in gray, so it reads as
+    // "still being drawn" until it's confirmed and turns white like the rest.
     const unselectedPointLists = [];
     let selectedPointList = null;
     if (showModelFlowArrow) {
@@ -2824,7 +2926,7 @@ function renderCubeFrame() {
         else unselectedPointLists.push(path.points);
       });
     }
-    if (modelFlowDrag && modelFlowDrag.points.length >= 2) unselectedPointLists.push(modelFlowDrag.points);
+    const dragPointList = modelFlowDrag && modelFlowDrag.points.length >= 2 ? modelFlowDrag.points : null;
 
     // Shared by the arrow ribbon below and the pivot orb further down —
     // projects object-space points straight to NDC/clip space on the CPU
@@ -2833,11 +2935,17 @@ function renderCubeFrame() {
     // so this *is* the final NDC position, no perspective divide needed).
     const combined = mat4Multiply(cubeProjection, modelView);
 
-    if (unselectedPointLists.length > 0 || selectedPointList) {
+    if (unselectedPointLists.length > 0 || selectedPointList || dragPointList) {
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
       gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
       gl.enableVertexAttribArray(aLinePosition);
       gl.disableVertexAttribArray(aLineColor);
+      // All three arrow ribbons render at partial opacity (see
+      // MODEL_FLOW_ARROW_OPACITY) rather than the wireframe/orb's full 1.0,
+      // so blending needs to be on for just this stretch of draw calls.
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.uniform1f(uLineAlpha, MODEL_FLOW_ARROW_OPACITY);
 
       if (unselectedPointLists.length > 0) {
         const ribbon = buildArrowRibbonNDC(unselectedPointLists, combined, canvas.width, canvas.height, MODEL_FLOW_ARROW_HALF_WIDTH_PX);
@@ -2856,6 +2964,37 @@ function renderCubeFrame() {
         gl.vertexAttrib3f(aLineColor, MODEL_FLOW_ARROW_SELECTED_COLOR[0], MODEL_FLOW_ARROW_SELECTED_COLOR[1], MODEL_FLOW_ARROW_SELECTED_COLOR[2]);
         gl.drawArrays(gl.TRIANGLES, 0, ribbon.length / 3);
       }
+
+      if (dragPointList) {
+        const ribbon = buildArrowRibbonNDC([dragPointList], combined, canvas.width, canvas.height, MODEL_FLOW_ARROW_HALF_WIDTH_PX);
+        gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowOverlayBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, ribbon, gl.DYNAMIC_DRAW);
+        gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+        gl.vertexAttrib3f(aLineColor, MODEL_FLOW_ARROW_DRAG_COLOR[0], MODEL_FLOW_ARROW_DRAG_COLOR[1], MODEL_FLOW_ARROW_DRAG_COLOR[2]);
+        gl.drawArrays(gl.TRIANGLES, 0, ribbon.length / 3);
+      }
+
+      gl.disable(gl.BLEND);
+      gl.uniform1f(uLineAlpha, 1.0);
+    }
+
+    // Click-point markers for the arrow currently being drawn (see
+    // buildPointMarkersNDC above) — only while draw mode is on, so they
+    // never linger over a finalized arrow that's no longer editable.
+    if (modelFlowDrawMode && modelFlowDrag && modelFlowDrag.points.length > 0) {
+      const markers = buildPointMarkersNDC(
+        modelFlowDrag.points, combined, canvas.width, canvas.height,
+        MODEL_FLOW_POINT_RADIUS_PX, MODEL_FLOW_POINT_COLOR_CENTER, MODEL_FLOW_POINT_COLOR_EDGE,
+      );
+      gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
+      gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
+      gl.bindBuffer(gl.ARRAY_BUFFER, modelFlowPointsBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, markers, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(aLinePosition);
+      gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 24, 0);
+      gl.enableVertexAttribArray(aLineColor);
+      gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 24, 12);
+      gl.drawArrays(gl.TRIANGLES, 0, markers.length / 6);
     }
 
     // Pivot orb + floor guide (see buildPivotOrbNDC/buildDashedLineNDC
@@ -3210,7 +3349,6 @@ export const controls = {
       plusSize: plusSizePercent,
       plusSizeMin: PLUS_SIZE_MIN,
       plusSizeMax: PLUS_SIZE_MAX,
-      showModelFlowArrow,
       hoverMovementPaused,
       rotationDisabled,
       ...getModelState(),

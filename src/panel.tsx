@@ -202,6 +202,11 @@ export function Panel() {
         </div>
       )}
 
+      <div className="pointer-events-none fixed right-4 bottom-4 z-10 flex items-center gap-1.5 text-muted-foreground text-xs">
+        <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">H</Kbd>
+        hides the panels
+      </div>
+
       {panelPhase !== "closed" && (
         <div className="pointer-events-none fixed top-1/2 left-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
           <svg
@@ -242,7 +247,13 @@ export function Panel() {
                   (state.spaceHeld ? "is-enter-from-bottom" : "is-enter-from-top"),
               )}
             >
-              {spaceIndicator.displayed ? "Release to return to default view" : "Press space for bird's-eye view"}
+              {spaceIndicator.displayed ? (
+                "Release to return to default view"
+              ) : (
+                <>
+                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Space</Kbd> for bird's-eye view
+                </>
+              )}
             </span>
           </div>
         </div>
@@ -691,20 +702,24 @@ export function Panel() {
                   }}
                 />
                 Rotation
+                <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">R</Kbd>
               </Label>
-              <div className="ml-auto flex items-center gap-2">
-                <Button
-                  onClick={() => controls.resetRotation()}
-                  onPointerDown={resetRotationIconPress.onPointerDown}
-                  onPointerLeave={resetRotationIconPress.onPointerLeave}
-                  onPointerUp={resetRotationIconPress.onPointerUp}
-                  size="xs"
-                  variant="outline"
-                >
-                  <UndoDotIcon className="size-3" ref={resetRotationIconPress.ref} />
-                  Reset rotation
-                </Button>
-              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                className="ml-auto"
+                onClick={() => controls.resetRotation()}
+                onPointerDown={resetRotationIconPress.onPointerDown}
+                onPointerLeave={resetRotationIconPress.onPointerLeave}
+                onPointerUp={resetRotationIconPress.onPointerUp}
+                size="xs"
+                variant="outline"
+              >
+                <UndoDotIcon className="size-3" ref={resetRotationIconPress.ref} />
+                Reset rotation
+                <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⇧R</Kbd>
+              </Button>
             </div>
           </div>
         </div>
@@ -745,13 +760,6 @@ export function Panel() {
               </Button>
               <Label className="gap-2.5 text-xs">
                 <Switch
-                  checked={!!state.modelFlowSelectMode}
-                  onCheckedChange={(checked: boolean) => controls.setModelFlowSelectMode(checked)}
-                />
-                Select arrow
-              </Label>
-              <Label className="gap-2.5 text-xs">
-                <Switch
                   checked={state.showModelFlowArrow}
                   onCheckedChange={(checked: boolean) => {
                     controls.setModelFlowArrowVisible(checked);
@@ -759,6 +767,14 @@ export function Panel() {
                   }}
                 />
                 Show arrows
+              </Label>
+              <Label className={cn("gap-2.5 text-xs", !state.showModelFlowArrow && "opacity-40")}>
+                <Switch
+                  checked={!!state.modelFlowSelectMode}
+                  disabled={!state.showModelFlowArrow}
+                  onCheckedChange={(checked: boolean) => controls.setModelFlowSelectMode(checked)}
+                />
+                Select arrow
               </Label>
             </div>
 
@@ -774,6 +790,7 @@ export function Panel() {
               >
                 <DeleteIcon className="size-3" ref={deleteArrowIconPress.ref} />
                 Delete selected
+                <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Del</Kbd>
               </Button>
               <Button
                 onClick={() => controls.undoModelFlowArrow()}
@@ -785,6 +802,7 @@ export function Panel() {
               >
                 <UndoIcon className="size-3" ref={undoArrowIconPress.ref} />
                 Undo last arrow
+                <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⌘Z</Kbd>
               </Button>
               <Button
                 onClick={() => controls.clearModelFlow()}
