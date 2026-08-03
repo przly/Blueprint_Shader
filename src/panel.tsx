@@ -906,6 +906,100 @@ export function Panel() {
                 </div>
               </Slider>
             </Field>
+
+            <Field>
+              <Slider
+                max={state.flowCoreLengthMax}
+                min={state.flowCoreLengthMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const length = value as number;
+                  controls.setFlowCoreLengthPercent(length);
+                  setState((s) => ({ ...s, flowCoreLength: length }));
+                }}
+                value={state.flowCoreLength}
+              >
+                <div className="mb-3 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Core length</FieldLabel>
+                  <SliderValue className="text-xs text-muted-foreground" />
+                </div>
+              </Slider>
+            </Field>
+
+            <Field>
+              <Slider
+                max={state.flowTailLengthMax}
+                min={state.flowTailLengthMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const length = value as number;
+                  controls.setFlowTailLengthPercent(length);
+                  setState((s) => ({ ...s, flowTailLength: length }));
+                }}
+                value={state.flowTailLength}
+              >
+                <div className="mb-3 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Tail length</FieldLabel>
+                  <SliderValue className="text-xs text-muted-foreground" />
+                </div>
+              </Slider>
+            </Field>
+
+            <Field>
+              <Slider
+                max={state.flowTailFalloffMax}
+                min={state.flowTailFalloffMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const falloff = value as number;
+                  controls.setFlowTailFalloff(falloff);
+                  setState((s) => ({ ...s, flowTailFalloff: falloff }));
+                }}
+                value={state.flowTailFalloff}
+              >
+                <div className="mb-3 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Tail falloff</FieldLabel>
+                  <SliderValue className="text-xs text-muted-foreground" />
+                </div>
+              </Slider>
+            </Field>
+
+            <Separator />
+
+            <h2 className="font-semibold text-base text-foreground">Glow Controls</h2>
+
+            <Field>
+              <Slider
+                max={state.glowIntensityMax}
+                min={state.glowIntensityMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const intensity = value as number;
+                  controls.setGlowIntensityPercent(intensity);
+                  setState((s) => ({ ...s, glowIntensity: intensity }));
+                }}
+                value={state.glowIntensity}
+              >
+                <div className="mb-3 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Glow intensity</FieldLabel>
+                  <SliderValue className="text-xs text-muted-foreground" />
+                </div>
+              </Slider>
+            </Field>
+
+            <Field>
+              <Slider
+                max={state.glowSizeMax}
+                min={state.glowSizeMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const size = value as number;
+                  controls.setGlowSizePercent(size);
+                  setState((s) => ({ ...s, glowSize: size }));
+                }}
+                value={state.glowSize}
+              >
+                <div className="mb-3 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Glow size</FieldLabel>
+                  <SliderValue className="text-xs text-muted-foreground" />
+                </div>
+              </Slider>
+            </Field>
           </div>
         </div>
       )}

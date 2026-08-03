@@ -69,7 +69,7 @@ if (!localStorage.getItem(MODEL_OFFSET_RESET_MIGRATION_KEY)) {
 // Width of the model flow's traveling glow pulse (blueprint mode), as a
 // fraction of the path's total length — see MODEL_FLOW_PULSE_BAND_FRACTION
 // in renderCubeFrame, which multiplies this in.
-let pulseWidthValue = restoreNumber('pulseWidth', 6);
+let pulseWidthValue = restoreNumber('pulseWidth', 1);
 let pulseBandFraction = pulseWidthValue / 100;
 
 function setPulseWidth(value) {
@@ -84,12 +84,82 @@ function setPulseWidth(value) {
 // (twice as fast), 50% takes twice as long (half as fast).
 const FLOW_SPEED_MIN = 10;
 const FLOW_SPEED_MAX = 200;
-let flowSpeedPercent = restoreNumber('flowSpeed', 40);
+let flowSpeedPercent = restoreNumber('flowSpeed', 100);
 
 function setFlowSpeedPercent(value) {
   const clamped = Math.max(FLOW_SPEED_MIN, Math.min(FLOW_SPEED_MAX, value));
   flowSpeedPercent = clamped;
   persistNumber('flowSpeed', clamped);
+  return clamped;
+}
+
+// Comet pulse shape (see flowPulseIntensity in CUBE_FRAGMENT_SHADER) — core
+// and tail length are both percentages of uFlowSigma (the "Pulse width"
+// slider's own base scale, same unit its old fixed multiplier constants
+// used to be in), so they still shrink/grow together with pulse width. Tail
+// falloff is a direct exponent instead — 2 matches a plain Gaussian, higher
+// stays near full brightness longer then drops more sharply near the tail's
+// end, lower behaves more like a thin exponential streak.
+const FLOW_CORE_LENGTH_MIN = 1;
+const FLOW_CORE_LENGTH_MAX = 50;
+let flowCoreLengthPercent = restoreNumber('flowCoreLength', 1);
+
+function setFlowCoreLengthPercent(value) {
+  const clamped = Math.max(FLOW_CORE_LENGTH_MIN, Math.min(FLOW_CORE_LENGTH_MAX, value));
+  flowCoreLengthPercent = clamped;
+  persistNumber('flowCoreLength', clamped);
+  return clamped;
+}
+
+const FLOW_TAIL_LENGTH_MIN = 50;
+const FLOW_TAIL_LENGTH_MAX = 500;
+let flowTailLengthPercent = restoreNumber('flowTailLength', 160);
+
+function setFlowTailLengthPercent(value) {
+  const clamped = Math.max(FLOW_TAIL_LENGTH_MIN, Math.min(FLOW_TAIL_LENGTH_MAX, value));
+  flowTailLengthPercent = clamped;
+  persistNumber('flowTailLength', clamped);
+  return clamped;
+}
+
+const FLOW_TAIL_FALLOFF_MIN = 1;
+const FLOW_TAIL_FALLOFF_MAX = 8;
+let flowTailFalloffValue = restoreNumber('flowTailFalloff', 1);
+
+function setFlowTailFalloff(value) {
+  const clamped = Math.max(FLOW_TAIL_FALLOFF_MIN, Math.min(FLOW_TAIL_FALLOFF_MAX, value));
+  flowTailFalloffValue = clamped;
+  persistNumber('flowTailFalloff', clamped);
+  return clamped;
+}
+
+// Glow/bloom controls (see the glow-only render pass + two-pass blur in
+// renderCubeFrame). Intensity boosts the glow source's brightness before
+// blurring — blurring a small bright dot spreads its energy over a much
+// larger area, dimming its peak proportionally, so this compensates to keep
+// the bloom actually visible rather than washed out — without touching the
+// pulse's own on-model color. Size scales the blur's sample spread (see
+// uBloomSpread in BLUR_FRAGMENT_SHADER) — bigger spread reads as a wider,
+// softer glow.
+const GLOW_INTENSITY_MIN = 100;
+const GLOW_INTENSITY_MAX = 1000;
+let glowIntensityPercent = restoreNumber('glowIntensity', 400);
+
+function setGlowIntensityPercent(value) {
+  const clamped = Math.max(GLOW_INTENSITY_MIN, Math.min(GLOW_INTENSITY_MAX, value));
+  glowIntensityPercent = clamped;
+  persistNumber('glowIntensity', clamped);
+  return clamped;
+}
+
+const GLOW_SIZE_MIN = 25;
+const GLOW_SIZE_MAX = 400;
+let glowSizePercent = restoreNumber('glowSize', 100);
+
+function setGlowSizePercent(value) {
+  const clamped = Math.max(GLOW_SIZE_MIN, Math.min(GLOW_SIZE_MAX, value));
+  glowSizePercent = clamped;
+  persistNumber('glowSize', clamped);
   return clamped;
 }
 
@@ -358,6 +428,9 @@ const CUBE_FRAGMENT_SHADER = `
   uniform float uFlowPulseCenter;
   uniform float uFlowSigma;
   uniform vec3 uFlowColor;
+  uniform float uFlowCoreSigmaMult;
+  uniform float uFlowTailSigmaMult;
+  uniform float uFlowTailFalloffExponent;
   uniform vec3 uHatchLineColor;
   uniform float uLineFrequency;
   uniform float uDotFrequency;
@@ -463,23 +536,51 @@ const CUBE_FRAGMENT_SHADER = `
     return mix(flatCoverage, crispPlus, resolved);
   }
   // Traveling energy-pulse intensity along a user-drawn arrow, restricted to
-  // green (flagged) parts that some arrow actually touches — a Gaussian band
-  // that travels along the arrow over time, driven by a 3D arc-length
-  // coordinate (aFlowCoord). Vertices on a green part no arrow was ever drawn
-  // on get a negative aFlowCoord (see recomputeModelFlowCoords) so they never
-  // light up, rather than defaulting to 0 and falsely flashing whenever the
-  // pulse happens to pass near the start of some other part's arrow. Shared
-  // by the normal shaded pass and the glow-only bloom-source pass below.
+  // green (flagged) parts that some arrow actually touches — driven by a 3D
+  // arc-length coordinate (aFlowCoord). Vertices on a green part no arrow was
+  // ever drawn on get a negative aFlowCoord (see recomputeModelFlowCoords) so
+  // they never light up, rather than defaulting to 0 and falsely flashing
+  // whenever the pulse happens to pass near the start of some other part's
+  // arrow. Shared by the normal shaded pass and the glow-only bloom-source
+  // pass below.
+  //
+  // Comet shape rather than a symmetric Gaussian band: d>0 is ahead of the
+  // pulse center in the direction of travel (increasing vFlowCoord, same
+  // direction uFlowPulseCenter sweeps over time) — the comet's bright head,
+  // so it uses a narrow fixed sigma that cuts off sharply just past center.
+  // d<0 is behind — already passed, fading — so it uses uFlowTailSigmaMult
+  // (user-adjustable "Tail length") for its reach, and uFlowTailFalloffExponent
+  // ("Tail falloff") for the curve's shape independent of that reach: 2.0
+  // matches a plain Gaussian, higher stays near full brightness longer then
+  // drops more sharply near the tail's end, lower behaves more like a thin
+  // exponential streak. On top of both sits a second, much tighter "hot
+  // core" lobe (uFlowCoreSigmaMult, "Core length" — symmetric, since it's
+  // narrow enough either side barely reaches past the head/tail junction
+  // anyway) adding extra brightness concentrated right at the head, so it
+  // reads as a distinct bright point instead of just the front edge of a
+  // flat-topped band.
+  const float FLOW_COMET_HEAD_SIGMA_MULT = 0.12;
+  const float FLOW_COMET_CORE_BOOST = 1.5;
   float flowPulseIntensity() {
     if (!(uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0)) return 0.0;
     float d = vFlowCoord - uFlowPulseCenter;
-    return exp(-(d * d) / (2.0 * uFlowSigma * uFlowSigma));
+    float base;
+    if (d > 0.0) {
+      float sigma = uFlowSigma * FLOW_COMET_HEAD_SIGMA_MULT;
+      base = exp(-(d * d) / (2.0 * sigma * sigma));
+    } else {
+      float tailSigma = max(uFlowSigma * uFlowTailSigmaMult, 1e-6);
+      base = exp(-0.5 * pow(abs(d) / tailSigma, uFlowTailFalloffExponent));
+    }
+    float coreSigma = uFlowSigma * uFlowCoreSigmaMult;
+    float core = exp(-(d * d) / (2.0 * coreSigma * coreSigma));
+    return base + core * FLOW_COMET_CORE_BOOST;
   }
 
   void main() {
     if (uGlowOnly) {
-      // uFlowColor is pre-boosted (see BLOOM_SOURCE_BOOST in renderCubeFrame)
-      // brighter than what's actually drawn on the model, since blurring
+      // uFlowColor is pre-boosted (see the "Glow intensity" slider in
+      // renderCubeFrame) brighter than what's actually drawn on the model, since blurring
       // dims the peak — everything else renders black so the blur only
       // picks up the pulse itself, not the model's own fill/wireframe.
       gl_FragColor = vec4(uFlowColor * flowPulseIntensity(), 1.0);
@@ -786,6 +887,9 @@ const uFlowActive = gl.getUniformLocation(cubeProgram, 'uFlowActive');
 const uFlowPulseCenter = gl.getUniformLocation(cubeProgram, 'uFlowPulseCenter');
 const uFlowSigma = gl.getUniformLocation(cubeProgram, 'uFlowSigma');
 const uFlowColor = gl.getUniformLocation(cubeProgram, 'uFlowColor');
+const uFlowCoreSigmaMult = gl.getUniformLocation(cubeProgram, 'uFlowCoreSigmaMult');
+const uFlowTailSigmaMult = gl.getUniformLocation(cubeProgram, 'uFlowTailSigmaMult');
+const uFlowTailFalloffExponent = gl.getUniformLocation(cubeProgram, 'uFlowTailFalloffExponent');
 const uHatchLineColor = gl.getUniformLocation(cubeProgram, 'uHatchLineColor');
 const uLineFrequency = gl.getUniformLocation(cubeProgram, 'uLineFrequency');
 const uDotFrequency = gl.getUniformLocation(cubeProgram, 'uDotFrequency');
@@ -1921,7 +2025,7 @@ async function loadBundledDefaultModel() {
     applyParsedModel(parsed, 'ngen_assets.obj', 'ngen_assets.mtl', [
       '1-House',
       '2-Business_Facility',
-      '3.1-Investor_Energy_Hub_PLANE',
+      '3-Investor_Energy_Hub',
     ]);
     applyDefaultModelFlowPath();
   } catch (err) {
@@ -2007,11 +2111,15 @@ const MODEL_FLOW_DRAW_DOUBLE_CLICK_MAX_MS = 400;
 const MODEL_FLOW_DRAW_DOUBLE_CLICK_MAX_DRIFT_PX = 6;
 // The traveling glow pulse loops over this period (scaled by the
 // user-adjustable flowSpeedPercent — see setFlowSpeedPercent) and pads this
-// many sigmas past each end of the path, so it fades in/out via the Gaussian
-// tail instead of popping straight from invisible to full brightness at the
-// loop.
+// many (base) sigmas past each end of the path, so it fades in/out via the
+// comet's tail falloff instead of popping straight from invisible to full
+// brightness at the loop. Sized with enough margin past the tail's own sigma
+// (see FLOW_COMET_TAIL_SIGMA_MULT in the fragment shader) that its falloff
+// is fully negligible by the time the pulse wraps — re-tune this alongside
+// that constant, since a shorter/steeper tail needs proportionally less pad,
+// and too little pad here pops visibly at the loop.
 const FLOW_PULSE_PERIOD_BASE_MS = 3000;
-const FLOW_PULSE_PAD_SIGMAS = 5;
+const FLOW_PULSE_PAD_SIGMAS = 13;
 
 let modelFlowDrawMode = false;
 let modelFlowSelectMode = false;
@@ -3124,11 +3232,6 @@ function drawAxisGizmo(rx, ry) {
 // approximation, this actually bleeds light across the model's silhouette
 // rather than just widening the lit patch on the pulse's own faces.
 const BLOOM_DOWNSCALE = 4;
-// Boosts the glow-only pass's color before it's blurred — blurring a small
-// bright dot spreads its energy over a much larger area, which dims its
-// peak brightness proportionally, so this compensates to keep the bloom
-// actually visible rather than washed out to near-black.
-const BLOOM_SOURCE_BOOST = 4.0;
 
 // Creates an RGBA render target (texture + the framebuffer that renders into
 // it) at the given size, with its own depth renderbuffer attached — the
@@ -3207,9 +3310,13 @@ const BLUR_FRAGMENT_SHADER = `
   uniform sampler2D uTexture;
   uniform vec2 uTexelSize;
   uniform vec2 uDirection;
+  // "Glow size" — scales how far apart the taps sample, widening/narrowing
+  // the blur's spread. Harmless for the composite pass too: that one always
+  // passes direction (0,0), so the offsets collapse to zero regardless.
+  uniform float uBloomSpread;
   void main() {
-    vec2 off1 = uDirection * uTexelSize * 1.3846153846;
-    vec2 off2 = uDirection * uTexelSize * 3.2307692308;
+    vec2 off1 = uDirection * uTexelSize * uBloomSpread * 1.3846153846;
+    vec2 off2 = uDirection * uTexelSize * uBloomSpread * 3.2307692308;
     vec4 sum = texture2D(uTexture, vUv) * 0.2270270270;
     sum += texture2D(uTexture, vUv + off1) * 0.3162162162;
     sum += texture2D(uTexture, vUv - off1) * 0.3162162162;
@@ -3238,6 +3345,7 @@ const aPostPosition = gl.getAttribLocation(postProgram, 'aPostPosition');
 const uPostTexture = gl.getUniformLocation(postProgram, 'uTexture');
 const uPostTexelSize = gl.getUniformLocation(postProgram, 'uTexelSize');
 const uPostDirection = gl.getUniformLocation(postProgram, 'uDirection');
+const uPostBloomSpread = gl.getUniformLocation(postProgram, 'uBloomSpread');
 
 // Single overscanned triangle covering clip space — see POST_VERTEX_SHADER.
 const POST_TRIANGLE = new Float32Array([-1, -1, 3, -1, -1, 3]);
@@ -3258,6 +3366,7 @@ function drawPostPass(source, target, direction) {
   gl.uniform1i(uPostTexture, 0);
   gl.uniform2f(uPostTexelSize, 1 / source.width, 1 / source.height);
   gl.uniform2f(uPostDirection, direction[0], direction[1]);
+  gl.uniform1f(uPostBloomSpread, glowSizePercent / 100);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
@@ -3401,6 +3510,9 @@ function renderCubeFrame() {
     gl.uniform1f(uFlowPulseCenter, flowPulseCenter);
     gl.uniform1f(uFlowSigma, flowSigma);
     gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
+    gl.uniform1f(uFlowCoreSigmaMult, flowCoreLengthPercent / 100);
+    gl.uniform1f(uFlowTailSigmaMult, flowTailLengthPercent / 100);
+    gl.uniform1f(uFlowTailFalloffExponent, flowTailFalloffValue);
   }
 
   // Real bloom for the flow pulse (see uGlowOnly/BLOOM_DOWNSCALE above):
@@ -3416,11 +3528,12 @@ function renderCubeFrame() {
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.uniform1i(uGlowOnly, 1);
+    const glowIntensity = glowIntensityPercent / 100;
     gl.uniform3f(
       uFlowColor,
-      BLUEPRINT_FLOW_COLOR[0] * BLOOM_SOURCE_BOOST,
-      BLUEPRINT_FLOW_COLOR[1] * BLOOM_SOURCE_BOOST,
-      BLUEPRINT_FLOW_COLOR[2] * BLOOM_SOURCE_BOOST,
+      BLUEPRINT_FLOW_COLOR[0] * glowIntensity,
+      BLUEPRINT_FLOW_COLOR[1] * glowIntensity,
+      BLUEPRINT_FLOW_COLOR[2] * glowIntensity,
     );
     if (showCustomModel) {
       gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
@@ -4032,6 +4145,21 @@ export const controls = {
       flowSpeed: flowSpeedPercent,
       flowSpeedMin: FLOW_SPEED_MIN,
       flowSpeedMax: FLOW_SPEED_MAX,
+      flowCoreLength: flowCoreLengthPercent,
+      flowCoreLengthMin: FLOW_CORE_LENGTH_MIN,
+      flowCoreLengthMax: FLOW_CORE_LENGTH_MAX,
+      flowTailLength: flowTailLengthPercent,
+      flowTailLengthMin: FLOW_TAIL_LENGTH_MIN,
+      flowTailLengthMax: FLOW_TAIL_LENGTH_MAX,
+      flowTailFalloff: flowTailFalloffValue,
+      flowTailFalloffMin: FLOW_TAIL_FALLOFF_MIN,
+      flowTailFalloffMax: FLOW_TAIL_FALLOFF_MAX,
+      glowIntensity: glowIntensityPercent,
+      glowIntensityMin: GLOW_INTENSITY_MIN,
+      glowIntensityMax: GLOW_INTENSITY_MAX,
+      glowSize: glowSizePercent,
+      glowSizeMin: GLOW_SIZE_MIN,
+      glowSizeMax: GLOW_SIZE_MAX,
       cubeSize: cubeSizePercent,
       cubeSizeMin: CUBE_SIZE_MIN,
       cubeSizeMax: CUBE_SIZE_MAX,
@@ -4080,6 +4208,11 @@ export const controls = {
   },
   setPulseWidth,
   setFlowSpeedPercent,
+  setFlowCoreLengthPercent,
+  setFlowTailLengthPercent,
+  setFlowTailFalloff,
+  setGlowIntensityPercent,
+  setGlowSizePercent,
   setCubeSizePercent,
   setModelOffsetXPercent,
   setModelOffsetYPercent,
