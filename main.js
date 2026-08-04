@@ -241,7 +241,7 @@ function setCubeSizePercent(percent) {
 // per-model extent normalization.
 const LINE_FREQUENCY_MIN = 1;
 const LINE_FREQUENCY_MAX = 60;
-let lineFrequencyValue = restoreNumber('lineFrequency', 1);
+let lineFrequencyValue = restoreNumber('lineFrequency', 11);
 
 function setLineFrequency(value) {
   const clamped = Math.max(LINE_FREQUENCY_MIN, Math.min(LINE_FREQUENCY_MAX, value));
@@ -407,6 +407,13 @@ const CUBE_VERTEX_SHADER = `
   attribute vec3 aColor;
   attribute float aIsGreen;
   attribute float aFlowCoord;
+  // The world-space arc length of whichever flow path this vertex was
+  // assigned to (aFlowCoord's normalizing masterTotalLen, carried through
+  // unnormalized) — lets the fragment shader convert the tail's reach back
+  // out of aFlowCoord's per-path-normalized space into an absolute distance,
+  // so the tail's real length stays the same regardless of how long the
+  // specific arrow is. See recomputeModelFlowCoords/MODEL_FLOW_TAIL_REFERENCE_LENGTH.
+  attribute float aFlowPathLen;
   // Which technical-fill pattern (if any) this vertex's face uses: 0 = none,
   // 1 = hatch lines, 2 = dots, 3 = plus marks — see materialFillPatternId,
   // which maps a Blender material name to one of these. A single float
@@ -419,6 +426,7 @@ const CUBE_VERTEX_SHADER = `
   varying vec3 vColor;
   varying float vIsGreen;
   varying float vFlowCoord;
+  varying float vFlowPathLen;
   varying vec3 vPosition;
   varying float vFillPattern;
   void main() {
@@ -429,6 +437,7 @@ const CUBE_VERTEX_SHADER = `
     vColor = aColor;
     vIsGreen = aIsGreen;
     vFlowCoord = aFlowCoord;
+    vFlowPathLen = aFlowPathLen;
     // Object-space position, same reasoning as vNormal above: the fill
     // pattern it drives (see CUBE_FRAGMENT_SHADER) needs to stay fixed to
     // the model rather than swim as the camera orbits.
@@ -444,6 +453,7 @@ const CUBE_FRAGMENT_SHADER = `
   varying vec3 vColor;
   varying float vIsGreen;
   varying float vFlowCoord;
+  varying float vFlowPathLen;
   varying vec3 vPosition;
   varying float vFillPattern;
   uniform vec3 uLightDir;
@@ -463,7 +473,10 @@ const CUBE_FRAGMENT_SHADER = `
   uniform float uFlowSigma;
   uniform vec3 uFlowColor;
   uniform float uFlowCoreSigmaMult;
-  uniform float uFlowTailSigmaMult;
+  // Absolute world-space tail reach (not a fraction of any one path's own
+  // length — see MODEL_FLOW_TAIL_REFERENCE_LENGTH) so the tail's visible
+  // length is the same on every arrow regardless of how long it is.
+  uniform float uFlowTailWorldSigma;
   uniform float uFlowTailFalloffExponent;
   uniform vec3 uHatchLineColor;
   uniform float uLineFrequency;
@@ -582,8 +595,10 @@ const CUBE_FRAGMENT_SHADER = `
   // pulse center in the direction of travel (increasing vFlowCoord, same
   // direction uFlowPulseCenter sweeps over time) — the comet's bright head,
   // so it uses a narrow fixed sigma that cuts off sharply just past center.
-  // d<0 is behind — already passed, fading — so it uses uFlowTailSigmaMult
-  // (user-adjustable "Tail length") for its reach, and uFlowTailFalloffExponent
+  // d<0 is behind — already passed, fading — so it uses uFlowTailWorldSigma
+  // (user-adjustable "Tail length", converted to an absolute world-space
+  // distance via vFlowPathLen so it doesn't grow/shrink with this specific
+  // arrow's own length) for its reach, and uFlowTailFalloffExponent
   // ("Tail falloff") for the curve's shape independent of that reach: 2.0
   // matches a plain Gaussian, higher stays near full brightness longer then
   // drops more sharply near the tail's end, lower behaves more like a thin
@@ -606,8 +621,9 @@ const CUBE_FRAGMENT_SHADER = `
         float sigma = uFlowSigma * FLOW_COMET_HEAD_SIGMA_MULT;
         base = exp(-(d * d) / (2.0 * sigma * sigma));
       } else {
-        float tailSigma = max(uFlowSigma * uFlowTailSigmaMult, 1e-6);
-        base = exp(-0.5 * pow(abs(d) / tailSigma, uFlowTailFalloffExponent));
+        float dArc = abs(d) * vFlowPathLen;
+        float tailSigma = max(uFlowTailWorldSigma, 1e-6);
+        base = exp(-0.5 * pow(dArc / tailSigma, uFlowTailFalloffExponent));
       }
       float coreSigma = uFlowSigma * uFlowCoreSigmaMult;
       float core = exp(-(d * d) / (2.0 * coreSigma * coreSigma));
@@ -909,11 +925,19 @@ const cubeFlowCoordBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, cubeFlowCoordBuffer);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(24), gl.STATIC_DRAW);
 
+// Dummy per-vertex path-length buffer for the plain cube (flow is only ever
+// active for the custom model, so this is never actually read — see
+// customModelFlowPathLenBuffer for the real per-vertex data).
+const cubeFlowPathLenBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, cubeFlowPathLenBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(24), gl.STATIC_DRAW);
+
 const aPosition = gl.getAttribLocation(cubeProgram, 'aPosition');
 const aNormal = gl.getAttribLocation(cubeProgram, 'aNormal');
 const aColor = gl.getAttribLocation(cubeProgram, 'aColor');
 const aIsGreen = gl.getAttribLocation(cubeProgram, 'aIsGreen');
 const aFlowCoord = gl.getAttribLocation(cubeProgram, 'aFlowCoord');
+const aFlowPathLen = gl.getAttribLocation(cubeProgram, 'aFlowPathLen');
 const aFillPattern = gl.getAttribLocation(cubeProgram, 'aFillPattern');
 const uModelView = gl.getUniformLocation(cubeProgram, 'uModelView');
 const uProjection = gl.getUniformLocation(cubeProgram, 'uProjection');
@@ -928,7 +952,7 @@ const uFlowPulseCount = gl.getUniformLocation(cubeProgram, 'uFlowPulseCount');
 const uFlowSigma = gl.getUniformLocation(cubeProgram, 'uFlowSigma');
 const uFlowColor = gl.getUniformLocation(cubeProgram, 'uFlowColor');
 const uFlowCoreSigmaMult = gl.getUniformLocation(cubeProgram, 'uFlowCoreSigmaMult');
-const uFlowTailSigmaMult = gl.getUniformLocation(cubeProgram, 'uFlowTailSigmaMult');
+const uFlowTailWorldSigma = gl.getUniformLocation(cubeProgram, 'uFlowTailWorldSigma');
 const uFlowTailFalloffExponent = gl.getUniformLocation(cubeProgram, 'uFlowTailFalloffExponent');
 const uHatchLineColor = gl.getUniformLocation(cubeProgram, 'uHatchLineColor');
 const uLineFrequency = gl.getUniformLocation(cubeProgram, 'uLineFrequency');
@@ -1143,8 +1167,14 @@ const CUBE_ISO_PITCH = Math.atan(1 / Math.SQRT2);
 const CUBE_BIRDSEYE_YAW = 0;
 const CUBE_BIRDSEYE_PITCH = Math.PI / 2;
 
-let cubeRotX = CUBE_ISO_PITCH;
-let cubeRotY = CUBE_ISO_YAW;
+// Starts in the bird's-eye pose (rather than straight at CUBE_ISO_PITCH/
+// YAW) so the very first rendered frames — including the built-in
+// procedural cube shown while the bundled model is still fetching — read as
+// a deliberate top-down opening shot; loadBundledDefaultModel eases this
+// into the actual resting rotation once the model's ready (see its
+// tweenCubeRotationTo call, MODEL_LOAD_ROTATION_INTRO_MS).
+let cubeRotX = CUBE_BIRDSEYE_PITCH;
+let cubeRotY = CUBE_BIRDSEYE_YAW;
 let cubeDragging = false;
 let cubeLastPointer = null;
 
@@ -1163,6 +1193,16 @@ let panLastPointer = null;
 // convention as the "Model Y position" slider.
 let zDragging = false;
 let zLastPointer = null;
+// Plain (no-modifier) drag while editingDefaultView is active (see
+// setEditingDefaultView) — rotation-drag is locked in that mode anyway, so
+// the ordinary drag gesture pans instead of doing nothing, without needing
+// Space held — same X/Z ground-plane mapping panDragging (Space-drag) uses,
+// deliberately never Y: height is locked while editing the default position
+// (see the Z keydown handler and the panel's "Model Y position" slider,
+// both gated on editingDefaultView too), so there's exactly one axis pair
+// this mode can ever touch.
+let editPanDragging = false;
+let editPanLastPointer = null;
 let zKeyHeld = false; // declared up here (not by the Z keydown/keyup handlers further below) since updateCubeCursor, defined next, reads it immediately
 let panSyncRAF = null; // see schedulePanSync below
 
@@ -1201,6 +1241,20 @@ let cubeParallaxTargetX = 0;
 let cubeParallaxTargetY = 0;
 let cubeParallaxX = 0;
 let cubeParallaxY = 0;
+// Whether a real cursor reading has ever come in — see
+// updateParallaxTargetFromPointer, which kicks off a one-time slow reveal
+// (CUBE_PARALLAX_INIT_REVEAL_MS, see advanceParallax below) toward it the
+// first time only, rather than easing there via the normal fast
+// CUBE_PARALLAX_SMOOTHING from the placeholder 0 the variables above start
+// at — that read as an unexplained jump; an instant snap (tried first) read
+// as an equally unexplained pop. A slower, deliberate reveal is the middle
+// ground: still clearly *arriving* rather than popping in, but slow enough
+// not to read as chasing the cursor the way the original per-frame ease did.
+let cubeParallaxRegistered = false;
+const CUBE_PARALLAX_INIT_REVEAL_MS = 2500;
+let cubeParallaxInitRevealStartTime = null;
+let cubeParallaxInitRevealFromX = 0;
+let cubeParallaxInitRevealFromY = 0;
 
 // Tweens the model to a given rotation angle — both the drag rotation
 // (cubeRotX/Y) and the ambient parallax tilt (cubeParallaxX/Y and its
@@ -1211,13 +1265,69 @@ let cubeParallaxY = 0;
 // shared by the "Reset rotation" button, enabling "Pause hover movement",
 // Shift+R, and Space-up) and for rising into the bird's-eye view on
 // Space-down (see the keydown/keyup handlers below).
+// Ease-out cubic — starts fast, decelerates into the target with no
+// overshoot. The default for every fast (180ms) reset-style tween (Reset
+// rotation, Space bird's-eye rise/return, the "Go to default" button),
+// where the deceleration itself is what reads as "arriving."
+const EASE_OUT_CUBIC = (t) => 1 - (1 - t) ** 3;
+
+// General CSS-style cubic-bezier easing: the curve's control points are
+// (0,0), (x1,y1), (x2,y2), (1,1), with t treated as the *time* axis (x) and
+// the return value as the eased *progress* (y). x(u) has no closed-form
+// inverse, so this solves for the bezier parameter u where x(u) == t via
+// Newton-Raphson — a handful of iterations converges well past visible
+// precision for a monotonic-in-x curve (x1/x2 within [0,1], as any real
+// easing curve's are) — then evaluates y(u).
+function cubicBezierEasing(x1, y1, x2, y2) {
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const sampleX = (u) => ((ax * u + bx) * u + cx) * u;
+  const sampleY = (u) => ((ay * u + by) * u + cy) * u;
+  const sampleDerivX = (u) => (3 * ax * u + 2 * bx) * u + cx;
+  return (t) => {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    let u = t;
+    for (let i = 0; i < 8; i++) {
+      const dx = sampleX(u) - t;
+      const d = sampleDerivX(u);
+      if (Math.abs(d) < 1e-6) break;
+      u -= dx / d;
+    }
+    return sampleY(u);
+  };
+}
+
+// cubic-bezier(0.85, 0, 0.15, 1) — a steep, symmetric ease-in-out: it holds
+// near 0 and near 1 longer than a plain quad ease-in-out would, then sweeps
+// through the middle sharply, giving loadBundledDefaultModel's bird's-eye-in
+// intro a more deliberate pause-then-snap character over its duration.
+const EASE_INTRO_BEZIER = cubicBezierEasing(0.85, 0, 0.15, 1);
+
 const CUBE_ROT_RESET_MS = 180; // fast — quicker than the modal open duration, barely more than a frame or two of "not instant"
 let cubeRotResetStartTime = null;
 let cubeRotResetFrom = null; // { rotX, rotY, parX, parY, parTargetX, parTargetY } snapshot taken at tween start
 let cubeRotResetTargetX = CUBE_ISO_PITCH;
 let cubeRotResetTargetY = CUBE_ISO_YAW;
+// This tween's duration, in ms — defaults to CUBE_ROT_RESET_MS's fast snap
+// for every existing caller (Reset rotation, Space bird's-eye rise/return,
+// the "Go to default" button); loadBundledDefaultModel's initial bird's-eye
+// -> resting-rotation intro is the one caller that passes something slower.
+let cubeRotResetDurationMs = CUBE_ROT_RESET_MS;
+// This tween's easing curve — see EASE_OUT_CUBIC/EASE_INTRO_BEZIER above.
+let cubeRotResetEasing = EASE_OUT_CUBIC;
+// Whether this tween also drives cubeParallaxX/Y itself (decaying the
+// snapshot back toward zero, same as the base rotation easing toward its
+// target — see renderCubeFrame) instead of leaving them to the normal
+// per-frame hover easing. True for every existing fast (180ms) reset-style
+// tween, where a live hover fighting a snap this quick would just look like
+// jitter. False for loadBundledDefaultModel's slow 2s intro specifically —
+// long enough that suppressing hover for its whole duration would read as
+// hover simply not working yet, so that one leaves parallax on the normal
+// path and just lets the two motions run concurrently.
+let cubeRotResetSuppressParallax = true;
 
-function tweenCubeRotationTo(targetRotX, targetRotY) {
+function tweenCubeRotationTo(targetRotX, targetRotY, durationMs = CUBE_ROT_RESET_MS, suppressParallax = true, easing = EASE_OUT_CUBIC) {
   cubeRotResetFrom = {
     rotX: cubeRotX,
     rotY: cubeRotY,
@@ -1228,6 +1338,9 @@ function tweenCubeRotationTo(targetRotX, targetRotY) {
   };
   cubeRotResetTargetX = targetRotX;
   cubeRotResetTargetY = targetRotY;
+  cubeRotResetSuppressParallax = suppressParallax;
+  cubeRotResetDurationMs = durationMs;
+  cubeRotResetEasing = easing;
   cubeRotResetStartTime = performance.now();
 }
 
@@ -1249,9 +1362,26 @@ function setHoverMovementPaused(value) {
 // "Disable rotation" control: click-and-drag rotation is off by default so
 // visitors can't accidentally spin the model away from its framed angle.
 let rotationDisabled = true;
+// "Edit default position" mode (the panel button toggles this via
+// setEditingDefaultView, defined further down alongside defaultCameraView)
+// — while active, the user can only pan X/Z (plain drag — see
+// editPanDragging — or the "Model X position" slider) and zoom (scroll/
+// "Model size" slider) the free camera. Everything else that could move the
+// view is locked: rotation dragging (see the pointerdown handler), height/Y
+// (see the Z keydown handler and the panel's "Model Y position" slider —
+// defaultCameraView.offsetY just carries through whatever it already was,
+// since nothing in this mode can ever change it), and Camera Targets (see
+// the Digit1/2/3 handler and the panel's target "Go" buttons). There's no
+// target object to auto-frame here the way Camera Targets have, so this is
+// the only way to define what "the default position" actually is: park the
+// free camera by hand, then capture it. Declared here (rather than next to
+// setEditingDefaultView) specifically so it's initialized before
+// updateCubeCursor's own top-level call just below,
+// which reads it.
+let editingDefaultView = false;
 
 function updateCubeCursor() {
-  canvas.style.cursor = spaceHeld || zKeyHeld || !rotationDisabled ? 'grab' : 'default';
+  canvas.style.cursor = spaceHeld || zKeyHeld || editingDefaultView || !rotationDisabled ? 'grab' : 'default';
 }
 
 function setRotationDisabled(value) {
@@ -1347,9 +1477,11 @@ window.addEventListener('blur', () => {
 // Held Z is its own drag gesture, independent of Space/bird's-eye: click and drag
 // while it's held adjusts object-space Y (height) directly — see
 // zDragging's pointerdown/pointermove/pointerup handling below. Excludes
-// Cmd/Ctrl+Z, which is the flow-arrow undo shortcut below instead.
+// Cmd/Ctrl+Z, which is the flow-arrow undo shortcut below instead. Also
+// excluded while editingDefaultView is active — height is locked while
+// editing the default position (see editPanDragging's comment).
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyZ' || zKeyHeld || event.metaKey || event.ctrlKey) return;
+  if (event.code !== 'KeyZ' || zKeyHeld || event.metaKey || event.ctrlKey || editingDefaultView) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   zKeyHeld = true;
@@ -1406,16 +1538,32 @@ window.addEventListener('keydown', (event) => {
 });
 
 // 1/2/3 jump straight to Camera Target 1/2/3 (see goToCameraTarget), same
-// shortcut as each target's own "Go" button in the panel.
+// shortcut as each target's own "Go" button in the panel. Ignored while
+// editingDefaultView is active — see setEditingDefaultView — since jumping
+// to a target would take over centering entirely, out from under an
+// in-progress pan/zoom edit.
 const CAMERA_TARGET_DIGIT_KEYS = { Digit1: 0, Digit2: 1, Digit3: 2 };
 window.addEventListener('keydown', (event) => {
   const slotIndex = CAMERA_TARGET_DIGIT_KEYS[event.code];
   if (slotIndex === undefined || event.repeat) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-  if (!cameraTargetSlots[slotIndex]) return; // nothing assigned to this slot yet
+  if (!cameraTargetSlots[slotIndex] || editingDefaultView) return; // nothing assigned to this slot yet
   event.preventDefault();
   goToCameraTarget(slotIndex);
+});
+
+// 0 jumps to the baked-in default view (see goToDefaultCameraView), same
+// shortcut pattern as 1/2/3 above for the Camera Targets. goToDefaultCameraView
+// itself already no-ops while editingDefaultView is active, but the guard is
+// mirrored here too so the key doesn't even preventDefault for nothing.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'Digit0' || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (!defaultCameraView || editingDefaultView) return; // nothing saved yet
+  event.preventDefault();
+  goToDefaultCameraView();
 });
 
 // Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
@@ -1468,6 +1616,15 @@ canvas.addEventListener('pointerdown', (event) => {
     canvas.style.cursor = 'grabbing';
     return;
   }
+  // See editPanDragging's own comment — takes priority over the plain
+  // rotation-drag path below (which editingDefaultView locks anyway) so an
+  // ordinary drag pans immediately, with no modifier key needed.
+  if (editingDefaultView) {
+    editPanDragging = true;
+    editPanLastPointer = { x: event.clientX, y: event.clientY };
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
   if (modelFlowDrawMode) {
     // Left button is reserved for tracing an arrow (see the draw-mode
     // pointerdown handler below); right button still rotates the model so a
@@ -1478,6 +1635,8 @@ canvas.addEventListener('pointerdown', (event) => {
     canvas.style.cursor = 'grabbing';
     return;
   }
+  // editingDefaultView never reaches here — it returns via editPanDragging
+  // above — but rotationDisabled still gates the plain case as normal.
   if (rotationDisabled) return;
   cubeDragging = true;
   cubeLastPointer = { x: event.clientX, y: event.clientY };
@@ -1485,6 +1644,20 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 
 window.addEventListener('pointermove', (event) => {
+  if (editPanDragging) {
+    // Horizontal -> X, vertical -> Z — same ground-plane mapping panDragging
+    // (Space-drag) uses; see editPanDragging's own comment for why Y never
+    // moves here.
+    const dxPix = event.clientX - editPanLastPointer.x;
+    const dyPix = event.clientY - editPanLastPointer.y;
+    editPanLastPointer = { x: event.clientX, y: event.clientY };
+    const percentPerPixelX = ((cubeProjectionHalfX * 2) / window.innerWidth) * (100 / MODEL_POSITION_RANGE);
+    const percentPerPixelY = ((cubeProjectionHalfY * 2) / window.innerHeight) * (100 / MODEL_POSITION_RANGE);
+    modelOffsetXPercent = clampModelPosition(modelOffsetXPercent + dxPix * percentPerPixelX);
+    modelOffsetZPercent = clampModelPosition(modelOffsetZPercent + dyPix * percentPerPixelY);
+    schedulePanSync();
+    return;
+  }
   if (zDragging) {
     // Vertical-only: dragging up subtracts a negative dyPix, raising Y,
     // same up-is-positive convention as the "Model Y position" slider.
@@ -1524,21 +1697,98 @@ window.addEventListener('pointermove', (event) => {
     cubeLastPointer = { x: event.clientX, y: event.clientY };
     return;
   }
-  // Keep the model perfectly still while tracing an arrow onto it, or while
-  // trying to click one precisely in select mode — ambient parallax tilt
-  // shifting the surface under the cursor would make either one hard to do.
-  // Also suspended for as long as Space, R, or Z is held (spaceHeld covers
-  // both the pre-drag hold and the pan-drag itself, rKeyHeld the same for
-  // rotate-drag, zKeyHeld the same for the height drag) so none of them
-  // fight the manual pan/rotate/height-adjust; it simply stops updating its
-  // target rather than resetting, so it resumes smoothly from wherever it
-  // was once the key is released.
-  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld) return;
+  updateParallaxTargetFromPointer(event);
+});
+
+// Keep the model perfectly still while tracing an arrow onto it, or while
+// trying to click one precisely in select mode — ambient parallax tilt
+// shifting the surface under the cursor would make either one hard to do.
+// Also suspended for as long as Space, R, or Z is held (spaceHeld covers
+// both the pre-drag hold and the pan-drag itself, rKeyHeld the same for
+// rotate-drag, zKeyHeld the same for the height drag) so none of them
+// fight the manual pan/rotate/height-adjust; it simply stops updating its
+// target rather than resetting, so it resumes smoothly from wherever it
+// was once the key is released. Shared by the 'pointermove' listener above
+// (every subsequent update) and the 'pointerenter' one below (a first
+// reading as early as possible after load — see its own comment for why).
+//
+// JS has no way to read the cursor's position without at least one pointer
+// event since load. 'pointerenter' (below) covers the cursor actually
+// crossing into the window right around load, but not the more common case
+// this was actually reported for: the cursor already sitting motionless
+// somewhere inside the viewport *through* a reload, which fires neither
+// 'pointerenter' (it never crossed a boundary — it was already inside) nor
+// 'pointermove' (it never moved) until the user eventually nudges it (a
+// CSS-:hover-based probe was tried to get around this with zero movement
+// required at all — confirmed impossible: browsers reset their
+// pointer-tracking state on every navigation, so nothing survives a real
+// reload without at least one genuine post-load pointer event, apparently
+// deliberately — see git history for the probe and how it was ruled out).
+// "Ever registered" — set true the first time this runs at all, regardless
+// of which listener — covers the motionless-cursor case: the very first
+// real reading kicks off a slow reveal (advanceParallax,
+// CUBE_PARALLAX_INIT_REVEAL_MS) toward it instead of either snapping
+// straight there (read as an unexplained pop) or easing there at the
+// normal fast CUBE_PARALLAX_SMOOTHING rate (the original swoop this was
+// built to avoid) — every update after this first one still eases normally.
+function updateParallaxTargetFromPointer(event) {
+  // editingDefaultView locks hover parallax the same way the others here
+  // do — see setEditingDefaultView: while parking the free camera for the
+  // baked-in default, ambient tilt drifting the view around while the user
+  // is trying to pan/zoom precisely would fight the exact composition
+  // they're lining up.
+  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld || editingDefaultView) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
   cubeParallaxTargetY = nx * CUBE_PARALLAX_MAX_RAD;
   cubeParallaxTargetX = ny * CUBE_PARALLAX_MAX_RAD;
-});
+  if (!cubeParallaxRegistered) {
+    cubeParallaxRegistered = true;
+    cubeParallaxInitRevealFromX = cubeParallaxX;
+    cubeParallaxInitRevealFromY = cubeParallaxY;
+    cubeParallaxInitRevealStartTime = performance.now();
+  }
+}
+
+// Advances cubeParallaxX/Y by one frame — the one-time slow reveal (see
+// cubeParallaxRegistered's comment) while it's running, otherwise the
+// normal fast per-frame ease toward cubeParallaxTargetX/Y. Shared by both
+// call sites in renderCubeFrame (the plain per-frame path, and the one
+// nested inside an active rotation tween when it isn't suppressing
+// parallax) so the reveal plays out identically regardless of whether the
+// load intro's rotation tween happens to still be running at the same time.
+function advanceParallax() {
+  // editingDefaultView freezes the tilt exactly where it already is,
+  // instantly — not just the target (see updateParallaxTargetFromPointer's
+  // own gate), so there's no residual settling left to finish converging
+  // toward whatever the target already was the moment edit mode started.
+  if (editingDefaultView) return;
+  if (cubeParallaxInitRevealStartTime !== null) {
+    const t = Math.min(1, (performance.now() - cubeParallaxInitRevealStartTime) / CUBE_PARALLAX_INIT_REVEAL_MS);
+    const eased = EASE_OUT_CUBIC(t);
+    cubeParallaxX = cubeParallaxInitRevealFromX + (cubeParallaxTargetX - cubeParallaxInitRevealFromX) * eased;
+    cubeParallaxY = cubeParallaxInitRevealFromY + (cubeParallaxTargetY - cubeParallaxInitRevealFromY) * eased;
+    if (t >= 1) cubeParallaxInitRevealStartTime = null;
+  } else {
+    cubeParallaxX += (cubeParallaxTargetX - cubeParallaxX) * CUBE_PARALLAX_SMOOTHING;
+    cubeParallaxY += (cubeParallaxTargetY - cubeParallaxY) * CUBE_PARALLAX_SMOOTHING;
+  }
+}
+
+// Fires without requiring movement whenever the cursor actually crosses
+// into the window around load time, which — unlike the cursor already
+// resting inside the viewport through a reload (nothing can detect that
+// with zero movement; browsers reset their pointer-tracking state on every
+// navigation, specifically so a freshly loaded page can't otherwise infer
+// anything about the cursor before the user has interacted with *it* — a
+// CSS-:hover-based probe was tried and confirmed unable to get around this,
+// verified with Playwright: same technique instantly detects hover via
+// page.setContent (no navigation), but never fires at all after a real
+// page.goto navigation, even 300ms later, with no post-load pointer event)
+// — a browser will often deliver 'pointerenter' within the first frame or
+// two, before the intro's own rotation has moved far enough for the snap
+// above to be worth avoiding in the first place.
+window.addEventListener('pointerenter', updateParallaxTargetFromPointer);
 
 window.addEventListener('pointerup', () => {
   cubeDragging = false;
@@ -1548,6 +1798,10 @@ window.addEventListener('pointerup', () => {
   }
   if (zDragging) {
     zDragging = false;
+    flushPanSync();
+  }
+  if (editPanDragging) {
+    editPanDragging = false;
     flushPanSync();
   }
   updateCubeCursor();
@@ -1864,6 +2118,7 @@ const customModelColorBuffer = gl.createBuffer();
 const customModelIsGreenBuffer = gl.createBuffer();
 const customModelFillPatternBuffer = gl.createBuffer();
 const customModelFlowCoordBuffer = gl.createBuffer();
+const customModelFlowPathLenBuffer = gl.createBuffer();
 const customModelLineBuffer = gl.createBuffer();
 const customModelLineColorBuffer = gl.createBuffer();
 let customModelVertexCount = 0;
@@ -1892,7 +2147,8 @@ let cameraTargetCurrent = [0, 0, 0];
 // Remembers which slot (if any) was active across a reload — 'none' is
 // stored distinctly from a missing key so an explicit "Reset view" stays
 // reset next load, rather than being indistinguishable from "never chosen"
-// (which instead falls back to Target 1 — see loadBundledDefaultModel).
+// (which instead falls back to the baked-in default view, if any — see
+// loadBundledDefaultModel).
 const CAMERA_TARGET_ACTIVE_STORAGE_KEY = 'iconMosaic.cameraTargetActiveIndex';
 
 function persistCameraTargetActiveIndex(index) {
@@ -1908,6 +2164,112 @@ function restoreCameraTargetActiveIndex() {
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 2 ? parsed : undefined;
 }
+
+// A 4th, freeform baked-in camera pan+zoom alongside the 3 named Camera
+// Targets above — captures modelOffsetXPercent/Y/Z (the manual pan) and
+// cubeSizePercent (zoom) only, deliberately never rotation: "going to
+// default" always leaves rotation exactly where it already is, same as
+// going to a Camera Target (see goToCameraTarget's own comment on that).
+// Set via "edit default position" mode (see editingDefaultView below) —
+// unlike a Camera Target's auto-framing, there's no target object to frame
+// here, so the only way to define this one is to let the user manually
+// park the free camera wherever they want and capture that directly. null
+// until one's ever been saved, in which case going to the default view is
+// a no-op and load just leaves pan/zoom at their own plain defaults (0/0/0,
+// 100%).
+let defaultCameraView = null; // { offsetX, offsetY, offsetZ, sizePercent } | null
+const DEFAULT_CAMERA_VIEW_STORAGE_KEY = 'iconMosaic.defaultCameraView';
+
+function persistDefaultCameraView(view) {
+  if (view) localStorage.setItem(DEFAULT_CAMERA_VIEW_STORAGE_KEY, JSON.stringify(view));
+  else localStorage.removeItem(DEFAULT_CAMERA_VIEW_STORAGE_KEY);
+}
+
+function restoreDefaultCameraView() {
+  const raw = localStorage.getItem(DEFAULT_CAMERA_VIEW_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const fieldsOk = ['offsetX', 'offsetY', 'offsetZ', 'sizePercent'].every((key) => typeof parsed?.[key] === 'number');
+    return fieldsOk ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Applies a saved view's pan+zoom (never rotation — see the comment above
+// defaultCameraView's declaration). Shared by goToDefaultCameraView,
+// setEditingDefaultView (jumping to the existing default on entering edit
+// mode), and loadBundledDefaultModel.
+function applyDefaultCameraViewPanZoom(view) {
+  setCubeSizePercent(view.sizePercent);
+  modelOffsetXPercent = view.offsetX;
+  modelOffsetYPercent = view.offsetY;
+  modelOffsetZPercent = view.offsetZ;
+  notifyModelState();
+}
+
+// Instantly settles the camera-target spring at its rest state (centered,
+// 1x zoom, zero velocity) instead of letting it decay there over the next
+// several frames as it normally would (see renderCubeFrame's stepSpring
+// calls). cameraTargetZoomCurrent is multiplied into the final scale
+// unconditionally (see `s` in renderCubeFrame), not just while a target is
+// active, so without this a target's leftover fit-zoom would still be
+// fading back toward 1x for a beat after the default view's own zoom is
+// set, producing a brief double-zoom instead of a clean cut straight to
+// it. Also needed for pan now that the default view sets that too (see
+// applyDefaultCameraViewPanZoom) — getObjectSpacePan suppresses manual pan
+// entirely until the spring reports at-rest, so without this the new pan
+// wouldn't actually show up on screen until the leftover spring finished
+// decaying on its own, same class of bug goToCameraTarget's own seeding
+// fixes for the reverse direction.
+function settleCameraTargetSpring() {
+  cameraTargetCurrent = [0, 0, 0];
+  cameraTargetZoomCurrent = 1;
+  cameraTargetVelocity = [0, 0, 0];
+  cameraTargetZoomVelocity = 0;
+  cameraTargetSpringLastTime = null;
+  cameraTargetAtRest = true;
+}
+
+// Drops any active camera target (which would otherwise keep overriding
+// centering/zoom every frame) and jumps to the saved default pan/zoom — a
+// no-op if none has ever been saved. Bound to the "Go" button and the 0 key
+// (see the Digit0 keydown handler above) — disabled/ignored while
+// editingDefaultView is active (see setEditingDefaultView) since jumping
+// mid-edit would just discard whatever pan/zoom is being worked out back to
+// the last saved value.
+function goToDefaultCameraView() {
+  if (!defaultCameraView || editingDefaultView) return;
+  if (cameraTargetActiveIndex !== null) resetCameraTarget();
+  settleCameraTargetSpring();
+  applyDefaultCameraViewPanZoom(defaultCameraView);
+}
+
+function setEditingDefaultView(enabled) {
+  enabled = !!enabled;
+  if (enabled === editingDefaultView) return;
+  editingDefaultView = enabled;
+  if (!cubeDragging && !editPanDragging) updateCubeCursor();
+  if (enabled) {
+    // Start from the existing default (if any) rather than wherever the
+    // camera happens to already be, so this refines it in place instead of
+    // setting a brand new value from an arbitrary starting point.
+    if (cameraTargetActiveIndex !== null) resetCameraTarget();
+    settleCameraTargetSpring();
+    if (defaultCameraView) applyDefaultCameraViewPanZoom(defaultCameraView);
+  } else {
+    defaultCameraView = {
+      offsetX: modelOffsetXPercent,
+      offsetY: modelOffsetYPercent,
+      offsetZ: modelOffsetZPercent,
+      sizePercent: cubeSizePercent,
+    };
+    persistDefaultCameraView(defaultCameraView);
+  }
+  notifyModelState();
+}
+
 // Master visibility switch for the light-blue bounding-box overlay drawn
 // around every object currently assigned to a camera-target slot (see
 // CAMERA_TARGET_BOX_* below and its draw call in renderCubeFrame) —
@@ -1952,6 +2314,15 @@ let cameraTargetAtRest = true;
 // honey" settle at the same speed.
 const CAMERA_TARGET_SPRING_STIFFNESS = 15;
 const CAMERA_TARGET_SPRING_DAMPING = 9;
+// Zoom's own, softer spring (same ~1.16 damping ratio as position's, just
+// lower stiffness) — position and zoom used to share the position spring
+// above outright, but the targets in this scene sit far apart in
+// object-space while zoom's goal is usually a much smaller relative change,
+// so with identical time-constants zoom visibly finished while position
+// still had real distance left to cover. Slowing zoom down instead of
+// speeding position up keeps position's existing pacing untouched.
+const CAMERA_TARGET_ZOOM_SPRING_STIFFNESS = 4;
+const CAMERA_TARGET_ZOOM_SPRING_DAMPING = 4.65; // 1.1619 * 2*sqrt(4), same ratio as CAMERA_TARGET_SPRING_DAMPING/STIFFNESS
 // Clamps the per-step dt fed into the spring integration (seconds) — caps
 // how far a single step can move after e.g. a backgrounded-tab stall, so
 // the simulation can't blow up from an enormous one-off dt.
@@ -1989,6 +2360,8 @@ function getModelState() {
     cameraTargetSlots,
     cameraTargetActiveIndex,
     showCameraTargetBoxes,
+    hasDefaultCameraView: !!defaultCameraView,
+    editingDefaultView,
     modelFlowArrowCount: modelFlowPaths.length,
     selectedFlowArrowIndex,
     modelFlowDrawMode,
@@ -2028,6 +2401,31 @@ function setCameraTargetSlot(slotIndex, objectName) {
 
 function goToCameraTarget(slotIndex) {
   if (!cameraTargetSlots[slotIndex]) return;
+  // Coming from manual-pan mode (no target active — e.g. the default view):
+  // seed the spring at the object-space point the manual pan is currently
+  // centering on screen (same formula as pivotObj in renderCubeFrame),
+  // rather than leaving it wherever it was last settled to rest (usually
+  // [0,0,0]). Otherwise the manual pan — suppressed the instant a target
+  // activates, see getObjectSpacePan — vanishes in a single frame while the
+  // spring separately eases from the wrong starting point, which reads as
+  // an instant jump with no transition at all. Switching directly between
+  // two already-active targets skips this: cameraTargetCurrent already
+  // holds the live in-flight position, which is the correct start as-is.
+  if (cameraTargetActiveIndex === null) {
+    const [panX, panY, panZ] = getObjectSpacePan();
+    // Must match the actual render scale `s` (see pivotObj/getCurrentCameraOffset
+    // in renderCubeFrame) exactly, not just cubeSizeScale — CUBE_SCALE is a
+    // ~0.033 base multiplier baked into every object-space distance, so
+    // omitting it here understated the seed by ~30x, which rendered as a
+    // wrong-magnitude jump on the very first camera-target frame before the
+    // spring corrected course. cameraTargetZoomCurrent is 1 at this point
+    // (we're coming from rest in manual-pan mode), included anyway to stay
+    // exactly in sync with `s` if that ever weren't the case.
+    const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
+    cameraTargetCurrent = s > 0 ? [-panX / s, -panY / s, -panZ / s] : [0, 0, 0];
+    cameraTargetVelocity = [0, 0, 0];
+    cameraTargetSpringLastTime = null;
+  }
   cameraTargetActiveIndex = slotIndex;
   persistCameraTargetActiveIndex(slotIndex);
   notifyModelState();
@@ -2174,6 +2572,11 @@ async function loadModelFromFiles(files) {
   }
 }
 
+// Duration of the opening bird's-eye -> resting-rotation tween below — much
+// slower than CUBE_ROT_RESET_MS's snappy 180ms since this is a deliberate
+// one-time cinematic drop into place on load, not a quick UI-driven reset.
+const MODEL_LOAD_ROTATION_INTRO_MS = 3000;
+
 // Bundled default model (public/models/), shown on startup instead of the
 // built-in procedural cube — same parse/apply path as a manual upload, just
 // fetched from a static asset instead of picked/dropped by the user. "Show
@@ -2198,14 +2601,35 @@ async function loadBundledDefaultModel() {
     ]);
     // Land wherever the user last left the camera (see
     // persistCameraTargetActiveIndex) rather than the whole-scene view
-    // applyParsedModel resets to (cameraTargetActiveIndex = null) — Target 1
-    // only on a genuinely fresh browser with nothing persisted yet.
+    // applyParsedModel resets to (cameraTargetActiveIndex = null) — except
+    // on a genuinely fresh browser with nothing persisted yet, which now
+    // shows the baked-in default pan/zoom (see setEditingDefaultView)
+    // instead of auto-jumping to Target 1, if one's ever been saved;
+    // otherwise it just stays at the plain centered/100% whole-scene view.
     // cameraTargetCurrent starts at [0,0,0] regardless, so the spring eases
-    // into the target's centroid/zoom from center on load instead of
-    // snapping there.
+    // into a target's centroid/zoom from center on load instead of snapping
+    // there.
+    //
+    // Pan/zoom for whichever branch below is applied instantly, same as
+    // before; rotation always eases to the same fixed CUBE_ISO_PITCH/YAW
+    // baseline regardless of branch (defaultCameraView never carries
+    // rotation — see its own declaration comment; Camera Targets never did
+    // either), as a single bird's-eye -> resting-rotation tween — cubeRotX/Y
+    // start pinned to the bird's-eye pose (see their declaration) for
+    // exactly this: so the model's first look, once it's actually loaded,
+    // is dropping down into place rather than just appearing already framed.
+    defaultCameraView = restoreDefaultCameraView();
     const restoredTargetIndex = restoreCameraTargetActiveIndex();
-    if (restoredTargetIndex === undefined) goToCameraTarget(0);
-    else if (restoredTargetIndex !== null) goToCameraTarget(restoredTargetIndex);
+    if (restoredTargetIndex === undefined) {
+      if (defaultCameraView) applyDefaultCameraViewPanZoom(defaultCameraView);
+    } else if (restoredTargetIndex !== null) {
+      goToCameraTarget(restoredTargetIndex);
+    } else if (defaultCameraView) {
+      applyDefaultCameraViewPanZoom(defaultCameraView);
+    }
+    // suppressParallax: false — keep ambient hover tilt live through the
+    // whole drop instead of freezing it (see cubeRotResetSuppressParallax).
+    tweenCubeRotationTo(CUBE_ISO_PITCH, CUBE_ISO_YAW, MODEL_LOAD_ROTATION_INTRO_MS, false, EASE_INTRO_BEZIER);
     if (!restoreModelFlowPath()) applyDefaultModelFlowPath();
   } catch (err) {
     console.error(err);
@@ -2244,17 +2668,25 @@ window.addEventListener('drop', (event) => {
 
 const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // Baked-in starter arrows for the bundled default model (see
-// loadBundledDefaultModel/applyDefaultModelFlowPath below) — captured from a
-// hand-drawn path (via `copy(localStorage.getItem('iconMosaic.modelFlowPath'))`
-// in the console) so a fresh browser with nothing in localStorage yet still
-// gets a pulsing flow instead of an empty green mesh. Same shape
-// saveModelFlowPath persists to localStorage (points/touchedObjectIndices/
-// enabledObjectIndices/sourceOffset/masterTotalLen — the latter two carry
-// over branch/junction timing, see buildModelFlowPathsFromData), just
-// applied unconditionally on startup instead. Specific to this bundled
-// model's geometry/scale — re-capture and replace if the model changes.
-const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[-3.533612220694515,2.0049147605895996,-4.020106306134707],[-2.3054806580859983,2.0049147605895996,-4.021294779706913],[-2.3112032077624334,2.0049147605895925,-5.131251210709273],[-1.700292989686261,2.0049147605895996,-5.130644600572484],[-1.6936733722686625,2.3872371419101697,-5.128727316261484]],"touchedObjectIndices":[225],"enabledObjectIndices":[225],"sourceOffset":0,"masterTotalLen":3.3313983300427394},{"points":[[-0.5108520550720073,2.0049147605895996,-4.179052317101252],[-0.5082856276359422,2.0049147605895996,-4.024319742281918],[-0.9670102152752094,2.0049147605895996,-4.022750360285606]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":0,"masterTotalLen":3.558692271635554},{"points":[[-0.9576222002359245,2.0049147605895996,-4.193408367252218],[-0.9670102152752094,2.0049147605895996,-4.022750360285606]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":0.6134811292167535,"masterTotalLen":3.558692271635554},{"points":[[-0.9670102152752094,2.0049147605895996,-4.022750360285606],[-1.4108806868637203,2.0049147605895996,-4.02341823752289]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":0.6134811292167535,"masterTotalLen":3.558692271635554},{"points":[[-1.4035019430610518,2.0049147605896067,-4.184974971631426],[-1.4108806868637203,2.0049147605895996,-4.02341823752289]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":1.0573521032713893,"masterTotalLen":3.558692271635554},{"points":[[-1.4108806868637203,2.0049147605895996,-4.02341823752289],[-2.1052878974605846,2.0049147605895996,-4.020069477057497],[-2.100987470884789,2.0049147605895996,-5.054662431323841],[-1.6994843556796653,2.0049147605895996,-5.050792577444078],[-1.6936733722686839,2.3756132078176293,-5.057307448656438]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":1.0573521032713893,"masterTotalLen":3.558692271635554},{"points":[[-1.693673372268691,2.366635238902191,-5.203627122457007],[-1.6936733722686768,2.0151763189974474,-5.206860483920764],[-2.5125355466125505,2.0046772956848002,-5.206848306998779]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":0,"masterTotalLen":4.523998604403883},{"points":[[-2.5125355466125505,2.0046772956848002,-5.206848306998779],[-3.012630430929585,2.004677295684786,-5.2080238930882246]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":1.1704032709404832,"masterTotalLen":4.523998604403883},{"points":[[-2.5125355466125505,2.0046772956848002,-5.206848306998779],[-2.512542597495518,2.0046772956848287,-6.6398947248243445]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":1.1704032709404832,"masterTotalLen":4.523998604403883},{"points":[[-2.512542597495518,2.0046772956848287,-6.6398947248243445],[-3.0129926834286067,2.0046772956848145,-6.635223653432817]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":2.6034496887833942,"masterTotalLen":4.523998604403883},{"points":[[-2.512542597495518,2.0046772956848287,-6.6398947248243445],[-2.51212844526456,2.004677295684843,-8.05886750446723],[-3.0136899211771624,2.0046772956848145,-8.062694439698532]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":2.6034496887833942,"masterTotalLen":4.523998604403883},{"points":[[-1.240786163625124,4.794826516113332,-6.646492481231704],[-1.2361169132712888,4.905024528503418,-6.645614087545702],[-1.2420935930809236,4.905024528503432,-6.5064065661211075],[-1.2409320319398134,3.8641719818115092,-6.496611212554541],[-1.239232787895297,3.8641719818115234,-5.1419676624735615],[-1.5559363221780984,3.864171981811495,-5.135215875429729],[-1.5616832971572876,3.998351504421805,-5.129226897447559],[-1.6900825192617042,4.009315490722628,-5.134482080600718],[-1.6933333873748921,2.6846481655202012,-5.134383206649545]],"touchedObjectIndices":[264],"enabledObjectIndices":[264],"sourceOffset":0,"masterTotalLen":4.550036459054436},{"points":[[-33.32434745449532,3.1735592730030646,-5.283606941857543],[-33.323789238730214,3.1738384087874785,-4.988818544757631],[-33.65524921837208,3.0081094253576133,-4.9836480884256895],[-33.66818325208855,2.9907482945837423,-4.987649762239699],[-33.67320251464844,2.9683267977225363,-4.985122997412411],[-33.67320251464844,2.6979181784701964,-4.990466610095741]],"touchedObjectIndices":[19],"enabledObjectIndices":[19],"sourceOffset":0,"masterTotalLen":0.9810007283840425},{"points":[[-33.6732063293457,2.5461860095340363,-5.106006138836445],[-33.6732063293457,2.5426508266577947,-5.176102834159904],[-33.6732063293457,2.0141555303061836,-5.179439709164158],[-34.332182952085965,2.0093173980712855,-5.177043995683409],[-34.330233163064584,2.009317398071289,-6.641062035346234]],"touchedObjectIndices":[17],"enabledObjectIndices":[17],"sourceOffset":0,"masterTotalLen":2.7217096899053965},{"points":[[-34.831079569001204,2.009317398071296,-4.988446676543646],[-33.677231241229926,2.009317398071289,-4.991480246980531],[-33.6732063293457,2.398312329519621,-4.991596494084124]],"touchedObjectIndices":[18],"enabledObjectIndices":[18],"sourceOffset":0,"masterTotalLen":1.5428680865731366},{"points":[[-33.79070115909322,2.195983886718757,-4.119428935799725],[-33.675507526492446,2.19598388671875,-4.125946073113642],[-33.6732063293457,2.5453208277030797,-4.123081348380721],[-33.6732063293457,2.5491004053395976,-4.878117931160061]],"touchedObjectIndices":[16],"enabledObjectIndices":[16],"sourceOffset":0,"masterTotalLen":1.2197801489848201},{"points":[[41.85993312681185,6.882417110633526,-12.125245093956437],[27.525425417240484,6.885289236878236,-12.133210053236581]],"touchedObjectIndices":[169],"enabledObjectIndices":[169],"sourceOffset":0,"masterTotalLen":14.334510210169249},{"points":[[41.86256299448817,5.875012201935732,-12.118210788109934],[27.595871114180824,5.8660104847750745,-12.119353847786101]],"touchedObjectIndices":[167],"enabledObjectIndices":[167],"sourceOffset":0,"masterTotalLen":14.266694765961908},{"points":[[41.89728368567313,4.876754284407099,-12.118267375558787],[27.537839236827466,4.875717797804668,-12.125559121632847]],"touchedObjectIndices":[165],"enabledObjectIndices":[165],"sourceOffset":0,"masterTotalLen":14.359446337632587},{"points":[[41.89152392803217,4.874575465215287,-14.17016791650751],[27.496703186183296,4.879773202424332,-14.180706289978659]],"touchedObjectIndices":[164],"enabledObjectIndices":[164],"sourceOffset":0,"masterTotalLen":14.394825537801772},{"points":[[41.909609967244414,5.892053770469801,-14.185938791912463],[27.543902988589224,5.872989937997659,-14.176440816116738]],"touchedObjectIndices":[166],"enabledObjectIndices":[166],"sourceOffset":0,"masterTotalLen":14.36572276767985},{"points":[[41.8605270601096,6.8882012854193135,-14.184688674087496],[27.451610771153028,6.896168204004596,-14.19536277999974]],"touchedObjectIndices":[168],"enabledObjectIndices":[168],"sourceOffset":0,"masterTotalLen":14.40892244515483},{"points":[[26.699486563610733,2.386645007688699,-13.159174144108576],[26.593408329797086,2.0102024925305955,-13.157166921611434],[26.09222984313965,1.995088566660769,-13.160407293374007],[26.092229843139677,2.0079913699321565,-10.95847096382749],[26.61165516503236,2.0107979774474956,-10.941765888300516]],"touchedObjectIndices":[162],"enabledObjectIndices":[162],"sourceOffset":0,"masterTotalLen":3.6142005397392505},{"points":[[26.58393540493813,2.0107979774475098,-10.833545959856975],[25.54074859619142,2.0049028578593493,-10.835412712059542],[25.547913048882663,2.010797977447524,-9.676447099293217]],"touchedObjectIndices":[163],"enabledObjectIndices":[163],"sourceOffset":0,"masterTotalLen":10.82232805892591},{"points":[[25.547913048882663,2.010797977447524,-9.676447099293217],[25.55438866641184,2.0107979774474956,-9.321886379418986]],"touchedObjectIndices":[163],"enabledObjectIndices":[163],"sourceOffset":2.2022078852145075,"masterTotalLen":10.82232805892591},{"points":[[25.547913048882663,2.010797977447524,-9.676447099293217],[33.8159939302255,2.010797977447524,-9.710000189073321],[33.84536731405956,2.010797977447524,-9.359256781913324]],"touchedObjectIndices":[163],"enabledObjectIndices":[163],"sourceOffset":2.2022078852145075,"masterTotalLen":10.82232805892591},{"points":[[33.85351181030275,2.0069005621961367,-8.602878907379806],[33.8371545893058,2.0107979774475098,-7.935424532492257]],"touchedObjectIndices":[203],"enabledObjectIndices":[203],"sourceOffset":0,"masterTotalLen":0.6676661524151971},{"points":[[33.853511810302706,2.007403650025026,-7.172154291600087],[33.853511810302734,2.003678903828572,-6.530471248711301]],"touchedObjectIndices":[202],"enabledObjectIndices":[202],"sourceOffset":0,"masterTotalLen":0.6416938532238251},{"points":[[25.54074859619142,1.9999526415240751,-8.55947273864409],[25.540748596191406,2.010111715879006,-8.007324951633876]],"touchedObjectIndices":[200],"enabledObjectIndices":[200],"sourceOffset":0,"masterTotalLen":0.5522412384927666},{"points":[[25.540750503540053,2.0011792776429047,-7.159482729440924],[25.541741532786986,2.0107979774475098,-6.600089917541268]],"touchedObjectIndices":[201],"enabledObjectIndices":[201],"sourceOffset":0,"masterTotalLen":0.559476379778363},{"points":[[25.84858304596434,2.0093586444854736,-8.993267253499413],[26.394634341297344,2.009358644485502,-8.984746970174928],[26.4005552747437,2.0093586444854736,-9.119601917010485],[26.579194571320762,2.0093586444854736,-9.123918084890814]],"touchedObjectIndices":[48],"enabledObjectIndices":[48],"sourceOffset":0,"masterTotalLen":0.8597940617285961},{"points":[[25.840908261921115,2.009358644485445,-8.917045033137816],[26.401639314277226,2.009358644485502,-8.920453323936608],[26.396885551375195,2.0093586444854736,-8.764804972087717],[26.56743732705835,2.009358644485445,-8.766003671442688]],"touchedObjectIndices":[49],"enabledObjectIndices":[49],"sourceOffset":0,"masterTotalLen":0.8870183275338802},{"points":[[25.85903112906998,2.0093586444854736,-7.596082170708107],[26.398714006465255,2.0093586444854736,-7.590632557408881],[26.41397613267269,2.0093586444854736,-7.735885038479775],[26.57608318201286,2.009358644485502,-7.720988531201881]],"touchedObjectIndices":[25],"enabledObjectIndices":[25],"sourceOffset":0,"masterTotalLen":0.8485525437726422},{"points":[[25.84411910676454,2.009358644485502,-7.506713626550684],[26.405392661433993,2.0093586444854736,-7.515377434059176],[26.394650055368977,2.009358644485445,-7.368046763586842],[26.588863035384705,2.0093586444854736,-7.376034552413713]],"touchedObjectIndices":[26],"enabledObjectIndices":[26],"sourceOffset":0,"masterTotalLen":0.9034393929210366},{"points":[[25.867109648243837,2.0093586444854736,-6.179089727791316],[26.400748559288466,2.009358644485502,-6.186664839910555],[26.406885606822165,2.0093586444854736,-6.31894469545561],[26.587030993989302,2.009358644485502,-6.309536421066737]],"touchedObjectIndices":[117],"enabledObjectIndices":[117],"sourceOffset":0,"masterTotalLen":0.8465057130445883},{"points":[[25.858362924542508,2.0093586444854736,-6.099408426037664],[26.3891363597292,2.0093586444854736,-6.110237073387698],[26.40078844568718,2.0093586444854736,-5.9558807610036295],[26.571099562910604,2.0093586444854736,-5.959081545757386]],"touchedObjectIndices":[118],"enabledObjectIndices":[118],"sourceOffset":0,"masterTotalLen":0.8560205620438288},{"points":[[33.531244675591694,2.0093586444854736,-6.097686340616504],[33.00685049973031,2.009358644485502,-6.1023365281968145],[33.0005840625812,2.009358644485502,-5.964101383664164],[32.81627879718948,2.0093586444854736,-5.969745441282703]],"touchedObjectIndices":[141],"enabledObjectIndices":[141],"sourceOffset":0,"masterTotalLen":0.8471835649140691},{"points":[[33.53805859845355,2.0093586444854736,-6.176841556997304],[33.011681187194874,2.0093586444854736,-6.170168156963467],[33.006519578464385,2.0093586444854736,-6.322729961025311],[32.8277311494678,2.0093586444854736,-6.320159931385367]],"touchedObjectIndices":[140],"enabledObjectIndices":[140],"sourceOffset":0,"masterTotalLen":0.8578757070961027},{"points":[[33.53384348510093,2.009358644485445,-7.504787879611591],[33.01273564776488,2.0093586444854736,-7.512465846917595],[33.00197413433424,2.0093586444854736,-7.374633000723513],[32.804791309533336,2.0367040634155558,-7.377797480597307]],"touchedObjectIndices":[72],"enabledObjectIndices":[72],"sourceOffset":0,"masterTotalLen":0.858511799897256},{"points":[[33.52377177140009,2.0093586444854736,-8.931385858483639],[33.01198348887793,2.0093586444854736,-8.92828575997988],[33.00049834235604,2.009358644485502,-8.803926643575174],[32.84005025369534,2.0093586444854736,-8.800814932878163]],"touchedObjectIndices":[95],"enabledObjectIndices":[95],"sourceOffset":0,"masterTotalLen":0.7971642753997343},{"points":[[33.55719919404724,2.0093586444854736,-9.013912486426495],[33.00784344369159,2.0093586444854736,-9.002932031020757],[33.01134101838553,2.0093586444854736,-9.154927557280637],[32.82684281945816,2.009358644485502,-9.160703838530981]],"touchedObjectIndices":[94],"enabledObjectIndices":[94],"sourceOffset":0,"masterTotalLen":0.8860898386098144}];
+// loadBundledDefaultModel/applyDefaultModelFlowPath below) — when non-empty,
+// captured from a hand-drawn path (via
+// `copy(localStorage.getItem('iconMosaic.modelFlowPath'))` in the console)
+// so a fresh browser with nothing in localStorage yet still gets a pulsing
+// flow instead of an empty green mesh. Same shape saveModelFlowPath persists
+// to localStorage (points/touchedObjectIndices/enabledObjectIndices/
+// sourceOffset/masterTotalLen — the latter two carry over branch/junction
+// timing, see buildModelFlowPathsFromData), just applied unconditionally on
+// startup instead. Specific to the bundled model's geometry/scale, so it's
+// left empty here (no pulsing flow until one is drawn) after a model swap —
+// re-capture and replace if you want a default again.
+const DEFAULT_MODEL_FLOW_PATH_DATA = [];
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
+// Fixed reference length (world units) the tail's reach is computed against
+// instead of each arrow's own masterTotalLen, so the "Tail length" slider
+// produces the same absolute tail distance on every arrow regardless of how
+// long that specific arrow is drawn. Chosen to roughly match the previous
+// look on a mid-length arrow; tune directly if tails read too long/short.
+const MODEL_FLOW_TAIL_REFERENCE_LENGTH = 3;
 // Sentinel aFlowCoord for a green vertex no arrow reaches (no path enables
 // its object) — any negative value works since real arc-length fractions
 // are always in [0, 1]; the fragment shader's `vFlowCoord >= 0.0` check is
@@ -2665,10 +3097,12 @@ function rotateYVec3(v, theta) {
 // (semi-implicit/symplectic Euler: velocity updates from the current
 // position first, then position updates from the *new* velocity — more
 // stable than naive Euler for a stiff spring at typical frame dt's).
-// Returns [newPosition, newVelocity]. See CAMERA_TARGET_SPRING_STIFFNESS/
-// CAMERA_TARGET_SPRING_DAMPING above.
-function stepSpring(position, velocity, goal, dt) {
-  const accel = CAMERA_TARGET_SPRING_STIFFNESS * (goal - position) - CAMERA_TARGET_SPRING_DAMPING * velocity;
+// Returns [newPosition, newVelocity]. stiffness/damping default to
+// CAMERA_TARGET_SPRING_STIFFNESS/DAMPING (position's spring) — the zoom
+// call in renderCubeFrame passes CAMERA_TARGET_ZOOM_SPRING_STIFFNESS/DAMPING
+// instead, its own softer spring (see those constants' comment).
+function stepSpring(position, velocity, goal, dt, stiffness = CAMERA_TARGET_SPRING_STIFFNESS, damping = CAMERA_TARGET_SPRING_DAMPING) {
+  const accel = stiffness * (goal - position) - damping * velocity;
   const newVelocity = velocity + accel * dt;
   const newPosition = position + newVelocity * dt;
   return [newPosition, newVelocity];
@@ -2898,12 +3332,17 @@ function recomputeModelFlowCoords() {
 
   const vertexCount = customModelPositionsCache.length / 3;
   const flowCoords = new Float32Array(vertexCount).fill(MODEL_FLOW_NO_ARROW_COORD);
+  // Parallel buffer: each vertex's chosen path's own masterTotalLen, carried
+  // through unnormalized (see aFlowPathLen) so the fragment shader can undo
+  // flowCoords' per-path normalization and measure the tail in absolute
+  // world-space distance instead of a fraction of that one path's length.
+  const flowPathLens = new Float32Array(vertexCount).fill(1);
   if (modelFlowPaths.length > 0) {
     for (let i = 0; i < vertexCount; i++) {
       if (!customModelIsGreenCache[i]) continue;
       const vertexObjectIndex = customModelObjectIndexCache[i];
       const p = [customModelPositionsCache[i * 3], customModelPositionsCache[i * 3 + 1], customModelPositionsCache[i * 3 + 2]];
-      let bestFrac = MODEL_FLOW_NO_ARROW_COORD, bestDistSq = Infinity;
+      let bestFrac = MODEL_FLOW_NO_ARROW_COORD, bestDistSq = Infinity, bestMasterTotalLen = 1;
       for (const path of modelFlowPaths) {
         if (path.enabledObjectIndices && !path.enabledObjectIndices.includes(vertexObjectIndex)) continue;
         const { arcLen, distSq } = nearestPointOnPath3D(path, p);
@@ -2911,13 +3350,17 @@ function recomputeModelFlowCoords() {
           bestDistSq = distSq;
           const masterTotalLen = path.masterTotalLen || path.totalLen;
           bestFrac = masterTotalLen > 0 ? ((path.sourceOffset || 0) + arcLen) / masterTotalLen : 0;
+          bestMasterTotalLen = masterTotalLen || 1;
         }
       }
       flowCoords[i] = bestFrac;
+      flowPathLens[i] = bestMasterTotalLen;
     }
   }
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelFlowCoordBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, flowCoords, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelFlowPathLenBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, flowPathLens, gl.STATIC_DRAW);
 }
 
 function saveModelFlowPath() {
@@ -3723,23 +4166,30 @@ function renderCubeFrame() {
 
   if (cubeRotResetStartTime !== null) {
     // Fast ease-out cubic from the snapshot taken in tweenCubeRotationTo to
-    // its target angle/zero tilt — overrides the normal per-frame parallax
-    // easing below until the tween finishes.
-    const t = Math.min(1, (performance.now() - cubeRotResetStartTime) / CUBE_ROT_RESET_MS);
-    const eased = 1 - (1 - t) ** 3;
+    // its target angle — cubeRotResetSuppressParallax additionally decays
+    // the tilt itself back to zero over the same curve (overriding the
+    // normal per-frame parallax easing below) for the fast reset-style
+    // tweens; the slow load intro leaves it false so live hover keeps
+    // running via the normal path underneath the rotation tween instead of
+    // going dead for its whole 2s.
+    const t = Math.min(1, (performance.now() - cubeRotResetStartTime) / cubeRotResetDurationMs);
+    const eased = cubeRotResetEasing(t);
     cubeRotX = cubeRotResetFrom.rotX + (cubeRotResetTargetX - cubeRotResetFrom.rotX) * eased;
     cubeRotY = cubeRotResetFrom.rotY + (cubeRotResetTargetY - cubeRotResetFrom.rotY) * eased;
-    cubeParallaxTargetX = cubeRotResetFrom.parTargetX * (1 - eased);
-    cubeParallaxTargetY = cubeRotResetFrom.parTargetY * (1 - eased);
-    cubeParallaxX = cubeRotResetFrom.parX * (1 - eased);
-    cubeParallaxY = cubeRotResetFrom.parY * (1 - eased);
+    if (cubeRotResetSuppressParallax) {
+      cubeParallaxTargetX = cubeRotResetFrom.parTargetX * (1 - eased);
+      cubeParallaxTargetY = cubeRotResetFrom.parTargetY * (1 - eased);
+      cubeParallaxX = cubeRotResetFrom.parX * (1 - eased);
+      cubeParallaxY = cubeRotResetFrom.parY * (1 - eased);
+    } else {
+      advanceParallax();
+    }
     if (t >= 1) {
       cubeRotResetStartTime = null;
       cubeRotResetFrom = null;
     }
   } else {
-    cubeParallaxX += (cubeParallaxTargetX - cubeParallaxX) * CUBE_PARALLAX_SMOOTHING;
-    cubeParallaxY += (cubeParallaxTargetY - cubeParallaxY) * CUBE_PARALLAX_SMOOTHING;
+    advanceParallax();
   }
 
   const rx = cubeRotX + cubeParallaxX;
@@ -3815,7 +4265,10 @@ function renderCubeFrame() {
     [nextPos[i], cameraTargetVelocity[i]] = stepSpring(cameraTargetCurrent[i], cameraTargetVelocity[i], goalCenter[i], dt);
   }
   cameraTargetCurrent = nextPos;
-  [cameraTargetZoomCurrent, cameraTargetZoomVelocity] = stepSpring(cameraTargetZoomCurrent, cameraTargetZoomVelocity, zoomGoal, dt);
+  [cameraTargetZoomCurrent, cameraTargetZoomVelocity] = stepSpring(
+    cameraTargetZoomCurrent, cameraTargetZoomVelocity, zoomGoal, dt,
+    CAMERA_TARGET_ZOOM_SPRING_STIFFNESS, CAMERA_TARGET_ZOOM_SPRING_DAMPING,
+  );
   // "At rest" (see getObjectSpacePan) only when there's no active target AND
   // the spring has actually settled at the origin/1x — not merely whenever
   // cameraTargetActiveIndex is null, since the spring is still moving for a
@@ -3882,6 +4335,10 @@ function renderCubeFrame() {
   gl.enableVertexAttribArray(aFlowCoord);
   gl.vertexAttribPointer(aFlowCoord, 1, gl.FLOAT, false, 0, 0);
 
+  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelFlowPathLenBuffer : cubeFlowPathLenBuffer);
+  gl.enableVertexAttribArray(aFlowPathLen);
+  gl.vertexAttribPointer(aFlowPathLen, 1, gl.FLOAT, false, 0, 0);
+
   // Traveling flow pulse: same Gaussian-band-over-time math as the image
   // mode's flow (see renderLoop's pulseLinear/pulseProgress/pulseSigma), just
   // parameterized by each vertex's normalized (0-1) position along its
@@ -3927,7 +4384,11 @@ function renderCubeFrame() {
     gl.uniform1f(uFlowSigma, flowSigma);
     gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
     gl.uniform1f(uFlowCoreSigmaMult, flowCoreLengthPercent / 100);
-    gl.uniform1f(uFlowTailSigmaMult, flowTailLengthPercent / 100);
+    // Absolute world-space tail reach — MODEL_FLOW_TAIL_REFERENCE_LENGTH
+    // stands in for "this specific arrow's own length" (see
+    // aFlowPathLen/vFlowPathLen) so every arrow's tail covers the same real
+    // distance instead of a distance proportional to its own length.
+    gl.uniform1f(uFlowTailWorldSigma, flowSigma * (flowTailLengthPercent / 100) * MODEL_FLOW_TAIL_REFERENCE_LENGTH);
     gl.uniform1f(uFlowTailFalloffExponent, flowTailFalloffValue);
   }
 
@@ -4709,4 +5170,6 @@ export const controls = {
   goToCameraTarget,
   resetCameraTarget,
   setShowCameraTargetBoxes,
+  setEditingDefaultView,
+  goToDefaultCameraView,
 };

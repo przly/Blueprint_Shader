@@ -6,6 +6,7 @@ import { DeleteIcon, type DeleteIconHandle } from "@/components/ui/delete";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
+import { MapPinIcon, type MapPinIconHandle } from "@/components/ui/map-pin";
 import { Separator } from "@/components/ui/separator";
 import { Slider, SliderValue } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
@@ -113,6 +114,8 @@ export function Panel() {
   const resetPositionIconPress = useIconPressHandlers<UndoDotIconHandle>();
   const goIconRefs = useRef<(ArrowBigRightDashIconHandle | null)[]>([]);
   const resetViewIconPress = useIconPressHandlers<UndoDotIconHandle>();
+  const setDefaultViewIconPress = useIconPressHandlers<MapPinIconHandle>();
+  const goDefaultViewIconRef = useRef<ArrowBigRightDashIconHandle | null>(null);
   const resetRotationIconPress = useIconPressHandlers<UndoDotIconHandle>();
   const resetSizeIconPress = useIconPressHandlers<UndoDotIconHandle>();
   const deleteArrowIconPress = useIconPressHandlers<DeleteIconHandle>();
@@ -353,6 +356,7 @@ export function Panel() {
                   <span className="text-muted-foreground text-xs tabular-nums">{Math.round(state.modelOffsetY)}</span>
                 </div>
                 <Slider
+                  disabled={state.editingDefaultView}
                   max={state.modelOffsetMax}
                   min={state.modelOffsetMin}
                   onValueChange={(value: number | readonly number[]) => {
@@ -434,7 +438,7 @@ export function Panel() {
                         </select>
                         <Button
                           className="shrink-0 transition-[color,background-color,border-color,box-shadow] duration-150"
-                          disabled={!state.cameraTargetSlots?.[slotIndex]}
+                          disabled={!state.cameraTargetSlots?.[slotIndex] || state.editingDefaultView}
                           onClick={() => {
                             controls.goToCameraTarget(slotIndex);
                             setState((s) => ({ ...s, cameraTargetActiveIndex: slotIndex }));
@@ -456,11 +460,49 @@ export function Panel() {
                       </div>
                     </div>
                   ))}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+                      Default position
+                      <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">0</Kbd>
+                    </span>
+                    {state.editingDefaultView && (
+                      <p className="text-[11px] text-muted-foreground leading-snug">
+                        Pan and zoom the camera, then click Done to save this as the default.
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        className="min-w-0 flex-1"
+                        onClick={() => controls.setEditingDefaultView(!state.editingDefaultView)}
+                        onPointerDown={setDefaultViewIconPress.onPointerDown}
+                        onPointerLeave={setDefaultViewIconPress.onPointerLeave}
+                        onPointerUp={setDefaultViewIconPress.onPointerUp}
+                        size="xs"
+                        variant={state.editingDefaultView ? "default" : "outline"}
+                      >
+                        <MapPinIcon className="size-3" ref={setDefaultViewIconPress.ref} />
+                        {state.editingDefaultView ? "Done editing" : "Edit default position"}
+                      </Button>
+                      <Button
+                        className="shrink-0"
+                        disabled={!state.hasDefaultCameraView || state.editingDefaultView}
+                        onClick={() => controls.goToDefaultCameraView()}
+                        onPointerDown={() => goDefaultViewIconRef.current?.startAnimation()}
+                        onPointerLeave={() => goDefaultViewIconRef.current?.stopAnimation()}
+                        onPointerUp={() => goDefaultViewIconRef.current?.stopAnimation()}
+                        size="xs"
+                        variant="outline"
+                      >
+                        Go
+                        <ArrowBigRightDashIcon className="size-3" ref={goDefaultViewIconRef} />
+                      </Button>
+                    </div>
+                  </div>
                 </div>
                 <div className="flex items-center gap-4">
                   <Button
                     className="ml-auto"
-                    disabled={state.cameraTargetActiveIndex == null}
+                    disabled={state.cameraTargetActiveIndex == null || state.editingDefaultView}
                     onClick={() => {
                       controls.resetCameraTarget();
                       setState((s) => ({ ...s, cameraTargetActiveIndex: null }));
