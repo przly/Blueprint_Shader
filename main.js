@@ -2639,9 +2639,9 @@ async function loadBundledDefaultModel() {
     // jumping between them is how the user navigates the bundle's separate
     // scenes rather than a single shared layout.
     applyParsedModel(parsed, 'ngen_assets.obj', 'ngen_assets.mtl', [
-      '1-House',
-      '2-Business_Facility',
-      '3-Investor_Energy_Hub',
+      '1-For_Home',
+      '2-For_Business',
+      '3-For_Investors',
     ]);
     // Land wherever the user last left the camera (see
     // persistCameraTargetActiveIndex) rather than the whole-scene view
