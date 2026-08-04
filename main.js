@@ -2572,10 +2572,9 @@ const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // to localStorage (points/touchedObjectIndices/enabledObjectIndices/
 // sourceOffset/masterTotalLen — the latter two carry over branch/junction
 // timing, see buildModelFlowPathsFromData), just applied unconditionally on
-// startup instead. Specific to the bundled model's geometry/scale, so it's
-// left empty here (no pulsing flow until one is drawn) after a model swap —
-// re-capture and replace if you want a default again.
-const DEFAULT_MODEL_FLOW_PATH_DATA = [];
+// startup instead. Specific to the bundled model's geometry/scale — re-capture
+// and replace if the model ever changes again.
+const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[-33.67333602905275,0.6334688513144009,-5.099300492059335],[-33.673336029052734,0.6339370829337714,-5.179315505773158],[-33.673336029052734,0.10385314082481045,-5.178646390804898],[-34.33642197886703,0.09333333373069763,-5.17300515430707],[-34.336034799862055,0.09333333373069763,-6.6424453440926]],"touchedObjectIndices":[500],"enabledObjectIndices":[500],"sourceOffset":0,"masterTotalLen":2.742734374529774},{"points":[[-34.833863038597045,0.09333333373069763,-4.990590645997877],[-33.68693837931779,0.09333333373069763,-4.9914932159016985],[-33.67333602905275,0.4826526655058707,-4.993658371678258]],"touchedObjectIndices":[469],"enabledObjectIndices":[469],"sourceOffset":0,"masterTotalLen":1.536487915533214},{"points":[[-33.78354617495815,0.2800000011920787,-4.123070418601841],[-33.67767859420686,0.2800000011920787,-4.124411198391016],[-33.67333602905274,0.6302302259155255,-4.124307431025137],[-33.67333602905274,0.6295758712951454,-4.878244125480762]],"touchedObjectIndices":[452],"enabledObjectIndices":[452],"sourceOffset":0,"masterTotalLen":1.2100702102757512},{"points":[[-33.32420476002098,1.2577114491708272,-5.285326013957132],[-33.32296006593586,1.2583338584281734,-4.995782500557958],[-33.657797496354306,1.090916293413585,-4.994099790208907],[-33.669162634621344,1.0733935068405174,-4.986517049287329],[-33.67333221435546,0.7885513701981637,-4.994376147461708]],"touchedObjectIndices":[455],"enabledObjectIndices":[455],"sourceOffset":0,"masterTotalLen":0.9711104332982854}];
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
 // Fixed reference length (world units) the tail's reach is computed against
 // instead of each arrow's own masterTotalLen, so the "Tail length" slider
