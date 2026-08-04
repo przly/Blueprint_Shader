@@ -1717,7 +1717,31 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
       ox = rotX; oz = rotZ;
     }
     const size = Math.hypot(b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ) * scale;
-    return { name, center: [(ox - cx) * scale, (oy - cy) * scale, (oz - cz) * scale], size };
+    // Rotation-aware axis-aligned bounding box, in the same final coordinate
+    // space as `center` above — feeds the camera-target bounding-box overlay
+    // (see showCameraTargetBoxes). Re-derived from all 4 raw X/Z corners
+    // (Y is untouched by a Y-axis rotation) rather than just rotating
+    // min/max, since rotating an AABB's corners individually and re-taking
+    // their min/max is the only way to get a true AABB in the rotated frame.
+    let bMinX = Infinity, bMaxX = -Infinity, bMinZ = Infinity, bMaxZ = -Infinity;
+    for (const rawX of [b.minX, b.maxX]) {
+      for (const rawZ of [b.minZ, b.maxZ]) {
+        let rx8 = rawX, rz8 = rawZ;
+        if (ry !== 0) {
+          const cosY = Math.cos(ry), sinY = Math.sin(ry);
+          rx8 = rawX * cosY + rawZ * sinY;
+          rz8 = -rawX * sinY + rawZ * cosY;
+        }
+        if (rx8 < bMinX) bMinX = rx8; if (rx8 > bMaxX) bMaxX = rx8;
+        if (rz8 < bMinZ) bMinZ = rz8; if (rz8 > bMaxZ) bMaxZ = rz8;
+      }
+    }
+    const bounds = {
+      minX: (bMinX - cx) * scale, maxX: (bMaxX - cx) * scale,
+      minY: (b.minY - cy) * scale, maxY: (b.maxY - cy) * scale,
+      minZ: (bMinZ - cz) * scale, maxZ: (bMaxZ - cz) * scale,
+    };
+    return { name, center: [(ox - cx) * scale, (oy - cy) * scale, (oz - cz) * scale], size, bounds };
   });
 
   // Per-vertex index into `objects` above — lets flow arrows (see
@@ -1797,26 +1821,55 @@ const modelStateListeners = [];
 // buttons ease the framing toward. cameraTargetSlots holds which object name
 // (or null) is assigned to each of the 3 slots; cameraTargetActiveIndex is
 // which slot is currently driving the camera, or null to fall back to the
-// manual pan sliders as before. cameraTargetCurrent is the eased position
+// manual pan sliders as before. cameraTargetCurrent is the tweened position
 // that chases whichever slot is active (renderCubeFrame, each frame) — this
 // is the "null object" the camera stays rigidly offset from: rotation
 // (drag + hover) and distance never change when it moves.
-let customModelObjects = []; // [{name, center:[x,y,z], size:number}], from parseObj
+let customModelObjects = []; // [{name, center:[x,y,z], size:number, bounds:{minX,maxX,minY,maxY,minZ,maxZ}}], from parseObj
 /** @type {(string | null)[]} */
 let cameraTargetSlots = [null, null, null];
 let cameraTargetActiveIndex = null;
 let cameraTargetCurrent = [0, 0, 0];
-// Eased extra scale multiplier applied on top of cubeSizeScale while a
-// camera target is active (see renderCubeFrame) — chases 1x whenever no
-// target is active, and a target's size-derived goal otherwise, using the
-// same smoothing as cameraTargetCurrent so zoom and pan settle together.
+// Master visibility switch for the light-blue bounding-box overlay drawn
+// around every object currently assigned to a camera-target slot (see
+// CAMERA_TARGET_BOX_* below and its draw call in renderCubeFrame) —
+// independent of blueprint mode and of which slot (if any) is actively
+// driving the camera, so it's useful purely for checking which objects are
+// wired up as targets.
+let showCameraTargetBoxes = false;
+// Extra scale multiplier applied on top of cubeSizeScale while a camera
+// target is active (see renderCubeFrame) — tweens to 1x whenever no target
+// is active, and to an exact "frame to fit" goal otherwise (see
+// CAMERA_TARGET_VERTICAL_SAFE_ZONE), on the same timed tween as
+// cameraTargetCurrent so zoom and pan move together.
 let cameraTargetZoomCurrent = 1;
-const CAMERA_TARGET_SMOOTHING = 0.05;
-// Object size (bounding-box diagonal, same normalized units as parseObj's
-// `size`) at which camera-target zoom is 1x — 25% of the ~20-unit
-// whole-model envelope every model is normalized to (see parseObj's
-// `scale`). Smaller targets zoom in past 1x, larger ones zoom out below it.
-const CAMERA_TARGET_ZOOM_REFERENCE_SIZE = 5;
+// Fixed-duration, cubic-bezier-eased tween that drives cameraTargetCurrent/
+// cameraTargetZoomCurrent whenever the active target changes (including to
+// or from "none" — see renderCubeFrame). Snapshotting `from` at the moment
+// the target changes (rather than integrating toward a moving goal every
+// frame, as the old exponential-smoothing version did) is what makes the
+// move have a well-defined start, end, and duration instead of an
+// asymptotic tail that technically never finishes.
+let cameraTargetTweenKey = null; // the target name (or null) the current tween/rest state is for
+let cameraTargetTweenStartTime = null; // performance.now() at tween start, or null when not mid-tween
+let cameraTargetTweenFromPos = [0, 0, 0];
+let cameraTargetTweenFromZoom = 1;
+let cameraTargetTweenToPos = [0, 0, 0];
+let cameraTargetTweenToZoom = 1;
+const CAMERA_TARGET_TWEEN_MS = 1000;
+// Control points of a CSS-style cubic-bezier(x1,y1,x2,y2) timing function
+// (P0=(0,0)/P3=(1,1) implied — see cubicBezierEase) — a steep "ease-in-out
+// expo"-like curve: holds near-still at both ends and does almost all the
+// movement through the middle of the duration.
+const CAMERA_TARGET_BEZIER = [0.83, 0, 0.17, 1];
+// Fraction of the viewport height left empty above AND below a framed
+// camera target (so the object itself occupies the middle 1 - 2 * this
+// fraction of the screen) — see renderCubeFrame's zoomGoal calculation,
+// which projects the target's own rotated bounding box through the
+// current rx/ry and solves for the scale that hits this fill exactly.
+// Recomputed every frame, so the object stays framed to this fraction
+// continuously as it's rotated, unlike a fixed reference-size heuristic.
+const CAMERA_TARGET_VERTICAL_SAFE_ZONE = 0.25;
 const CAMERA_TARGET_ZOOM_MIN = 0.01;
 const CAMERA_TARGET_ZOOM_MAX = 5;
 
@@ -1836,6 +1889,7 @@ function getModelState() {
     customModelObjectNames: customModelObjects.map((o) => o.name),
     cameraTargetSlots,
     cameraTargetActiveIndex,
+    showCameraTargetBoxes,
     modelFlowArrowCount: modelFlowPaths.length,
     selectedFlowArrowIndex,
     modelFlowDrawMode,
@@ -1880,6 +1934,11 @@ function goToCameraTarget(slotIndex) {
 // camera target driving the offset — see getCurrentCameraOffset.
 function resetCameraTarget() {
   cameraTargetActiveIndex = null;
+  notifyModelState();
+}
+
+function setShowCameraTargetBoxes(enabled) {
+  showCameraTargetBoxes = !!enabled;
   notifyModelState();
 }
 
@@ -1945,6 +2004,10 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null
   cameraTargetActiveIndex = null;
   cameraTargetCurrent = [0, 0, 0];
   cameraTargetZoomCurrent = 1;
+  // Drop any in-flight tween so renderCubeFrame doesn't ease from the old
+  // model's last position toward the new model's origin next frame.
+  cameraTargetTweenKey = null;
+  cameraTargetTweenStartTime = null;
 
   const greenTris = [];
   const greenTriObjectIndex = [];
@@ -2272,6 +2335,55 @@ const PIVOT_FLOOR_DASH_LENGTH_PX = 6;
 const PIVOT_FLOOR_DASH_GAP_PX = 5;
 const pivotFloorLineBuffer = gl.createBuffer();
 
+// Camera-target bounding-box overlay (see showCameraTargetBoxes): a light
+// blue box drawn around every object currently assigned to one of the 3
+// camera-target slots, rendered as real 3D geometry (uLineModelView/
+// uLineProjection set to the actual modelView/cubeProjection, not the
+// NDC-space identity trick the flow-arrow ribbon/pivot orb use above) so it
+// sits correctly in the scene's depth buffer — occluded by the model like
+// any other object instead of always drawing on top. Faces render at very
+// low opacity (a volume tint) with the 12 edges drawn a second time, in the
+// same buffer's line-mode counterpart, at a stronger opacity so the box's
+// shape stays legible.
+const CAMERA_TARGET_BOX_COLOR = [0.55, 0.78, 1]; // light blue
+const CAMERA_TARGET_BOX_FILL_OPACITY = 0.1;
+const CAMERA_TARGET_BOX_EDGE_OPACITY = 0.45;
+const cameraTargetBoxFillBuffer = gl.createBuffer();
+const cameraTargetBoxEdgeBuffer = gl.createBuffer();
+
+// Builds the 6-face (12-triangle) fill geometry and 12-edge line geometry
+// for one object's axis-aligned bounds (see parseObj's per-object `bounds`).
+// Winding isn't meaningful here — the app never enables gl.CULL_FACE — so
+// face vertex order just needs to trace out a simple quad, not a
+// consistent outward normal.
+function buildBoxGeometry(bounds) {
+  const { minX, maxX, minY, maxY, minZ, maxZ } = bounds;
+  const p000 = [minX, minY, minZ], p100 = [maxX, minY, minZ];
+  const p110 = [maxX, maxY, minZ], p010 = [minX, maxY, minZ];
+  const p001 = [minX, minY, maxZ], p101 = [maxX, minY, maxZ];
+  const p111 = [maxX, maxY, maxZ], p011 = [minX, maxY, maxZ];
+  const quads = [
+    [p000, p100, p101, p001], // bottom
+    [p010, p011, p111, p110], // top
+    [p000, p010, p110, p100], // front
+    [p001, p101, p111, p011], // back
+    [p000, p001, p011, p010], // left
+    [p100, p110, p111, p101], // right
+  ];
+  const fill = [];
+  for (const [a, b, c, d] of quads) {
+    fill.push(...a, ...b, ...c, ...a, ...c, ...d);
+  }
+  const edgePairs = [
+    [p000, p100], [p100, p101], [p101, p001], [p001, p000], // bottom
+    [p010, p011], [p011, p111], [p111, p110], [p110, p010], // top
+    [p000, p010], [p100, p110], [p101, p111], [p001, p011], // verticals
+  ];
+  const edges = [];
+  for (const [a, b] of edgePairs) edges.push(...a, ...b);
+  return { fill: new Float32Array(fill), edges: new Float32Array(edges) };
+}
+
 // Dashes a straight object-space segment (pointA -> pointB) at a constant
 // on-screen pixel dash/gap length regardless of zoom — same CPU-side
 // projection + constant-pixel-width-ribbon technique as buildArrowRibbonNDC,
@@ -2389,6 +2501,42 @@ function rotateYVec3(v, theta) {
   return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
 }
 
+// CSS-style cubic-bezier(x1,y1,x2,y2) easing: P0=(0,0) and P3=(1,1) are
+// fixed, so the curve is a timing function (x = elapsed fraction, y =
+// eased progress). Solves x(u) = t for the bezier parameter u via
+// Newton-Raphson (falling back to bisection if it doesn't converge, same
+// as browsers do for degenerate control points), then returns y(u). Used
+// by cameraTargetTween below (see CAMERA_TARGET_BEZIER).
+function cubicBezierEase(t, x1, y1, x2, y2) {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  const bezierComponent = (u, p1, p2) => {
+    const v = 1 - u;
+    return 3 * v * v * u * p1 + 3 * v * u * u * p2 + u * u * u;
+  };
+  const bezierComponentDerivative = (u, p1, p2) => {
+    const v = 1 - u;
+    return 3 * v * v * p1 + 6 * v * u * (p2 - p1) + 3 * u * u * (1 - p2);
+  };
+  let u = t;
+  for (let i = 0; i < 8; i++) {
+    const x = bezierComponent(u, x1, x2) - t;
+    const dx = bezierComponentDerivative(u, x1, x2);
+    if (Math.abs(dx) < 1e-6) break;
+    const next = u - x / dx;
+    if (!Number.isFinite(next)) break;
+    u = Math.min(1, Math.max(0, next));
+    if (Math.abs(x) < 1e-5) break;
+  }
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 20 && Math.abs(bezierComponent(u, x1, x2) - t) > 1e-5; i++) {
+    if (bezierComponent(u, x1, x2) < t) lo = u;
+    else hi = u;
+    u = (lo + hi) / 2;
+  }
+  return bezierComponent(u, y1, y2);
+}
+
 // Inverse of renderCubeFrame's modelView build (translate(ox,oy,oz) *
 // rotateX(rx) * rotateY(ry) * translate(panX,panY,panZ) * scale(s)) applied
 // to a single view-space point, undone in reverse order: un-translate(o),
@@ -2417,17 +2565,17 @@ function projectObjectPointToView(p, rx, ry, s) {
 
 // Shared by renderCubeFrame and raycastGreenMesh so raycasting always
 // unprojects through the exact same view-space offset the render pass drew
-// with. Only ever nonzero for camera-target mode now — locking a target to
-// screen-center has to counteract whatever the *current* rotation does to
-// it, which is exactly what this recomputes every call (rx/ry-dependent).
+// with. Only ever nonzero for camera-target mode now (including while
+// tweening back out of one, so a deactivated target eases back to
+// screen-center instead of snapping) — locking a target to screen-center
+// has to counteract whatever the *current* rotation does to it, which is
+// exactly what this recomputes every call (rx/ry-dependent).
 // Read-only: when a camera target is active, this reads cameraTargetCurrent's
-// already-eased position rather than advancing it — only renderCubeFrame's
-// own per-frame tick does that, so the ease rate stays tied to render frames
-// rather than to how often a caller (e.g. pointermove during arrow-drawing)
-// happens to ask for the offset.
+// already-tweened position rather than advancing it — only renderCubeFrame's
+// own per-frame tick does that (see cameraTargetTween* above), so the tween
+// stays tied to render frames rather than to how often a caller (e.g.
+// pointermove during arrow-drawing) happens to ask for the offset.
 function getCurrentCameraOffset(rx, ry, s) {
-  const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
-  if (!activeTargetName) return [0, 0];
   const viewPoint = projectObjectPointToView(cameraTargetCurrent, rx, ry, s);
   return [-viewPoint[0], -viewPoint[1]];
 }
@@ -2441,10 +2589,14 @@ function getCurrentCameraOffset(rx, ry, s) {
 // it's been panned, rather than the pivot itself drifting to wherever a
 // post-rotation pan translate happened to place it. Suppressed while a
 // camera target is active — that mode already owns centering via the offset
-// above, and combining both would fight over the same screen position.
+// above, and combining both would fight over the same screen position. Also
+// suppressed for the remainder of an exit tween (cameraTargetTweenStartTime
+// still set after cameraTargetActiveIndex has already gone back to null) so
+// manual pan doesn't cut back in until the camera has actually finished
+// easing back to screen-center, instead of jumping in partway through.
 function getObjectSpacePan() {
-  const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
-  return activeTargetName ? [0, 0, 0] : getModelViewOffset();
+  const targetOwnsCentering = cameraTargetActiveIndex !== null || cameraTargetTweenStartTime !== null;
+  return targetOwnsCentering ? [0, 0, 0] : getModelViewOffset();
 }
 
 // Möller–Trumbore ray-triangle intersection. tris is a flat Float32Array of
@@ -3407,23 +3559,79 @@ function renderCubeFrame() {
   // Rotation (rx/ry) is untouched by camera-target mode — only the pan
   // offset's source and the extra zoom multiplier change, so drag/hover
   // rotation holds automatically regardless of target.
+  const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
+  const activeTarget = activeTargetName ? customModelObjects.find((o) => o.name === activeTargetName) : null;
+  const goalCenter = activeTarget ? activeTarget.center : [0, 0, 0];
   let zoomGoal = 1;
-  if (cameraTargetActiveIndex !== null && cameraTargetSlots[cameraTargetActiveIndex]) {
-    const target = customModelObjects.find((o) => o.name === cameraTargetSlots[cameraTargetActiveIndex]);
-    const targetCenter = target ? target.center : [0, 0, 0];
-    cameraTargetCurrent[0] += (targetCenter[0] - cameraTargetCurrent[0]) * CAMERA_TARGET_SMOOTHING;
-    cameraTargetCurrent[1] += (targetCenter[1] - cameraTargetCurrent[1]) * CAMERA_TARGET_SMOOTHING;
-    cameraTargetCurrent[2] += (targetCenter[2] - cameraTargetCurrent[2]) * CAMERA_TARGET_SMOOTHING;
-    if (target && target.size > 0) {
+  if (activeTarget && activeTarget.bounds) {
+    // "Frame to fit" zoom, using the target's bounding box projected
+    // through the fixed isometric resting rotation (CUBE_ISO_PITCH/
+    // CUBE_ISO_YAW) rather than the scene's *current* rx/ry — this is
+    // the "initial state" rotation every target starts from, so the
+    // fit reflects the object's actual (rotated, isometric) silhouette
+    // instead of a flat/unrotated one, while still being a fixed
+    // per-object value that doesn't chase hover/drag rotation while a
+    // target is active. Still reactive to the "Model size" slider and
+    // window resize (cubeSizeScale/cubeProjectionHalfY), just not to
+    // rotation. Being orthographic, on-screen size depends only on this
+    // projected extent and the uniform scale below, never on distance
+    // from the camera, so solving for the exact
+    // CAMERA_TARGET_VERTICAL_SAFE_ZONE fill fraction is exact.
+    const { minX, maxX, minY, maxY, minZ, maxZ } = activeTarget.bounds;
+    const [ccx, ccy, ccz] = activeTarget.center;
+    let minProjY = Infinity, maxProjY = -Infinity;
+    for (const x of [minX, maxX]) {
+      for (const y of [minY, maxY]) {
+        for (const z of [minZ, maxZ]) {
+          const afterY = rotateYVec3([x - ccx, y - ccy, z - ccz], CUBE_ISO_YAW);
+          const afterX = rotateXVec3(afterY, CUBE_ISO_PITCH);
+          if (afterX[1] < minProjY) minProjY = afterX[1];
+          if (afterX[1] > maxProjY) maxProjY = afterX[1];
+        }
+      }
+    }
+    const projectedHeight = maxProjY - minProjY;
+    if (projectedHeight > 1e-6) {
+      const fillFraction = 1 - 2 * CAMERA_TARGET_VERTICAL_SAFE_ZONE;
       zoomGoal = Math.max(
         CAMERA_TARGET_ZOOM_MIN,
-        Math.min(CAMERA_TARGET_ZOOM_MAX, CAMERA_TARGET_ZOOM_REFERENCE_SIZE / target.size)
+        Math.min(
+          CAMERA_TARGET_ZOOM_MAX,
+          (fillFraction * 2 * cubeProjectionHalfY) / (projectedHeight * CUBE_SCALE * cubeSizeScale)
+        )
       );
     }
   }
-  // Eases back to 1x on its own whenever no target is active (including
-  // right after resetCameraTarget), same as chasing a new target's goal.
-  cameraTargetZoomCurrent += (zoomGoal - cameraTargetZoomCurrent) * CAMERA_TARGET_SMOOTHING;
+  // Whenever the active target's identity changes — including switching to
+  // or from "none" (resetCameraTarget) — snapshot a fresh from→to tween
+  // instead of continuing to integrate toward a moving goal every frame, so
+  // the move has a well-defined start, duration, and end (see
+  // cameraTargetTween* above) instead of an asymptotic tail.
+  if (activeTargetName !== cameraTargetTweenKey) {
+    cameraTargetTweenKey = activeTargetName;
+    cameraTargetTweenFromPos = [...cameraTargetCurrent];
+    cameraTargetTweenFromZoom = cameraTargetZoomCurrent;
+    cameraTargetTweenToPos = [...goalCenter];
+    cameraTargetTweenToZoom = zoomGoal;
+    cameraTargetTweenStartTime = performance.now();
+  }
+  if (cameraTargetTweenStartTime !== null) {
+    const t = Math.min(1, (performance.now() - cameraTargetTweenStartTime) / CAMERA_TARGET_TWEEN_MS);
+    const eased = cubicBezierEase(t, ...CAMERA_TARGET_BEZIER);
+    cameraTargetCurrent = [
+      cameraTargetTweenFromPos[0] + (cameraTargetTweenToPos[0] - cameraTargetTweenFromPos[0]) * eased,
+      cameraTargetTweenFromPos[1] + (cameraTargetTweenToPos[1] - cameraTargetTweenFromPos[1]) * eased,
+      cameraTargetTweenFromPos[2] + (cameraTargetTweenToPos[2] - cameraTargetTweenFromPos[2]) * eased,
+    ];
+    cameraTargetZoomCurrent = cameraTargetTweenFromZoom + (cameraTargetTweenToZoom - cameraTargetTweenFromZoom) * eased;
+    if (t >= 1) cameraTargetTweenStartTime = null;
+  } else {
+    // Already at rest for this target — track the goal directly so a live
+    // zoom-fit change (window resize, the "Model size" slider) keeps
+    // following without replaying a stale tween.
+    cameraTargetCurrent = [...goalCenter];
+    cameraTargetZoomCurrent = zoomGoal;
+  }
   const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [offsetX, offsetY] = getCurrentCameraOffset(rx, ry, s);
   const [panX, panY, panZ] = getObjectSpacePan();
@@ -3574,6 +3782,50 @@ function renderCubeFrame() {
   } else {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
     gl.drawElements(gl.TRIANGLES, CUBE_INDICES.length, gl.UNSIGNED_SHORT, 0);
+  }
+
+  // Camera-target bounding-box overlay (see showCameraTargetBoxes/
+  // buildBoxGeometry above) — independent of blueprint mode, since it's a
+  // camera-target diagnostic rather than a wireframe-mode feature. Real 3D
+  // geometry (actual modelView/cubeProjection), drawn right after the
+  // opaque fill pass so its depth test correctly hides the far side behind
+  // whatever the model itself already occludes.
+  if (showCameraTargetBoxes && showCustomModel) {
+    const targetNames = [...new Set(cameraTargetSlots.filter(Boolean))];
+    if (targetNames.length > 0) {
+      gl.useProgram(lineProgram);
+      gl.uniformMatrix4fv(uLineModelView, false, modelView);
+      gl.uniformMatrix4fv(uLineProjection, false, cubeProjection);
+      gl.enableVertexAttribArray(aLinePosition);
+      gl.disableVertexAttribArray(aLineColor);
+      gl.vertexAttrib3f(aLineColor, CAMERA_TARGET_BOX_COLOR[0], CAMERA_TARGET_BOX_COLOR[1], CAMERA_TARGET_BOX_COLOR[2]);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      // Faces skip the depth write (translucent box shouldn't occlude
+      // anything drawn after it) while depth *testing* stays on, so the box
+      // still correctly disappears behind opaque model geometry.
+      gl.depthMask(false);
+      for (const name of targetNames) {
+        const obj = customModelObjects.find((o) => o.name === name);
+        if (!obj || !obj.bounds) continue;
+        const { fill, edges } = buildBoxGeometry(obj.bounds);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cameraTargetBoxFillBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, fill, gl.DYNAMIC_DRAW);
+        gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+        gl.uniform1f(uLineAlpha, CAMERA_TARGET_BOX_FILL_OPACITY);
+        gl.drawArrays(gl.TRIANGLES, 0, fill.length / 3);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cameraTargetBoxEdgeBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, edges, gl.DYNAMIC_DRAW);
+        gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+        gl.uniform1f(uLineAlpha, CAMERA_TARGET_BOX_EDGE_OPACITY);
+        gl.drawArrays(gl.LINES, 0, edges.length / 3);
+      }
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+      gl.uniform1f(uLineAlpha, 1.0);
+    }
   }
 
   if (blueprintEnabled) {
@@ -4244,4 +4496,5 @@ export const controls = {
   setCameraTargetSlot,
   goToCameraTarget,
   resetCameraTarget,
+  setShowCameraTargetBoxes,
 };

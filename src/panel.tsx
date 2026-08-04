@@ -472,6 +472,16 @@ export function Panel() {
                     Reset view
                   </Button>
                 </div>
+                <Label className="gap-2.5 text-xs">
+                  <Switch
+                    checked={!!state.showCameraTargetBoxes}
+                    onCheckedChange={(checked: boolean) => {
+                      controls.setShowCameraTargetBoxes(checked);
+                      setState((s) => ({ ...s, showCameraTargetBoxes: checked }));
+                    }}
+                  />
+                  Show target bounding boxes
+                </Label>
               </div>
               </div>
             )}
