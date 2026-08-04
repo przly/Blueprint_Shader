@@ -901,6 +901,24 @@ export function Panel() {
 
             <Field>
               <Slider
+                max={state.flowPulseFrequencyMax}
+                min={state.flowPulseFrequencyMin}
+                onValueChange={(value: number | readonly number[]) => {
+                  const frequency = value as number;
+                  controls.setFlowPulseFrequency(frequency);
+                  setState((s) => ({ ...s, flowPulseFrequency: frequency }));
+                }}
+                value={state.flowPulseFrequency}
+              >
+                <div className="mb-3 flex w-full items-center justify-between gap-1">
+                  <FieldLabel className="text-xs sm:text-xs">Pulse frequency</FieldLabel>
+                  <SliderValue className="text-xs text-muted-foreground" />
+                </div>
+              </Slider>
+            </Field>
+
+            <Field>
+              <Slider
                 max={state.flowSpeedMax}
                 min={state.flowSpeedMin}
                 onValueChange={(value: number | readonly number[]) => {

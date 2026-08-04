@@ -89,7 +89,7 @@ function setPulseWidth(value) {
 // (twice as fast), 50% takes twice as long (half as fast).
 const FLOW_SPEED_MIN = 10;
 const FLOW_SPEED_MAX = 200;
-let flowSpeedPercent = restoreNumber('flowSpeed', 100);
+let flowSpeedPercent = restoreNumber('flowSpeed', 50);
 
 function setFlowSpeedPercent(value) {
   const clamped = Math.max(FLOW_SPEED_MIN, Math.min(FLOW_SPEED_MAX, value));
@@ -137,6 +137,28 @@ function setFlowTailFalloff(value) {
   persistNumber('flowTailFalloff', clamped);
   return clamped;
 }
+
+// How many comet pulses chase each other along the same path at once (see
+// MAX_FLOW_PULSES/uFlowPulseCenters in CUBE_FRAGMENT_SHADER and the center
+// computation in renderCubeFrame) — evenly spaced around the shared travel
+// loop, so raising this reads as current flowing continuously rather than
+// one lone pulse looping. Capped at MAX_FLOW_PULSES, the fixed-size uniform
+// array the shader loops over.
+const FLOW_PULSE_FREQUENCY_MIN = 1;
+const FLOW_PULSE_FREQUENCY_MAX = 8;
+let flowPulseFrequencyValue = restoreNumber('flowPulseFrequency', 4);
+
+function setFlowPulseFrequency(value) {
+  const clamped = Math.max(FLOW_PULSE_FREQUENCY_MIN, Math.min(FLOW_PULSE_FREQUENCY_MAX, Math.round(value)));
+  flowPulseFrequencyValue = clamped;
+  persistNumber('flowPulseFrequency', clamped);
+  return clamped;
+}
+
+// Reused every frame in renderCubeFrame rather than reallocated, sized to
+// match MAX_FLOW_PULSES in CUBE_FRAGMENT_SHADER (kept equal to
+// FLOW_PULSE_FREQUENCY_MAX, the slider's own cap).
+const flowPulseCentersScratch = new Float32Array(FLOW_PULSE_FREQUENCY_MAX);
 
 // Glow/bloom controls (see the glow-only render pass + two-pass blur in
 // renderCubeFrame). Intensity boosts the glow source's brightness before
@@ -430,7 +452,14 @@ const CUBE_FRAGMENT_SHADER = `
   uniform vec3 uBlueprintFillColor;
   uniform vec3 uBlueprintFillColorGreen;
   uniform bool uFlowActive;
-  uniform float uFlowPulseCenter;
+  // Fixed-size array rather than a single center so several comet pulses can
+  // chase each other along the same path (the "Pulse frequency" slider —
+  // see setFlowPulseFrequency) — GLSL ES 1.00 loops need a constant upper
+  // bound, so uFlowPulseCount (how many of the MAX_FLOW_PULSES slots are
+  // actually in use) is checked with a dynamic break instead.
+  const int MAX_FLOW_PULSES = 8;
+  uniform float uFlowPulseCenters[MAX_FLOW_PULSES];
+  uniform int uFlowPulseCount;
   uniform float uFlowSigma;
   uniform vec3 uFlowColor;
   uniform float uFlowCoreSigmaMult;
@@ -568,18 +597,23 @@ const CUBE_FRAGMENT_SHADER = `
   const float FLOW_COMET_CORE_BOOST = 1.5;
   float flowPulseIntensity() {
     if (!(uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0)) return 0.0;
-    float d = vFlowCoord - uFlowPulseCenter;
-    float base;
-    if (d > 0.0) {
-      float sigma = uFlowSigma * FLOW_COMET_HEAD_SIGMA_MULT;
-      base = exp(-(d * d) / (2.0 * sigma * sigma));
-    } else {
-      float tailSigma = max(uFlowSigma * uFlowTailSigmaMult, 1e-6);
-      base = exp(-0.5 * pow(abs(d) / tailSigma, uFlowTailFalloffExponent));
+    float total = 0.0;
+    for (int i = 0; i < MAX_FLOW_PULSES; i++) {
+      if (i >= uFlowPulseCount) break;
+      float d = vFlowCoord - uFlowPulseCenters[i];
+      float base;
+      if (d > 0.0) {
+        float sigma = uFlowSigma * FLOW_COMET_HEAD_SIGMA_MULT;
+        base = exp(-(d * d) / (2.0 * sigma * sigma));
+      } else {
+        float tailSigma = max(uFlowSigma * uFlowTailSigmaMult, 1e-6);
+        base = exp(-0.5 * pow(abs(d) / tailSigma, uFlowTailFalloffExponent));
+      }
+      float coreSigma = uFlowSigma * uFlowCoreSigmaMult;
+      float core = exp(-(d * d) / (2.0 * coreSigma * coreSigma));
+      total += base + core * FLOW_COMET_CORE_BOOST;
     }
-    float coreSigma = uFlowSigma * uFlowCoreSigmaMult;
-    float core = exp(-(d * d) / (2.0 * coreSigma * coreSigma));
-    return base + core * FLOW_COMET_CORE_BOOST;
+    return total;
   }
 
   void main() {
@@ -889,7 +923,8 @@ const uBlueprint = gl.getUniformLocation(cubeProgram, 'uBlueprint');
 const uBlueprintFillColor = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColor');
 const uBlueprintFillColorGreen = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColorGreen');
 const uFlowActive = gl.getUniformLocation(cubeProgram, 'uFlowActive');
-const uFlowPulseCenter = gl.getUniformLocation(cubeProgram, 'uFlowPulseCenter');
+const uFlowPulseCenters = gl.getUniformLocation(cubeProgram, 'uFlowPulseCenters[0]');
+const uFlowPulseCount = gl.getUniformLocation(cubeProgram, 'uFlowPulseCount');
 const uFlowSigma = gl.getUniformLocation(cubeProgram, 'uFlowSigma');
 const uFlowColor = gl.getUniformLocation(cubeProgram, 'uFlowColor');
 const uFlowCoreSigmaMult = gl.getUniformLocation(cubeProgram, 'uFlowCoreSigmaMult');
@@ -1403,6 +1438,23 @@ canvas.addEventListener(
 
 canvas.addEventListener('pointerdown', (event) => {
   if (modelFlowSelectMode) return;
+  if (zKeyHeld) {
+    zDragging = true;
+    zLastPointer = { x: event.clientX, y: event.clientY };
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
+  // Checked before the draw-mode branch below (same relative order as
+  // outside draw mode) so a space-held left-click pans instead of being
+  // swallowed as "reserved for tracing an arrow" — the draw-mode
+  // pointerdown handler further down skips placing a point for the same
+  // reason, via its own spaceHeld check.
+  if (spaceHeld) {
+    panDragging = true;
+    panLastPointer = { x: event.clientX, y: event.clientY };
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
   if (modelFlowDrawMode) {
     // Left button is reserved for tracing an arrow (see the draw-mode
     // pointerdown handler below); right button still rotates the model so a
@@ -1410,18 +1462,6 @@ canvas.addEventListener('pointerdown', (event) => {
     if (event.button !== 2) return;
     cubeDragging = true;
     cubeLastPointer = { x: event.clientX, y: event.clientY };
-    canvas.style.cursor = 'grabbing';
-    return;
-  }
-  if (zKeyHeld) {
-    zDragging = true;
-    zLastPointer = { x: event.clientX, y: event.clientY };
-    canvas.style.cursor = 'grabbing';
-    return;
-  }
-  if (spaceHeld) {
-    panDragging = true;
-    panLastPointer = { x: event.clientX, y: event.clientY };
     canvas.style.cursor = 'grabbing';
     return;
   }
@@ -1835,6 +1875,26 @@ let customModelObjects = []; // [{name, center:[x,y,z], size:number, bounds:{min
 let cameraTargetSlots = [null, null, null];
 let cameraTargetActiveIndex = null;
 let cameraTargetCurrent = [0, 0, 0];
+
+// Remembers which slot (if any) was active across a reload — 'none' is
+// stored distinctly from a missing key so an explicit "Reset view" stays
+// reset next load, rather than being indistinguishable from "never chosen"
+// (which instead falls back to Target 1 — see loadBundledDefaultModel).
+const CAMERA_TARGET_ACTIVE_STORAGE_KEY = 'iconMosaic.cameraTargetActiveIndex';
+
+function persistCameraTargetActiveIndex(index) {
+  localStorage.setItem(CAMERA_TARGET_ACTIVE_STORAGE_KEY, index === null ? 'none' : String(index));
+}
+
+// Returns the persisted slot index, null for an explicit "no target", or
+// undefined if nothing has ever been persisted (fresh browser).
+function restoreCameraTargetActiveIndex() {
+  const raw = localStorage.getItem(CAMERA_TARGET_ACTIVE_STORAGE_KEY);
+  if (raw === null) return undefined;
+  if (raw === 'none') return null;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 2 ? parsed : undefined;
+}
 // Master visibility switch for the light-blue bounding-box overlay drawn
 // around every object currently assigned to a camera-target slot (see
 // CAMERA_TARGET_BOX_* below and its draw call in renderCubeFrame) —
@@ -1946,13 +2006,17 @@ function getModelState() {
 
 function setCameraTargetSlot(slotIndex, objectName) {
   cameraTargetSlots = cameraTargetSlots.map((v, i) => (i === slotIndex ? objectName || null : v));
-  if (cameraTargetActiveIndex === slotIndex && !objectName) cameraTargetActiveIndex = null;
+  if (cameraTargetActiveIndex === slotIndex && !objectName) {
+    cameraTargetActiveIndex = null;
+    persistCameraTargetActiveIndex(null);
+  }
   notifyModelState();
 }
 
 function goToCameraTarget(slotIndex) {
   if (!cameraTargetSlots[slotIndex]) return;
   cameraTargetActiveIndex = slotIndex;
+  persistCameraTargetActiveIndex(slotIndex);
   notifyModelState();
 }
 
@@ -1960,6 +2024,7 @@ function goToCameraTarget(slotIndex) {
 // camera target driving the offset — see getCurrentCameraOffset.
 function resetCameraTarget() {
   cameraTargetActiveIndex = null;
+  persistCameraTargetActiveIndex(null);
   notifyModelState();
 }
 
@@ -2118,7 +2183,17 @@ async function loadBundledDefaultModel() {
       '2-Business_Facility',
       '3-Investor_Energy_Hub',
     ]);
-    applyDefaultModelFlowPath();
+    // Land wherever the user last left the camera (see
+    // persistCameraTargetActiveIndex) rather than the whole-scene view
+    // applyParsedModel resets to (cameraTargetActiveIndex = null) — Target 1
+    // only on a genuinely fresh browser with nothing persisted yet.
+    // cameraTargetCurrent starts at [0,0,0] regardless, so the spring eases
+    // into the target's centroid/zoom from center on load instead of
+    // snapping there.
+    const restoredTargetIndex = restoreCameraTargetActiveIndex();
+    if (restoredTargetIndex === undefined) goToCameraTarget(0);
+    else if (restoredTargetIndex !== null) goToCameraTarget(restoredTargetIndex);
+    if (!restoreModelFlowPath()) applyDefaultModelFlowPath();
   } catch (err) {
     console.error(err);
   }
@@ -2155,19 +2230,17 @@ window.addEventListener('drop', (event) => {
 // how many there are or how long each one is (see recomputeModelFlowCoords).
 
 const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
-// Baked-in starter arrow for the bundled default model (see
+// Baked-in starter arrows for the bundled default model (see
 // loadBundledDefaultModel/applyDefaultModelFlowPath below) — captured from a
-// hand-drawn path so a fresh page load already has a pulsing arrow instead of
-// an empty green mesh, without redrawing it every reload. Same shape
+// hand-drawn path (via `copy(localStorage.getItem('iconMosaic.modelFlowPath'))`
+// in the console) so a fresh browser with nothing in localStorage yet still
+// gets a pulsing flow instead of an empty green mesh. Same shape
 // saveModelFlowPath persists to localStorage (points/touchedObjectIndices/
-// enabledObjectIndices), just applied unconditionally on startup instead.
-// Empty for now — earlier bundled models had a hand-drawn path baked in
-// here, but its points are specific to one model's geometry and scale, so
-// they never carry over to a newly swapped-in bundled model. Draw a new one
-// via "Draw flow arrow" and it'll persist to localStorage on its own;
-// re-bake it here (see saveModelFlowPath) if you want a fresh
-// out-of-the-box arrow.
-const DEFAULT_MODEL_FLOW_PATH_DATA = [];
+// enabledObjectIndices/sourceOffset/masterTotalLen — the latter two carry
+// over branch/junction timing, see buildModelFlowPathsFromData), just
+// applied unconditionally on startup instead. Specific to this bundled
+// model's geometry/scale — re-capture and replace if the model changes.
+const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[-3.533612220694515,2.0049147605895996,-4.020106306134707],[-2.3054806580859983,2.0049147605895996,-4.021294779706913],[-2.3112032077624334,2.0049147605895925,-5.131251210709273],[-1.700292989686261,2.0049147605895996,-5.130644600572484],[-1.6936733722686625,2.3872371419101697,-5.128727316261484]],"touchedObjectIndices":[225],"enabledObjectIndices":[225],"sourceOffset":0,"masterTotalLen":3.3313983300427394},{"points":[[-0.5108520550720073,2.0049147605895996,-4.179052317101252],[-0.5082856276359422,2.0049147605895996,-4.024319742281918],[-0.9670102152752094,2.0049147605895996,-4.022750360285606]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":0,"masterTotalLen":3.558692271635554},{"points":[[-0.9576222002359245,2.0049147605895996,-4.193408367252218],[-0.9670102152752094,2.0049147605895996,-4.022750360285606]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":0.6134811292167535,"masterTotalLen":3.558692271635554},{"points":[[-0.9670102152752094,2.0049147605895996,-4.022750360285606],[-1.4108806868637203,2.0049147605895996,-4.02341823752289]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":0.6134811292167535,"masterTotalLen":3.558692271635554},{"points":[[-1.4035019430610518,2.0049147605896067,-4.184974971631426],[-1.4108806868637203,2.0049147605895996,-4.02341823752289]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":1.0573521032713893,"masterTotalLen":3.558692271635554},{"points":[[-1.4108806868637203,2.0049147605895996,-4.02341823752289],[-2.1052878974605846,2.0049147605895996,-4.020069477057497],[-2.100987470884789,2.0049147605895996,-5.054662431323841],[-1.6994843556796653,2.0049147605895996,-5.050792577444078],[-1.6936733722686839,2.3756132078176293,-5.057307448656438]],"touchedObjectIndices":[227],"enabledObjectIndices":[227],"sourceOffset":1.0573521032713893,"masterTotalLen":3.558692271635554},{"points":[[-1.693673372268691,2.366635238902191,-5.203627122457007],[-1.6936733722686768,2.0151763189974474,-5.206860483920764],[-2.5125355466125505,2.0046772956848002,-5.206848306998779]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":0,"masterTotalLen":4.523998604403883},{"points":[[-2.5125355466125505,2.0046772956848002,-5.206848306998779],[-3.012630430929585,2.004677295684786,-5.2080238930882246]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":1.1704032709404832,"masterTotalLen":4.523998604403883},{"points":[[-2.5125355466125505,2.0046772956848002,-5.206848306998779],[-2.512542597495518,2.0046772956848287,-6.6398947248243445]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":1.1704032709404832,"masterTotalLen":4.523998604403883},{"points":[[-2.512542597495518,2.0046772956848287,-6.6398947248243445],[-3.0129926834286067,2.0046772956848145,-6.635223653432817]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":2.6034496887833942,"masterTotalLen":4.523998604403883},{"points":[[-2.512542597495518,2.0046772956848287,-6.6398947248243445],[-2.51212844526456,2.004677295684843,-8.05886750446723],[-3.0136899211771624,2.0046772956848145,-8.062694439698532]],"touchedObjectIndices":[226],"enabledObjectIndices":[226],"sourceOffset":2.6034496887833942,"masterTotalLen":4.523998604403883},{"points":[[-1.240786163625124,4.794826516113332,-6.646492481231704],[-1.2361169132712888,4.905024528503418,-6.645614087545702],[-1.2420935930809236,4.905024528503432,-6.5064065661211075],[-1.2409320319398134,3.8641719818115092,-6.496611212554541],[-1.239232787895297,3.8641719818115234,-5.1419676624735615],[-1.5559363221780984,3.864171981811495,-5.135215875429729],[-1.5616832971572876,3.998351504421805,-5.129226897447559],[-1.6900825192617042,4.009315490722628,-5.134482080600718],[-1.6933333873748921,2.6846481655202012,-5.134383206649545]],"touchedObjectIndices":[264],"enabledObjectIndices":[264],"sourceOffset":0,"masterTotalLen":4.550036459054436}];
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
 // Sentinel aFlowCoord for a green vertex no arrow reaches (no path enables
 // its object) — any negative value works since real arc-length fractions
@@ -2213,6 +2286,15 @@ const FLOW_PULSE_PERIOD_BASE_MS = 3000;
 const FLOW_PULSE_PAD_SIGMAS = 13;
 
 let modelFlowDrawMode = false;
+// cubeSizePercent at the moment draw mode was entered (see setModelFlowDraw)
+// — while set, renderCubeFrame's camera-target "frame to fit" zoom goal uses
+// this frozen value instead of the live cubeSizeScale, so scroll-to-zoom
+// (which otherwise only feeds cubeSizeScale, exactly the term the frame-to-
+// fit goal is built to cancel out — see zoomGoal's denominator) actually
+// changes the on-screen size while tracing an arrow, instead of the spring
+// yanking it straight back to the target's fitted framing every frame. Reset
+// to null (and cubeSizePercent restored to this value) on leaving draw mode.
+let drawModeZoomBaselinePercent = null;
 let modelFlowSelectMode = false;
 // While actively building one new (possibly multi-branch) arrow
 // click-by-click, object-space: { points, pointObjectIndices, touchedObjects,
@@ -2469,6 +2551,40 @@ function buildDashedLineNDC(pointA, pointB, combined, canvasWidth, canvasHeight,
 // instead of just an undirected line.
 const MODEL_FLOW_ARROWHEAD_LENGTH_FACTOR = 4; // arrowhead tip-to-base length, as a multiple of halfWidthPx
 const MODEL_FLOW_ARROWHEAD_HALF_WIDTH_FACTOR = 2.2; // arrowhead base half-width, as a multiple of halfWidthPx
+// Triangle-fan resolution for the rounded start cap below — high enough
+// that the semicircle reads as smooth rather than faceted at the ribbon's
+// on-screen size (a few px radius), without pushing per-arrow vertex count
+// up meaningfully.
+const MODEL_FLOW_ARROW_CAP_SEGMENTS = 10;
+
+// The ribbon quad below starts with a flat perpendicular edge at each
+// path's first point (a plain "butt" cap) — fine for the far end, which
+// already reads as pointed thanks to the arrowhead, but the near end read
+// as a hard square-off. Fans a halfWidthPx semicircle of triangles around
+// the first point instead, swept from the first segment's a1 side, back
+// through the reverse-of-travel direction, to its a0 side — i.e. bulging
+// away from the path rather than into it, so it just rounds off the
+// existing quad's start edge instead of extending the ribbon's length.
+function addRoundStartCap(verts, a, b, halfW, halfH, halfWidthPx) {
+  let dxPix = (b[0] - a[0]) * halfW, dyPix = (b[1] - a[1]) * halfH;
+  const lenPix = Math.hypot(dxPix, dyPix) || 1;
+  dxPix /= lenPix; dyPix /= lenPix;
+  const perpPixX = -dyPix * halfWidthPx, perpPixY = dxPix * halfWidthPx;
+  const backPixX = -dxPix * halfWidthPx, backPixY = -dyPix * halfWidthPx;
+  for (let k = 0; k < MODEL_FLOW_ARROW_CAP_SEGMENTS; k++) {
+    const theta1 = (Math.PI * k) / MODEL_FLOW_ARROW_CAP_SEGMENTS;
+    const theta2 = (Math.PI * (k + 1)) / MODEL_FLOW_ARROW_CAP_SEGMENTS;
+    const p1x = perpPixX * Math.cos(theta1) + backPixX * Math.sin(theta1);
+    const p1y = perpPixY * Math.cos(theta1) + backPixY * Math.sin(theta1);
+    const p2x = perpPixX * Math.cos(theta2) + backPixX * Math.sin(theta2);
+    const p2y = perpPixY * Math.cos(theta2) + backPixY * Math.sin(theta2);
+    verts.push(
+      a[0], a[1], a[2],
+      a[0] + p1x / halfW, a[1] + p1y / halfH, a[2],
+      a[0] + p2x / halfW, a[1] + p2y / halfH, a[2],
+    );
+  }
+}
 
 function buildArrowRibbonNDC(pathsPoints, combined, canvasWidth, canvasHeight, halfWidthPx) {
   const halfW = canvasWidth / 2, halfH = canvasHeight / 2;
@@ -2481,6 +2597,9 @@ function buildArrowRibbonNDC(pathsPoints, combined, canvasWidth, canvasHeight, h
       combined[1] * p[0] + combined[5] * p[1] + combined[9] * p[2] + combined[13],
       combined[2] * p[0] + combined[6] * p[1] + combined[10] * p[2] + combined[14],
     ]);
+    if (ndcPoints.length >= 2) {
+      addRoundStartCap(verts, ndcPoints[0], ndcPoints[1], halfW, halfH, halfWidthPx);
+    }
     for (let i = 0; i < ndcPoints.length - 1; i++) {
       const a = ndcPoints[i], b = ndcPoints[i + 1];
       // Direction converted to actual pixels (NDC axes scaled independently
@@ -2599,7 +2718,17 @@ function getCurrentCameraOffset(rx, ry, s) {
 // manual pan doesn't cut back in until the camera has actually finished
 // easing back to screen-center, instead of jumping in partway through.
 function getObjectSpacePan() {
-  const targetOwnsCentering = cameraTargetActiveIndex !== null || !cameraTargetAtRest;
+  // While actively drawing, Space-drag panning (see the draw-mode
+  // pointerdown/pointermove handling) needs to actually move the model even
+  // with a camera target active — normally camera-target mode owns
+  // centering outright and never combines with manual pan (see
+  // getCurrentCameraOffset/projectObjectPointToView's own no-pan-term
+  // comments), which is fine everywhere else, but would make Space-drag
+  // panning silently do nothing during a drawing session started from a
+  // target. The target's own outer offset (getCurrentCameraOffset) still
+  // applies on top of this regardless, so panning moves you relative to
+  // wherever the target's currently centered rather than replacing it.
+  const targetOwnsCentering = !modelFlowDrawMode && (cameraTargetActiveIndex !== null || !cameraTargetAtRest);
   return targetOwnsCentering ? [0, 0, 0] : getModelViewOffset();
 }
 
@@ -2804,26 +2933,56 @@ function clearModelFlowPath() {
   notifyModelState();
 }
 
-// Installs DEFAULT_MODEL_FLOW_PATH_DATA as the current arrow set — used in
-// place of clearModelFlowPath() right after the bundled model loads, so
-// startup shows a pulsing arrow instead of a blank green mesh. Mirrors the
-// shape built by the pointerup handler that finalizes a hand-drawn arrow
-// (buildPathMetrics + touched/enabledObjectIndices).
-function applyDefaultModelFlowPath() {
-  modelFlowPaths = DEFAULT_MODEL_FLOW_PATH_DATA.map((data) => {
+// Shared by restoreModelFlowPath and applyDefaultModelFlowPath below: turns
+// saveModelFlowPath's serialized shape (points/touchedObjectIndices/
+// enabledObjectIndices/sourceOffset/masterTotalLen) back into real
+// modelFlowPaths entries, preserving each entry's own sourceOffset/
+// masterTotalLen instead of resetting them — so a multi-branch (junction)
+// arrow keeps its branches' pulse timing relative to their true shared
+// source rather than every branch restarting at 0.
+function buildModelFlowPathsFromData(dataArray) {
+  return dataArray.map((data) => {
     const metrics = buildPathMetrics(data.points);
     return {
       ...metrics,
       touchedObjectIndices: data.touchedObjectIndices,
       enabledObjectIndices: data.enabledObjectIndices,
-      // No branching here — each entry is its own independent arrow, so its
-      // source is its own start (see sourceOffset/masterTotalLen in
-      // finalizeModelFlowDrag).
-      sourceOffset: 0,
-      masterTotalLen: metrics.totalLen,
+      sourceOffset: data.sourceOffset || 0,
+      masterTotalLen: data.masterTotalLen || metrics.totalLen,
       reversed: false,
     };
   });
+}
+
+// Restores whatever arrow set saveModelFlowPath last persisted for the
+// bundled model, exactly as drawn — called by loadBundledDefaultModel
+// *before* it falls back to applyDefaultModelFlowPath, so a locally-drawn
+// arrow survives a reload instead of always being replaced by the (often
+// empty) baked-in default. Returns whether it actually found and applied
+// something.
+function restoreModelFlowPath() {
+  const raw = localStorage.getItem(MODEL_FLOW_STORAGE_KEY);
+  if (!raw) return false;
+  let saved;
+  try {
+    saved = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(saved) || saved.length === 0) return false;
+  modelFlowPaths = buildModelFlowPathsFromData(saved);
+  modelFlowDrag = null;
+  selectedFlowArrowIndex = null;
+  recomputeModelFlowCoords();
+  notifyModelState();
+  return true;
+}
+
+// Installs DEFAULT_MODEL_FLOW_PATH_DATA as the current arrow set — used in
+// place of clearModelFlowPath() right after the bundled model loads, so
+// startup shows a pulsing arrow instead of a blank green mesh.
+function applyDefaultModelFlowPath() {
+  modelFlowPaths = buildModelFlowPathsFromData(DEFAULT_MODEL_FLOW_PATH_DATA);
   modelFlowDrag = null;
   selectedFlowArrowIndex = null;
   saveModelFlowPath();
@@ -2995,6 +3154,11 @@ function setModelFlowDraw(value) {
     // surface harder than it needs to be.
     resetModelPosition();
     resetCubeRotation();
+    // Freezes the camera-target frame-to-fit zoom goal at today's "Model
+    // size" (see drawModeZoomBaselinePercent/zoomGoal in renderCubeFrame) so
+    // scroll-to-zoom actually moves the view instead of being cancelled out
+    // frame-to-frame.
+    drawModeZoomBaselinePercent = cubeSizePercent;
   } else {
     // Leaving draw mode snaps back to the framed default angle and locks
     // rotation again, same as a fresh page load. Also drop any arrow that
@@ -3010,6 +3174,13 @@ function setModelFlowDraw(value) {
     showModelFlowArrow = false;
     resetCubeRotation();
     setRotationDisabled(true);
+    // Restores whatever zoom was in effect right before draw mode started
+    // (undoing any scroll-to-zoom from mid-session) and lets the
+    // camera-target frame-to-fit goal track cubeSizeScale live again.
+    if (drawModeZoomBaselinePercent !== null) {
+      setCubeSizePercent(drawModeZoomBaselinePercent);
+      drawModeZoomBaselinePercent = null;
+    }
   }
   notifyModelState();
 }
@@ -3133,6 +3304,7 @@ canvas.addEventListener('pointerdown', (event) => {
     return;
   }
   if (!modelFlowDrawMode) return;
+  if (spaceHeld) return; // panning instead (see the other pointerdown handler's spaceHeld check)
   if (event.button !== 0) return; // right button rotates instead (see the other pointerdown handler)
   const hit = raycastGreenMesh(event.clientX, event.clientY);
   if (!hit) return;
@@ -3597,11 +3769,20 @@ function renderCubeFrame() {
     const projectedHeight = maxProjY - minProjY;
     if (projectedHeight > 1e-6) {
       const fillFraction = 1 - 2 * CAMERA_TARGET_VERTICAL_SAFE_ZONE;
+      // Normally divides by the *live* cubeSizeScale so the "Model size"
+      // slider can't change the on-screen framing (it cancels out against
+      // the same term in `s` below). While draw mode is active, divides by
+      // the frozen drawModeZoomBaselinePercent instead (see
+      // setModelFlowDraw) so that cancellation doesn't also eat scroll-to-
+      // zoom, which drives cubeSizeScale through the exact same path.
+      const zoomGoalSizeScale = drawModeZoomBaselinePercent !== null
+        ? drawModeZoomBaselinePercent / 100
+        : cubeSizeScale;
       zoomGoal = Math.max(
         CAMERA_TARGET_ZOOM_MIN,
         Math.min(
           CAMERA_TARGET_ZOOM_MAX,
-          (fillFraction * 2 * cubeProjectionHalfY) / (projectedHeight * CUBE_SCALE * cubeSizeScale)
+          (fillFraction * 2 * cubeProjectionHalfY) / (projectedHeight * CUBE_SCALE * zoomGoalSizeScale)
         )
       );
     }
@@ -3701,20 +3882,35 @@ function renderCubeFrame() {
   // line pass (lineProgram, further down) rather than reading anything back
   // from the GPU.
   const flowActive = blueprintEnabled && showCustomModel && modelFlowPaths.length > 0;
-  let flowPulseCenter = 0, flowSigma = 0.02;
+  let flowSigma = 0.02;
+  const flowPulseCentersArray = flowPulseCentersScratch;
+  const flowPulseCount = Math.min(FLOW_PULSE_FREQUENCY_MAX, Math.max(1, Math.round(flowPulseFrequencyValue)));
   if (flowActive) {
     flowSigma = Math.max(0.02, MODEL_FLOW_PULSE_BAND_FRACTION * pulseBandFraction * 4);
     const flowPad = flowSigma * FLOW_PULSE_PAD_SIGMAS;
+    const flowRange = 1 + 2 * flowPad;
     // Linear for now (was an eased t^3 ease-in — the pulse noticeably
     // lingered at the start of each loop before accelerating through the
     // rest of the arrow).
     const flowPeriodMs = FLOW_PULSE_PERIOD_BASE_MS * (100 / flowSpeedPercent);
     const pulseProgress = (performance.now() % flowPeriodMs) / flowPeriodMs;
-    flowPulseCenter = -flowPad + pulseProgress * (1 + 2 * flowPad);
+    const basePulseCenter = -flowPad + pulseProgress * flowRange;
+    // Extra pulses (see the "Pulse frequency" slider) trail the primary one
+    // at even offsets around the same travel loop, each wrapped back into
+    // [-flowPad, 1+flowPad) so they fade in/out at the loop's ends just like
+    // the primary pulse instead of popping when an offset center wanders
+    // past a boundary.
+    const spacing = flowRange / flowPulseCount;
+    for (let i = 0; i < flowPulseCount; i++) {
+      const shifted = basePulseCenter - i * spacing + flowPad;
+      const wrapped = ((shifted % flowRange) + flowRange) % flowRange;
+      flowPulseCentersArray[i] = wrapped - flowPad;
+    }
   }
   gl.uniform1i(uFlowActive, flowActive ? 1 : 0);
   if (flowActive) {
-    gl.uniform1f(uFlowPulseCenter, flowPulseCenter);
+    gl.uniform1fv(uFlowPulseCenters, flowPulseCentersArray);
+    gl.uniform1i(uFlowPulseCount, flowPulseCount);
     gl.uniform1f(uFlowSigma, flowSigma);
     gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
     gl.uniform1f(uFlowCoreSigmaMult, flowCoreLengthPercent / 100);
@@ -4393,6 +4589,9 @@ export const controls = {
   getInitialState() {
     return {
       pulseWidth: pulseWidthValue,
+      flowPulseFrequency: flowPulseFrequencyValue,
+      flowPulseFrequencyMin: FLOW_PULSE_FREQUENCY_MIN,
+      flowPulseFrequencyMax: FLOW_PULSE_FREQUENCY_MAX,
       flowSpeed: flowSpeedPercent,
       flowSpeedMin: FLOW_SPEED_MIN,
       flowSpeedMax: FLOW_SPEED_MAX,
@@ -4458,6 +4657,7 @@ export const controls = {
     };
   },
   setPulseWidth,
+  setFlowPulseFrequency,
   setFlowSpeedPercent,
   setFlowCoreLengthPercent,
   setFlowTailLengthPercent,
