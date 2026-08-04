@@ -35,20 +35,25 @@ if (!localStorage.getItem(CUBE_SIZE_RESET_MIGRATION_KEY)) {
   localStorage.setItem(CUBE_SIZE_RESET_MIGRATION_KEY, '1');
 }
 
-// One-time migration: the dot fill's defaults changed (frequency 1 -> 9,
-// size 16% -> 5%) — same reasoning as the cubeSize migration above.
-const DOT_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.dotDefaultsResetV1';
+// One-time migration: the dot fill's defaults changed (frequency 1 -> 9 ->
+// 4, size 16% -> 5%) — same reasoning as the cubeSize migration above. V2
+// (rather than reusing V1) so browsers that already ran V1 still pick up
+// the frequency 9 -> 4 change.
+const DOT_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.dotDefaultsResetV2';
 if (!localStorage.getItem(DOT_DEFAULTS_RESET_MIGRATION_KEY)) {
   localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'dotFrequency');
   localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'dotSize');
   localStorage.setItem(DOT_DEFAULTS_RESET_MIGRATION_KEY, '1');
 }
 
-// One-time migration: the plus fill's default frequency changed 1 -> 11 —
-// same reasoning as the cubeSize/dot migrations above.
-const PLUS_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.plusDefaultsResetV1';
+// One-time migration: the plus fill's defaults changed (frequency 11 -> 2,
+// size 20% -> 5%) — same reasoning as the cubeSize/dot migrations above. A
+// new V2 key (rather than reusing V1, which only ever cleared frequency)
+// so browsers that already ran V1 still pick up the size default too.
+const PLUS_DEFAULTS_RESET_MIGRATION_KEY = 'iconMosaic.plusDefaultsResetV2';
 if (!localStorage.getItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY)) {
   localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'plusFrequency');
+  localStorage.removeItem(SLIDER_STORAGE_PREFIX + 'plusSize');
   localStorage.setItem(PLUS_DEFAULTS_RESET_MIGRATION_KEY, '1');
 }
 
@@ -225,7 +230,7 @@ function setLineFrequency(value) {
 
 const DOT_FREQUENCY_MIN = 1;
 const DOT_FREQUENCY_MAX = 60;
-let dotFrequencyValue = restoreNumber('dotFrequency', 9);
+let dotFrequencyValue = restoreNumber('dotFrequency', 4);
 
 function setDotFrequency(value) {
   const clamped = Math.max(DOT_FREQUENCY_MIN, Math.min(DOT_FREQUENCY_MAX, value));
@@ -249,7 +254,7 @@ function setDotSizePercent(value) {
 
 const PLUS_FREQUENCY_MIN = 1;
 const PLUS_FREQUENCY_MAX = 60;
-let plusFrequencyValue = restoreNumber('plusFrequency', 11);
+let plusFrequencyValue = restoreNumber('plusFrequency', 2);
 
 function setPlusFrequency(value) {
   const clamped = Math.max(PLUS_FREQUENCY_MIN, Math.min(PLUS_FREQUENCY_MAX, value));
@@ -264,7 +269,7 @@ function setPlusFrequency(value) {
 // rather than needing a separate thickness control.
 const PLUS_SIZE_MIN = 5;
 const PLUS_SIZE_MAX = 45;
-let plusSizePercent = restoreNumber('plusSize', 20);
+let plusSizePercent = restoreNumber('plusSize', 5);
 
 function setPlusSizePercent(value) {
   const clamped = Math.max(PLUS_SIZE_MIN, Math.min(PLUS_SIZE_MAX, value));
@@ -1821,10 +1826,10 @@ const modelStateListeners = [];
 // buttons ease the framing toward. cameraTargetSlots holds which object name
 // (or null) is assigned to each of the 3 slots; cameraTargetActiveIndex is
 // which slot is currently driving the camera, or null to fall back to the
-// manual pan sliders as before. cameraTargetCurrent is the tweened position
-// that chases whichever slot is active (renderCubeFrame, each frame) — this
-// is the "null object" the camera stays rigidly offset from: rotation
-// (drag + hover) and distance never change when it moves.
+// manual pan sliders as before. cameraTargetCurrent is the spring-driven
+// position that chases whichever slot is active (renderCubeFrame, each
+// frame) — this is the "null object" the camera stays rigidly offset from:
+// rotation (drag + hover) and distance never change when it moves.
 let customModelObjects = []; // [{name, center:[x,y,z], size:number, bounds:{minX,maxX,minY,maxY,minZ,maxZ}}], from parseObj
 /** @type {(string | null)[]} */
 let cameraTargetSlots = [null, null, null];
@@ -1838,30 +1843,51 @@ let cameraTargetCurrent = [0, 0, 0];
 // wired up as targets.
 let showCameraTargetBoxes = false;
 // Extra scale multiplier applied on top of cubeSizeScale while a camera
-// target is active (see renderCubeFrame) — tweens to 1x whenever no target
+// target is active (see renderCubeFrame) — springs to 1x whenever no target
 // is active, and to an exact "frame to fit" goal otherwise (see
-// CAMERA_TARGET_VERTICAL_SAFE_ZONE), on the same timed tween as
+// CAMERA_TARGET_VERTICAL_SAFE_ZONE), on the same spring as
 // cameraTargetCurrent so zoom and pan move together.
 let cameraTargetZoomCurrent = 1;
-// Fixed-duration, cubic-bezier-eased tween that drives cameraTargetCurrent/
-// cameraTargetZoomCurrent whenever the active target changes (including to
-// or from "none" — see renderCubeFrame). Snapshotting `from` at the moment
-// the target changes (rather than integrating toward a moving goal every
-// frame, as the old exponential-smoothing version did) is what makes the
-// move have a well-defined start, end, and duration instead of an
-// asymptotic tail that technically never finishes.
-let cameraTargetTweenKey = null; // the target name (or null) the current tween/rest state is for
-let cameraTargetTweenStartTime = null; // performance.now() at tween start, or null when not mid-tween
-let cameraTargetTweenFromPos = [0, 0, 0];
-let cameraTargetTweenFromZoom = 1;
-let cameraTargetTweenToPos = [0, 0, 0];
-let cameraTargetTweenToZoom = 1;
-const CAMERA_TARGET_TWEEN_MS = 1000;
-// Control points of a CSS-style cubic-bezier(x1,y1,x2,y2) timing function
-// (P0=(0,0)/P3=(1,1) implied — see cubicBezierEase) — a steep "ease-in-out
-// expo"-like curve: holds near-still at both ends and does almost all the
-// movement through the middle of the duration.
-const CAMERA_TARGET_BEZIER = [0.83, 0, 0.17, 1];
+// Damped-spring simulation driving cameraTargetCurrent/cameraTargetZoomCurrent
+// toward whatever the active target's goal position/zoom is this frame (see
+// renderCubeFrame) — a real position+velocity integration (semi-implicit
+// Euler) rather than a fixed-duration tween, so the goal can keep moving
+// (switching targets mid-flight, a resize changing the frame-to-fit zoom)
+// without a visible restart: the spring just keeps pulling from wherever it
+// currently is, carrying its existing velocity. cameraTargetVelocity/
+// cameraTargetZoomVelocity are the per-axis object-space velocities;
+// cameraTargetSpringLastTime is the performance.now() of the previous
+// step, used to compute dt (null right after a reset, so the first step
+// after that doesn't take a giant dt).
+let cameraTargetVelocity = [0, 0, 0];
+let cameraTargetZoomVelocity = 0;
+let cameraTargetSpringLastTime = null;
+// Whether the spring is currently close enough to rest (position, zoom, AND
+// velocity all near their at-rest goal) that it's safe to hand screen
+// centering back to the manual pan sliders — see getObjectSpacePan, which
+// needs a real "settled" signal instead of a tween-end event now that the
+// spring has no fixed end time.
+let cameraTargetAtRest = true;
+// Stiffness (pull toward the goal) and damping (velocity drag) of the
+// spring, in the standard critically-damped-at
+// `damping = 2 * sqrt(stiffness)` parameterization — 2*sqrt(15) ≈ 7.75, so
+// damping: 9 sits slightly past critical (ratio ~1.16): a slow, deliberate
+// arrival with no overshoot/bounce, rather than the snappier springy feel
+// of an underdamped ratio (< 1). Lower stiffness for an even slower move
+// (keep damping ≈ 1.16 * 2 * sqrt(stiffness) to hold the same ratio and
+// stay overshoot-free); raise damping alone for a more sluggish, "through
+// honey" settle at the same speed.
+const CAMERA_TARGET_SPRING_STIFFNESS = 15;
+const CAMERA_TARGET_SPRING_DAMPING = 9;
+// Clamps the per-step dt fed into the spring integration (seconds) — caps
+// how far a single step can move after e.g. a backgrounded-tab stall, so
+// the simulation can't blow up from an enormous one-off dt.
+const CAMERA_TARGET_SPRING_MAX_DT = 0.05;
+// Below these position/velocity/zoom thresholds the spring is considered
+// settled (see cameraTargetAtRest) — object-space units are on the same
+// ~20-unit whole-model scale as parseObj's normalization, so 0.01 is
+// visually imperceptible.
+const CAMERA_TARGET_SPRING_REST_EPSILON = 0.01;
 // Fraction of the viewport height left empty above AND below a framed
 // camera target (so the object itself occupies the middle 1 - 2 * this
 // fraction of the screen) — see renderCubeFrame's zoomGoal calculation,
@@ -2004,10 +2030,12 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null
   cameraTargetActiveIndex = null;
   cameraTargetCurrent = [0, 0, 0];
   cameraTargetZoomCurrent = 1;
-  // Drop any in-flight tween so renderCubeFrame doesn't ease from the old
-  // model's last position toward the new model's origin next frame.
-  cameraTargetTweenKey = null;
-  cameraTargetTweenStartTime = null;
+  // Zero out the spring so renderCubeFrame doesn't carry the old model's
+  // velocity into a move toward the new model's origin next frame.
+  cameraTargetVelocity = [0, 0, 0];
+  cameraTargetZoomVelocity = 0;
+  cameraTargetSpringLastTime = null;
+  cameraTargetAtRest = true;
 
   const greenTris = [];
   const greenTriObjectIndex = [];
@@ -2501,40 +2529,17 @@ function rotateYVec3(v, theta) {
   return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
 }
 
-// CSS-style cubic-bezier(x1,y1,x2,y2) easing: P0=(0,0) and P3=(1,1) are
-// fixed, so the curve is a timing function (x = elapsed fraction, y =
-// eased progress). Solves x(u) = t for the bezier parameter u via
-// Newton-Raphson (falling back to bisection if it doesn't converge, same
-// as browsers do for degenerate control points), then returns y(u). Used
-// by cameraTargetTween below (see CAMERA_TARGET_BEZIER).
-function cubicBezierEase(t, x1, y1, x2, y2) {
-  if (t <= 0) return 0;
-  if (t >= 1) return 1;
-  const bezierComponent = (u, p1, p2) => {
-    const v = 1 - u;
-    return 3 * v * v * u * p1 + 3 * v * u * u * p2 + u * u * u;
-  };
-  const bezierComponentDerivative = (u, p1, p2) => {
-    const v = 1 - u;
-    return 3 * v * v * p1 + 6 * v * u * (p2 - p1) + 3 * u * u * (1 - p2);
-  };
-  let u = t;
-  for (let i = 0; i < 8; i++) {
-    const x = bezierComponent(u, x1, x2) - t;
-    const dx = bezierComponentDerivative(u, x1, x2);
-    if (Math.abs(dx) < 1e-6) break;
-    const next = u - x / dx;
-    if (!Number.isFinite(next)) break;
-    u = Math.min(1, Math.max(0, next));
-    if (Math.abs(x) < 1e-5) break;
-  }
-  let lo = 0, hi = 1;
-  for (let i = 0; i < 20 && Math.abs(bezierComponent(u, x1, x2) - t) > 1e-5; i++) {
-    if (bezierComponent(u, x1, x2) < t) lo = u;
-    else hi = u;
-    u = (lo + hi) / 2;
-  }
-  return bezierComponent(u, y1, y2);
+// Advances one axis of the camera-target spring by dt seconds
+// (semi-implicit/symplectic Euler: velocity updates from the current
+// position first, then position updates from the *new* velocity — more
+// stable than naive Euler for a stiff spring at typical frame dt's).
+// Returns [newPosition, newVelocity]. See CAMERA_TARGET_SPRING_STIFFNESS/
+// CAMERA_TARGET_SPRING_DAMPING above.
+function stepSpring(position, velocity, goal, dt) {
+  const accel = CAMERA_TARGET_SPRING_STIFFNESS * (goal - position) - CAMERA_TARGET_SPRING_DAMPING * velocity;
+  const newVelocity = velocity + accel * dt;
+  const newPosition = position + newVelocity * dt;
+  return [newPosition, newVelocity];
 }
 
 // Inverse of renderCubeFrame's modelView build (translate(ox,oy,oz) *
@@ -2565,16 +2570,16 @@ function projectObjectPointToView(p, rx, ry, s) {
 
 // Shared by renderCubeFrame and raycastGreenMesh so raycasting always
 // unprojects through the exact same view-space offset the render pass drew
-// with. Only ever nonzero for camera-target mode now (including while
-// tweening back out of one, so a deactivated target eases back to
-// screen-center instead of snapping) — locking a target to screen-center
-// has to counteract whatever the *current* rotation does to it, which is
-// exactly what this recomputes every call (rx/ry-dependent).
+// with. Only ever nonzero for camera-target mode now (including while the
+// spring is still settling back out of one, so a deactivated target eases
+// back to screen-center instead of snapping) — locking a target to
+// screen-center has to counteract whatever the *current* rotation does to
+// it, which is exactly what this recomputes every call (rx/ry-dependent).
 // Read-only: when a camera target is active, this reads cameraTargetCurrent's
-// already-tweened position rather than advancing it — only renderCubeFrame's
-// own per-frame tick does that (see cameraTargetTween* above), so the tween
-// stays tied to render frames rather than to how often a caller (e.g.
-// pointermove during arrow-drawing) happens to ask for the offset.
+// already-stepped position rather than advancing it — only renderCubeFrame's
+// own per-frame tick does that (see the spring step in renderCubeFrame), so
+// the motion stays tied to render frames rather than to how often a caller
+// (e.g. pointermove during arrow-drawing) happens to ask for the offset.
 function getCurrentCameraOffset(rx, ry, s) {
   const viewPoint = projectObjectPointToView(cameraTargetCurrent, rx, ry, s);
   return [-viewPoint[0], -viewPoint[1]];
@@ -2590,12 +2595,11 @@ function getCurrentCameraOffset(rx, ry, s) {
 // post-rotation pan translate happened to place it. Suppressed while a
 // camera target is active — that mode already owns centering via the offset
 // above, and combining both would fight over the same screen position. Also
-// suppressed for the remainder of an exit tween (cameraTargetTweenStartTime
-// still set after cameraTargetActiveIndex has already gone back to null) so
+// suppressed until the spring settles back to rest (cameraTargetAtRest) so
 // manual pan doesn't cut back in until the camera has actually finished
 // easing back to screen-center, instead of jumping in partway through.
 function getObjectSpacePan() {
-  const targetOwnsCentering = cameraTargetActiveIndex !== null || cameraTargetTweenStartTime !== null;
+  const targetOwnsCentering = cameraTargetActiveIndex !== null || !cameraTargetAtRest;
   return targetOwnsCentering ? [0, 0, 0] : getModelViewOffset();
 }
 
@@ -3602,36 +3606,31 @@ function renderCubeFrame() {
       );
     }
   }
-  // Whenever the active target's identity changes — including switching to
-  // or from "none" (resetCameraTarget) — snapshot a fresh from→to tween
-  // instead of continuing to integrate toward a moving goal every frame, so
-  // the move has a well-defined start, duration, and end (see
-  // cameraTargetTween* above) instead of an asymptotic tail.
-  if (activeTargetName !== cameraTargetTweenKey) {
-    cameraTargetTweenKey = activeTargetName;
-    cameraTargetTweenFromPos = [...cameraTargetCurrent];
-    cameraTargetTweenFromZoom = cameraTargetZoomCurrent;
-    cameraTargetTweenToPos = [...goalCenter];
-    cameraTargetTweenToZoom = zoomGoal;
-    cameraTargetTweenStartTime = performance.now();
+  // Step the damped spring toward this frame's goal (see stepSpring above).
+  // Unlike a tween, there's nothing to "restart" when the goal changes —
+  // switching targets mid-flight, or a resize nudging the frame-to-fit
+  // zoom, just becomes a new goal the spring keeps pulling toward from
+  // wherever it already is, carrying whatever velocity it already had.
+  const now = performance.now();
+  const dt = cameraTargetSpringLastTime === null
+    ? 0
+    : Math.min(CAMERA_TARGET_SPRING_MAX_DT, (now - cameraTargetSpringLastTime) / 1000);
+  cameraTargetSpringLastTime = now;
+  const nextPos = [0, 0, 0];
+  for (let i = 0; i < 3; i++) {
+    [nextPos[i], cameraTargetVelocity[i]] = stepSpring(cameraTargetCurrent[i], cameraTargetVelocity[i], goalCenter[i], dt);
   }
-  if (cameraTargetTweenStartTime !== null) {
-    const t = Math.min(1, (performance.now() - cameraTargetTweenStartTime) / CAMERA_TARGET_TWEEN_MS);
-    const eased = cubicBezierEase(t, ...CAMERA_TARGET_BEZIER);
-    cameraTargetCurrent = [
-      cameraTargetTweenFromPos[0] + (cameraTargetTweenToPos[0] - cameraTargetTweenFromPos[0]) * eased,
-      cameraTargetTweenFromPos[1] + (cameraTargetTweenToPos[1] - cameraTargetTweenFromPos[1]) * eased,
-      cameraTargetTweenFromPos[2] + (cameraTargetTweenToPos[2] - cameraTargetTweenFromPos[2]) * eased,
-    ];
-    cameraTargetZoomCurrent = cameraTargetTweenFromZoom + (cameraTargetTweenToZoom - cameraTargetTweenFromZoom) * eased;
-    if (t >= 1) cameraTargetTweenStartTime = null;
-  } else {
-    // Already at rest for this target — track the goal directly so a live
-    // zoom-fit change (window resize, the "Model size" slider) keeps
-    // following without replaying a stale tween.
-    cameraTargetCurrent = [...goalCenter];
-    cameraTargetZoomCurrent = zoomGoal;
-  }
+  cameraTargetCurrent = nextPos;
+  [cameraTargetZoomCurrent, cameraTargetZoomVelocity] = stepSpring(cameraTargetZoomCurrent, cameraTargetZoomVelocity, zoomGoal, dt);
+  // "At rest" (see getObjectSpacePan) only when there's no active target AND
+  // the spring has actually settled at the origin/1x — not merely whenever
+  // cameraTargetActiveIndex is null, since the spring is still moving for a
+  // beat after a target's deactivated.
+  cameraTargetAtRest = !activeTargetName
+    && Math.hypot(...cameraTargetCurrent) < CAMERA_TARGET_SPRING_REST_EPSILON
+    && Math.hypot(...cameraTargetVelocity) < CAMERA_TARGET_SPRING_REST_EPSILON
+    && Math.abs(cameraTargetZoomCurrent - 1) < CAMERA_TARGET_SPRING_REST_EPSILON
+    && Math.abs(cameraTargetZoomVelocity) < CAMERA_TARGET_SPRING_REST_EPSILON;
   const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [offsetX, offsetY] = getCurrentCameraOffset(rx, ry, s);
   const [panX, panY, panZ] = getObjectSpacePan();
