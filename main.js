@@ -190,10 +190,9 @@ function setGlowSizePercent(value) {
   return clamped;
 }
 
-// Cube mode's model size, as a percentage multiplier on top of CUBE_SCALE
+// The loaded model's size, as a percentage multiplier on top of CUBE_SCALE
 // (see renderCubeFrame) — 100 (the default) = CUBE_SCALE unchanged, up to
-// 1000 = 10x that. Applies equally to the built-in cube and any uploaded
-// custom model, since both go through the same modelView scale step.
+// 1000 = 10x that.
 const CUBE_SIZE_MIN = 10;
 const CUBE_SIZE_MAX = 1000;
 let cubeSizePercent = restoreNumber('cubeSize', 100);
@@ -366,9 +365,7 @@ function setShaderTheme(value) {
   refreshBlueprintLineColors();
 }
 
-// --- Source: rotating WebGL cube (the only mode this app renders) ---------
-
-// --- Rotating cube, rendered with plain WebGL --------------------------
+// --- Source: the loaded .obj model, rendered with plain WebGL -------------
 
 // Renders directly into the visible <canvas> (WebGL's own backing store,
 // set from `renderScale` — see applyCanvasSize/resize far below — takes the
@@ -721,82 +718,12 @@ if (!gl.getProgramParameter(lineProgram, gl.LINK_STATUS)) {
   throw new Error(gl.getProgramInfoLog(lineProgram));
 }
 
-// 24 vertices (4 per face) so each face gets its own flat normal.
-// prettier-ignore
-const CUBE_POSITIONS = new Float32Array([
-  -1,-1, 1,  1,-1, 1,  1, 1, 1, -1, 1, 1, // front
-  -1,-1,-1, -1, 1,-1,  1, 1,-1,  1,-1,-1, // back
-  -1, 1,-1, -1, 1, 1,  1, 1, 1,  1, 1,-1, // top
-  -1,-1,-1,  1,-1,-1,  1,-1, 1, -1,-1, 1, // bottom
-   1,-1,-1,  1, 1,-1,  1, 1, 1,  1,-1, 1, // right
-  -1,-1,-1, -1,-1, 1, -1, 1, 1, -1, 1,-1, // left
-]);
-
-// prettier-ignore
-const CUBE_NORMALS = new Float32Array([
-   0, 0, 1,  0, 0, 1,  0, 0, 1,  0, 0, 1,
-   0, 0,-1,  0, 0,-1,  0, 0,-1,  0, 0,-1,
-   0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0,
-   0,-1, 0,  0,-1, 0,  0,-1, 0,  0,-1, 0,
-   1, 0, 0,  1, 0, 0,  1, 0, 0,  1, 0, 0,
-  -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0,
-]);
-
-// prettier-ignore
-const CUBE_INDICES = new Uint16Array([
-   0, 1, 2,  0, 2, 3,
-   4, 5, 6,  4, 6, 7,
-   8, 9,10,  8,10,11,
-  12,13,14, 12,14,15,
-  16,17,18, 16,18,19,
-  20,21,22, 20,22,23,
-]);
-
-const cubePositionBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubePositionBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_POSITIONS, gl.STATIC_DRAW);
-
-const cubeNormalBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeNormalBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_NORMALS, gl.STATIC_DRAW);
-
-// The built-in cube has no material data, so it feeds the shader flat white
-// (brightness * white == the old plain-grayscale look, unchanged) — this is
-// what aColor defaults to for anything that isn't a custom model carrying
-// real Kd colors from a .mtl file.
-const CUBE_COLORS = new Float32Array(24 * 3).fill(1);
-const cubeColorBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeColorBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_COLORS, gl.STATIC_DRAW);
-
-// Same reasoning as CUBE_COLORS: the built-in cube has no material data, so
-// it's never green (blueprint mode's green-fill/black-edge treatment only
-// ever applies to a loaded custom model's green materials).
-const CUBE_IS_GREEN = new Float32Array(24).fill(0);
-const cubeIsGreenBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeIsGreenBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_IS_GREEN, gl.STATIC_DRAW);
-
-// Same reasoning as CUBE_IS_GREEN: the built-in cube has no materials, so it
-// never gets a fill pattern — only a loaded custom model's "Hatch"/"Dot"/
-// "Plus"-named materials do (see materialFillPatternId).
-const CUBE_FILL_PATTERN = new Float32Array(24).fill(0);
-const cubeFillPatternBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeFillPatternBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_FILL_PATTERN, gl.STATIC_DRAW);
-
-const cubeIndexBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
-gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, CUBE_INDICES, gl.STATIC_DRAW);
-
 // Two selectable blueprint palettes (see shaderTheme/setShaderTheme above) —
 // "dark" is the original navy fill with gray wireframe lines, "light" is a
 // pale gray fill with dark navy wireframe lines. Green-material parts (see
 // isGreenDominant) ignore both and always get a green fill
 // (BLUEPRINT_FILL_COLOR_GREEN) with black edges (BLUEPRINT_LINE_COLOR_GREEN_PART)
 // so they read as a distinct, "called out" element regardless of theme.
-// Defined here (ahead of CUBE_LINES below, which needs these at load time)
-// rather than down near the other uniform lookups.
 const BLUEPRINT_THEMES = {
   dark: {
     bg: [4 / 255, 28 / 255, 44 / 255], // #041C2C
@@ -828,12 +755,11 @@ const BLUEPRINT_FLOW_COLOR = [225 / 255, 248 / 255, 221 / 255];
 // buffer and render as solid haze rather than a clean line drawing.
 const CREASE_ANGLE_DOT_THRESHOLD = Math.cos((25 * Math.PI) / 180);
 
-// triIsGreen (optional) is one boolean per triangle (triIndices.length / 3);
-// an edge renders in BLUEPRINT_LINE_COLOR_GREEN_PART (black) if any triangle
-// using it is flagged green (see isGreenDominant) — e.g. ngen.mtl's
+// triIsGreen is one boolean per triangle (triIndices.length / 3); an edge
+// renders in BLUEPRINT_LINE_COLOR_GREEN_PART (black) if any triangle using it
+// is flagged green (see isGreenDominant) — e.g. ngen.mtl's
 // EV_charger_body_green / shared_pipe_green parts — otherwise the default
-// gray. Omit it (as the built-in cube does, having no material data) for an
-// all-default-color wireframe.
+// gray.
 function buildCreaseEdgeLines(flatPositions, triIndices, triIsGreen) {
   const vertexCount = flatPositions.length / 3;
   const edgeMap = new Map();
@@ -848,7 +774,7 @@ function buildCreaseEdgeLines(flatPositions, triIndices, triIsGreen) {
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
     const len = Math.hypot(nx, ny, nz) || 1;
     nx /= len; ny /= len; nz /= len;
-    const isGreen = !!(triIsGreen && triIsGreen[t]);
+    const isGreen = !!triIsGreen[t];
 
     const edges = [[ia, ib], [ib, ic], [ic, ia]];
     for (const [i0, i1] of edges) {
@@ -899,38 +825,16 @@ function buildLineColors(lineIsGreen, lineColor) {
   return colors;
 }
 
-const CUBE_LINES = buildCreaseEdgeLines(CUBE_POSITIONS, CUBE_INDICES);
-const cubeLineBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeLineBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_LINES.positions, gl.STATIC_DRAW);
-const cubeLineColorBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeLineColorBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, CUBE_LINES.colors, gl.STATIC_DRAW);
-const cubeLineVertexCount = CUBE_LINES.positions.length / 3;
-
-// Re-uploads cubeLineColorBuffer/customModelLineColorBuffer from the cached
-// per-edge isGreen flags (edge geometry never changes on a theme switch,
-// only which color each non-green edge gets) — see setShaderTheme.
+// Re-uploads customModelLineColorBuffer from the cached per-edge isGreen
+// flags (edge geometry never changes on a theme switch, only which color
+// each non-green edge gets) — see setShaderTheme.
 function refreshBlueprintLineColors() {
   const lineColor = BLUEPRINT_THEMES[shaderTheme].line;
-  gl.bindBuffer(gl.ARRAY_BUFFER, cubeLineColorBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, buildLineColors(CUBE_LINES.isGreen, lineColor), gl.STATIC_DRAW);
   if (customModelLineIsGreenCache) {
     gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineColorBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, buildLineColors(customModelLineIsGreenCache, lineColor), gl.STATIC_DRAW);
   }
 }
-
-const cubeFlowCoordBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeFlowCoordBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(24), gl.STATIC_DRAW);
-
-// Dummy per-vertex path-length buffer for the plain cube (flow is only ever
-// active for the custom model, so this is never actually read — see
-// customModelFlowPathLenBuffer for the real per-vertex data).
-const cubeFlowPathLenBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, cubeFlowPathLenBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(24), gl.STATIC_DRAW);
 
 const aPosition = gl.getAttribLocation(cubeProgram, 'aPosition');
 const aNormal = gl.getAttribLocation(cubeProgram, 'aNormal');
@@ -1067,8 +971,8 @@ function updateCubeProjection(aspect) {
 }
 
 // 10% of the original size (which was itself "300% smaller", i.e. a third
-// the size) — applies equally to the built-in cube and any uploaded custom
-// model; the "Model size" slider (cubeSizeScale) multiplies on top of this.
+// the size); the "Model size" slider (cubeSizeScale) multiplies on top of
+// this.
 const CUBE_SCALE = (1 / 3) * 0.1;
 
 // Model's on-canvas X/Y position, as a slider value from -300 to 300 applied
@@ -1168,10 +1072,10 @@ const CUBE_BIRDSEYE_YAW = 0;
 const CUBE_BIRDSEYE_PITCH = Math.PI / 2;
 
 // Starts in the bird's-eye pose (rather than straight at CUBE_ISO_PITCH/
-// YAW) so the very first rendered frames — including the built-in
-// procedural cube shown while the bundled model is still fetching — read as
-// a deliberate top-down opening shot; loadBundledDefaultModel eases this
-// into the actual resting rotation once the model's ready (see its
+// YAW) so the bundled model's very first visible frame, once it's actually
+// loaded, reads as a deliberate top-down opening shot rather than already
+// sitting at its resting angle; loadBundledDefaultModel eases this into the
+// actual resting rotation once the model's ready (see its
 // tweenCubeRotationTo call, MODEL_LOAD_ROTATION_INTRO_MS).
 let cubeRotX = CUBE_BIRDSEYE_PITCH;
 let cubeRotY = CUBE_BIRDSEYE_YAW;
@@ -1863,15 +1767,13 @@ window.addEventListener('pointerup', () => {
 // cross product instead — same visual result for a low-poly/flat-shaded
 // model, just without needing the OBJ to supply it.
 //
-// No index buffer: each face's vertices are pushed straight into the
-// output arrays in triangle order (matching the built-in cube's own
-// approach of duplicating vertices per-face so every face can have its
-// own normal), so the model draws with drawArrays rather than
+// No index buffer: each face's vertices are pushed straight into the output
+// arrays in triangle order, duplicating vertices per-face so every face can
+// have its own flat normal, so the model draws with drawArrays rather than
 // drawElements.
 
-// Corrective rotation applied to the loaded custom model only (not the
-// built-in cube) — the imported model's own axes needed a quarter-turn
-// around Y to sit the way we want on screen.
+// Corrective rotation applied to the loaded model — its own axes needed a
+// quarter-turn around Y to sit the way we want on screen.
 const CUSTOM_MODEL_ROTATE_Y_RAD = -Math.PI / 2;
 
 // Reads a .mtl's `newmtl <name>` / `Kd r g b` pairs into a name -> [r,g,b]
@@ -1904,7 +1806,7 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
   const outFillPattern = []; // one entry per emitted vertex — 0/1/2/3 fill-pattern id (see materialFillPatternId)
   const outTriVertIdx = []; // one entry per emitted vertex, the original `v` index it came from — used only for crease-edge detection below
   const outTriIsGreen = []; // one entry per emitted triangle — feeds the wireframe's green-edge coloring
-  let activeColor = [1, 1, 1]; // no usemtl seen yet (or an unrecognized name) == plain white, same as the built-in cube
+  let activeColor = [1, 1, 1]; // no usemtl seen yet (or an unrecognized name) == plain white
   let activeIsGreen = false;
   let activeFillPattern = 0;
 
@@ -2015,10 +1917,10 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
     }
   }
 
-  // Center (X/Z) and floor (Y) the model, then scale to roughly the same
-  // [-1, 1] envelope CUBE_POSITIONS uses, so the same CUBE_SCALE/camera
-  // distance frame it similarly regardless of what units the source model
-  // was modeled in. Y specifically aligns to the *lowest* point (minY)
+  // Center (X/Z) and floor (Y) the model, then scale to roughly a [-1, 1]
+  // envelope, so the same CUBE_SCALE/camera distance frame it similarly
+  // regardless of what units the source model was modeled in. Y specifically
+  // aligns to the *lowest* point (minY)
   // rather than the bounding box's vertical midpoint like X/Z — Blender's
   // OBJ exporter already converts its Z-up scenes to this format's Y-up, so
   // a model built with its ground plane at Blender height 0 should still
@@ -2037,11 +1939,11 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
   }
   const cx = (minX + maxX) / 2, cy = minY, cz = (minZ + maxZ) / 2;
   const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
-  // 10x the built-in cube's normalized envelope — a custom model's intended
-  // physical size relative to the cube, independent of CUBE_SCALE (which
-  // still applies equally on top of this to both the cube and custom models).
-  // baseScaleMultiplier (default 1, i.e. no-op) lets a specific caller shrink
-  // or grow that intended size further — see loadBundledDefaultModel.
+  // 10x the [-1, 1] envelope described above, i.e. the model's intended
+  // physical size, independent of CUBE_SCALE (which still applies on top of
+  // this). baseScaleMultiplier (default 1, i.e. no-op) lets a specific
+  // caller shrink or grow that intended size further — see
+  // loadBundledDefaultModel.
   const scale = (2 / extent) * 10 * baseScaleMultiplier;
   for (let i = 0; i < outPositions.length; i += 3) {
     outPositions[i] = (outPositions[i] - cx) * scale;
@@ -2167,7 +2069,6 @@ const customModelLineColorBuffer = gl.createBuffer();
 let customModelVertexCount = 0;
 let customModelLineVertexCount = 0;
 let customModelReady = false;
-let useCustomModel = false;
 let cubeModelStatus = ''; // status text shown next to the file picker
 
 const modelStateListeners = [];
@@ -2368,7 +2269,6 @@ function getModelState() {
     modelOffsetX: modelOffsetXPercent,
     modelOffsetY: modelOffsetYPercent,
     customModelReady,
-    useCustomModel,
     cubeModelStatus,
     customModelObjectNames: customModelObjects.map((o) => o.name),
     cameraTargetSlots,
@@ -2473,12 +2373,12 @@ let greenTriPositionsCache = null; // Float32Array, only the triangles flagged g
 let greenTriObjectIndexCache = null; // one entry per green triangle, parallel to greenTriPositionsCache — which object each hit belongs to
 
 // Uploads an already-parsed model (see parseObj) to the custom-model GPU
-// buffers and flips on the "use custom model" toggle. Shared by the file
-// picker and drag-and-drop paths (see loadModelFromFiles below).
+// buffers and flips customModelReady on so renderCubeFrame starts drawing
+// it. Shared by the file picker and drag-and-drop paths (see
+// loadModelFromFiles below).
 function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null, null, null]) {
   if (!parsed) {
     customModelReady = false;
-    useCustomModel = false;
     cubeModelStatus = `Couldn't find any faces in ${objName}`;
     notifyModelState();
     return;
@@ -2543,7 +2443,6 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null
   // which call clearModelFlowPath() or restoreModelFlowPath() accordingly.
 
   customModelReady = true;
-  useCustomModel = true;
   setCubeSizePercent(100); // a freshly loaded model starts at the default size, not whatever the slider was left at
   const triCount = customModelVertexCount / 3;
   cubeModelStatus = parsed.hasMaterials
@@ -2554,8 +2453,9 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null
 
 // Shared by the file-picker input and drag-and-drop below: given a loose
 // list of Files (as either produces), finds the .obj and its .mtl sidecar,
-// parses, and uploads. The built-in cube is the default shape — this only
-// ever runs in response to the user explicitly picking or dropping files.
+// parses, and uploads, replacing whatever model (bundled default or a
+// previous upload) was showing. Only ever runs in response to the user
+// explicitly picking or dropping files.
 async function loadModelFromFiles(files) {
   const objFile = files.find((f) => /\.obj$/i.test(f.name));
   if (!objFile) return;
@@ -2588,10 +2488,9 @@ async function loadModelFromFiles(files) {
 // one-time cinematic drop into place on load, not a quick UI-driven reset.
 const MODEL_LOAD_ROTATION_INTRO_MS = 3000;
 
-// Bundled default model (public/models/), shown on startup instead of the
-// built-in procedural cube — same parse/apply path as a manual upload, just
-// fetched from a static asset instead of picked/dropped by the user. "Show
-// default cube" still works afterward since it just flips useCustomModel.
+// Bundled default model (public/models/), shown on startup — same
+// parse/apply path as a manual upload, just fetched from a static asset
+// instead of picked/dropped by the user.
 async function loadBundledDefaultModel() {
   try {
     const [objText, mtlText] = await Promise.all([
@@ -2636,11 +2535,6 @@ async function loadBundledDefaultModel() {
   } catch (err) {
     console.error(err);
   }
-}
-
-function setUseCustomModel(checked) {
-  useCustomModel = customModelReady && checked;
-  notifyModelState();
 }
 
 // Drag-and-drop a .obj (+ optional .mtl) anywhere on the page as an
@@ -4311,33 +4205,31 @@ function renderCubeFrame() {
   gl.uniform1f(uPlusArmHalf, plusArmHalf);
   gl.uniform1f(uPlusThickness, plusArmHalf * PLUS_THICKNESS_RATIO);
 
-  const showCustomModel = useCustomModel && customModelReady;
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelPositionBuffer : cubePositionBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelPositionBuffer);
   gl.enableVertexAttribArray(aPosition);
   gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelNormalBuffer : cubeNormalBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelNormalBuffer);
   gl.enableVertexAttribArray(aNormal);
   gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelColorBuffer : cubeColorBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelColorBuffer);
   gl.enableVertexAttribArray(aColor);
   gl.vertexAttribPointer(aColor, 3, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelIsGreenBuffer : cubeIsGreenBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelIsGreenBuffer);
   gl.enableVertexAttribArray(aIsGreen);
   gl.vertexAttribPointer(aIsGreen, 1, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelFillPatternBuffer : cubeFillPatternBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelFillPatternBuffer);
   gl.enableVertexAttribArray(aFillPattern);
   gl.vertexAttribPointer(aFillPattern, 1, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelFlowCoordBuffer : cubeFlowCoordBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelFlowCoordBuffer);
   gl.enableVertexAttribArray(aFlowCoord);
   gl.vertexAttribPointer(aFlowCoord, 1, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelFlowPathLenBuffer : cubeFlowPathLenBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelFlowPathLenBuffer);
   gl.enableVertexAttribArray(aFlowPathLen);
   gl.vertexAttribPointer(aFlowPathLen, 1, gl.FLOAT, false, 0, 0);
 
@@ -4353,7 +4245,7 @@ function renderCubeFrame() {
   // once here and reused for both the face pass (cubeProgram, below) and the
   // line pass (lineProgram, further down) rather than reading anything back
   // from the GPU.
-  const flowActive = blueprintEnabled && showCustomModel && modelFlowPaths.length > 0;
+  const flowActive = blueprintEnabled && customModelReady && modelFlowPaths.length > 0;
   let flowSigma = 0.02;
   const flowPulseCentersArray = flowPulseCentersScratch;
   const flowPulseCount = Math.min(FLOW_PULSE_FREQUENCY_MAX, Math.max(1, Math.round(flowPulseFrequencyValue)));
@@ -4414,12 +4306,7 @@ function renderCubeFrame() {
       BLUEPRINT_FLOW_COLOR[1] * glowIntensity,
       BLUEPRINT_FLOW_COLOR[2] * glowIntensity,
     );
-    if (showCustomModel) {
-      gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
-    } else {
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
-      gl.drawElements(gl.TRIANGLES, CUBE_INDICES.length, gl.UNSIGNED_SHORT, 0);
-    }
+    gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
     gl.uniform1i(uGlowOnly, 0);
     gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
 
@@ -4448,12 +4335,10 @@ function renderCubeFrame() {
     gl.polygonOffset(1, 1);
   }
 
-  if (showCustomModel) {
-    gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
-  } else {
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
-    gl.drawElements(gl.TRIANGLES, CUBE_INDICES.length, gl.UNSIGNED_SHORT, 0);
-  }
+  // customModelVertexCount is 0 until a model's actually loaded (see
+  // customModelReady/applyParsedModel), so this is a no-op draw call rather
+  // than needing an explicit readiness guard — nothing renders until then.
+  gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
 
   // Camera-target bounding-box overlay (see showCameraTargetBoxes/
   // buildBoxGeometry above) — independent of blueprint mode, since it's a
@@ -4461,7 +4346,7 @@ function renderCubeFrame() {
   // geometry (actual modelView/cubeProjection), drawn right after the
   // opaque fill pass so its depth test correctly hides the far side behind
   // whatever the model itself already occludes.
-  if (showCameraTargetBoxes && showCustomModel) {
+  if (showCameraTargetBoxes && customModelReady) {
     const targetNames = [...new Set(cameraTargetSlots.filter(Boolean))];
     if (targetNames.length > 0) {
       gl.useProgram(lineProgram);
@@ -4507,15 +4392,15 @@ function renderCubeFrame() {
     gl.uniformMatrix4fv(uLineProjection, false, cubeProjection);
     gl.uniform1f(uLineAlpha, 1.0);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelLineBuffer : cubeLineBuffer);
+    gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineBuffer);
     gl.enableVertexAttribArray(aLinePosition);
     gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, showCustomModel ? customModelLineColorBuffer : cubeLineColorBuffer);
+    gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineColorBuffer);
     gl.enableVertexAttribArray(aLineColor);
     gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 0, 0);
 
-    gl.drawArrays(gl.LINES, 0, showCustomModel ? customModelLineVertexCount : cubeLineVertexCount);
+    gl.drawArrays(gl.LINES, 0, customModelLineVertexCount);
 
     // Draw every finalized arrow, plus the in-progress drag (if any), as a
     // bold guide ribbon (with an arrowhead marking its direction) on top, so
@@ -5103,8 +4988,8 @@ loadBundledDefaultModel();
 // control panel (src/panel.tsx, a React/coss-ui component tree that owns its
 // own UI state). `getInitialState` seeds the panel on mount; `subscribe`
 // delivers changes this module makes on its own (a model finishing upload
-// flips `useCustomModel`/`customModelReady`/`cubeModelStatus`); the rest are
-// the setters the panel calls in response to user interaction.
+// flips `customModelReady`/`cubeModelStatus`); the rest are the setters the
+// panel calls in response to user interaction.
 export const controls = {
   getInitialState() {
     return {
@@ -5198,7 +5083,6 @@ export const controls = {
   setDotSizePercent,
   setPlusFrequency,
   setPlusSizePercent,
-  setUseCustomModel,
   loadModelFiles: (files) => loadModelFromFiles(files),
   setModelFlowDraw,
   setModelFlowSelectMode,

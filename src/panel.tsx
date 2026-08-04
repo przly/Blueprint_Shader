@@ -330,18 +330,6 @@ export function Panel() {
                 Load model…
               </Button>
               <span className="text-muted-foreground text-xs">or drop .obj/.mtl anywhere</span>
-              <Label className="gap-2.5 text-xs">
-                <Switch
-                  checked={!state.useCustomModel}
-                  disabled={!state.customModelReady}
-                  onCheckedChange={(checked: boolean) => {
-                    const useCustomModel = !checked;
-                    controls.setUseCustomModel(useCustomModel);
-                    setState((s) => ({ ...s, useCustomModel }));
-                  }}
-                />
-                Show default cube
-              </Label>
               <span className="text-muted-foreground text-xs">{state.cubeModelStatus}</span>
             </div>
 
