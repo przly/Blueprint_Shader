@@ -2216,12 +2216,22 @@ function restoreCameraTargetActiveIndex() {
 // Set via "edit default position" mode (see editingDefaultView below) —
 // unlike a Camera Target's auto-framing, there's no target object to frame
 // here, so the only way to define this one is to let the user manually
-// park the free camera wherever they want and capture that directly. null
-// until one's ever been saved, in which case going to the default view is
-// a no-op and load just leaves pan/zoom at their own plain defaults (0/0/0,
-// 100%).
+// park the free camera wherever they want and capture that directly.
+// null until applyParsedModel/loadBundledDefaultModel's restoreDefaultCameraView
+// call seeds it — see BAKED_DEFAULT_CAMERA_VIEW below for what a fresh
+// browser (nothing in localStorage yet) gets seeded with.
 let defaultCameraView = null; // { offsetX, offsetY, offsetZ, sizePercent } | null
 const DEFAULT_CAMERA_VIEW_STORAGE_KEY = 'iconMosaic.defaultCameraView';
+
+// Ships with the app so a fresh browser lands on a deliberately composed
+// default view instead of the plain centered/100% whole-scene one — same
+// "hand-set once, then baked into source" idea as DEFAULT_MODEL_FLOW_PATH_DATA
+// above, captured the same way (`copy(localStorage.getItem('iconMosaic.defaultCameraView'))`
+// in the console after using "Edit default position"). Only ever a fallback:
+// restoreDefaultCameraView still prefers whatever's in localStorage, so a
+// user's own saved default (via "Edit default position") continues to
+// override this the moment they set one.
+const BAKED_DEFAULT_CAMERA_VIEW = { offsetX: -5.17360464543138, offsetY: 0, offsetZ: 20.631551421416827, sizePercent: 17.345816691087055 };
 
 function persistDefaultCameraView(view) {
   if (view) localStorage.setItem(DEFAULT_CAMERA_VIEW_STORAGE_KEY, JSON.stringify(view));
@@ -2230,13 +2240,13 @@ function persistDefaultCameraView(view) {
 
 function restoreDefaultCameraView() {
   const raw = localStorage.getItem(DEFAULT_CAMERA_VIEW_STORAGE_KEY);
-  if (!raw) return null;
+  if (!raw) return BAKED_DEFAULT_CAMERA_VIEW;
   try {
     const parsed = JSON.parse(raw);
     const fieldsOk = ['offsetX', 'offsetY', 'offsetZ', 'sizePercent'].every((key) => typeof parsed?.[key] === 'number');
-    return fieldsOk ? parsed : null;
+    return fieldsOk ? parsed : BAKED_DEFAULT_CAMERA_VIEW;
   } catch {
-    return null;
+    return BAKED_DEFAULT_CAMERA_VIEW;
   }
 }
 
