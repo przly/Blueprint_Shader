@@ -2187,27 +2187,6 @@ let cameraTargetSlots = [null, null, null];
 let cameraTargetActiveIndex = null;
 let cameraTargetCurrent = [0, 0, 0];
 
-// Remembers which slot (if any) was active across a reload — 'none' is
-// stored distinctly from a missing key so an explicit "Reset view" stays
-// reset next load, rather than being indistinguishable from "never chosen"
-// (which instead falls back to the baked-in default view, if any — see
-// loadBundledDefaultModel).
-const CAMERA_TARGET_ACTIVE_STORAGE_KEY = 'iconMosaic.cameraTargetActiveIndex';
-
-function persistCameraTargetActiveIndex(index) {
-  localStorage.setItem(CAMERA_TARGET_ACTIVE_STORAGE_KEY, index === null ? 'none' : String(index));
-}
-
-// Returns the persisted slot index, null for an explicit "no target", or
-// undefined if nothing has ever been persisted (fresh browser).
-function restoreCameraTargetActiveIndex() {
-  const raw = localStorage.getItem(CAMERA_TARGET_ACTIVE_STORAGE_KEY);
-  if (raw === null) return undefined;
-  if (raw === 'none') return null;
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 2 ? parsed : undefined;
-}
-
 // A 4th, freeform baked-in camera pan+zoom alongside the 3 named Camera
 // Targets above — captures modelOffsetXPercent/Y/Z (the manual pan) and
 // cubeSizePercent (zoom) only, deliberately never rotation: "going to
@@ -2215,40 +2194,22 @@ function restoreCameraTargetActiveIndex() {
 // going to a Camera Target (see goToCameraTarget's own comment on that).
 // Set via "edit default position" mode (see editingDefaultView below) —
 // unlike a Camera Target's auto-framing, there's no target object to frame
-// here, so the only way to define this one is to let the user manually
-// park the free camera wherever they want and capture that directly.
-// null until applyParsedModel/loadBundledDefaultModel's restoreDefaultCameraView
-// call seeds it — see BAKED_DEFAULT_CAMERA_VIEW below for what a fresh
-// browser (nothing in localStorage yet) gets seeded with.
+// here, so the only way to define this one is to let the user manually park
+// the free camera wherever they want and capture that directly. Starts at
+// BAKED_DEFAULT_CAMERA_VIEW (below) and, like cameraTargetActiveIndex,
+// deliberately session-only from there — re-editing it via "Edit default
+// position" updates this in memory for the rest of the session but is never
+// persisted, so a reload always lands back on the baked-in value rather than
+// whatever was last edited.
 let defaultCameraView = null; // { offsetX, offsetY, offsetZ, sizePercent } | null
-const DEFAULT_CAMERA_VIEW_STORAGE_KEY = 'iconMosaic.defaultCameraView';
 
-// Ships with the app so a fresh browser lands on a deliberately composed
+// Ships with the app so a fresh load lands on a deliberately composed
 // default view instead of the plain centered/100% whole-scene one — same
 // "hand-set once, then baked into source" idea as DEFAULT_MODEL_FLOW_PATH_DATA
-// above, captured the same way (`copy(localStorage.getItem('iconMosaic.defaultCameraView'))`
-// in the console after using "Edit default position"). Only ever a fallback:
-// restoreDefaultCameraView still prefers whatever's in localStorage, so a
-// user's own saved default (via "Edit default position") continues to
-// override this the moment they set one.
+// above, captured via `copy(localStorage.getItem('iconMosaic.defaultCameraView'))`
+// in the console after using "Edit default position" back when this was
+// still localStorage-persisted.
 const BAKED_DEFAULT_CAMERA_VIEW = { offsetX: -5.17360464543138, offsetY: 0, offsetZ: 20.631551421416827, sizePercent: 17.345816691087055 };
-
-function persistDefaultCameraView(view) {
-  if (view) localStorage.setItem(DEFAULT_CAMERA_VIEW_STORAGE_KEY, JSON.stringify(view));
-  else localStorage.removeItem(DEFAULT_CAMERA_VIEW_STORAGE_KEY);
-}
-
-function restoreDefaultCameraView() {
-  const raw = localStorage.getItem(DEFAULT_CAMERA_VIEW_STORAGE_KEY);
-  if (!raw) return BAKED_DEFAULT_CAMERA_VIEW;
-  try {
-    const parsed = JSON.parse(raw);
-    const fieldsOk = ['offsetX', 'offsetY', 'offsetZ', 'sizePercent'].every((key) => typeof parsed?.[key] === 'number');
-    return fieldsOk ? parsed : BAKED_DEFAULT_CAMERA_VIEW;
-  } catch {
-    return BAKED_DEFAULT_CAMERA_VIEW;
-  }
-}
 
 // Applies a saved view's pan+zoom (never rotation — see the comment above
 // defaultCameraView's declaration). Shared by goToDefaultCameraView,
@@ -2318,7 +2279,6 @@ function setEditingDefaultView(enabled) {
       offsetZ: modelOffsetZPercent,
       sizePercent: cubeSizePercent,
     };
-    persistDefaultCameraView(defaultCameraView);
   }
   notifyModelState();
 }
@@ -2448,7 +2408,6 @@ function setCameraTargetSlot(slotIndex, objectName) {
   cameraTargetSlots = cameraTargetSlots.map((v, i) => (i === slotIndex ? objectName || null : v));
   if (cameraTargetActiveIndex === slotIndex && !objectName) {
     cameraTargetActiveIndex = null;
-    persistCameraTargetActiveIndex(null);
   }
   notifyModelState();
 }
@@ -2481,7 +2440,6 @@ function goToCameraTarget(slotIndex) {
     cameraTargetSpringLastTime = null;
   }
   cameraTargetActiveIndex = slotIndex;
-  persistCameraTargetActiveIndex(slotIndex);
   notifyModelState();
 }
 
@@ -2489,7 +2447,6 @@ function goToCameraTarget(slotIndex) {
 // camera target driving the offset — see getCurrentCameraOffset.
 function resetCameraTarget() {
   cameraTargetActiveIndex = null;
-  persistCameraTargetActiveIndex(null);
   notifyModelState();
 }
 
@@ -2653,34 +2610,25 @@ async function loadBundledDefaultModel() {
       '2-For_Business',
       '3-For_Investors',
     ]);
-    // Land wherever the user last left the camera (see
-    // persistCameraTargetActiveIndex) rather than the whole-scene view
-    // applyParsedModel resets to (cameraTargetActiveIndex = null) — except
-    // on a genuinely fresh browser with nothing persisted yet, which now
-    // shows the baked-in default pan/zoom (see setEditingDefaultView)
-    // instead of auto-jumping to Target 1, if one's ever been saved;
-    // otherwise it just stays at the plain centered/100% whole-scene view.
-    // cameraTargetCurrent starts at [0,0,0] regardless, so the spring eases
-    // into a target's centroid/zoom from center on load instead of snapping
-    // there.
+    // Always lands on BAKED_DEFAULT_CAMERA_VIEW rather than whichever Camera
+    // Target the user had active last session — both that and
+    // defaultCameraView's own in-session edits are deliberately session-only
+    // (see their declarations), always starting fresh at the baked-in
+    // default view on load instead of persisting across a reload.
+    // cameraTargetCurrent starts at [0,0,0] regardless, so the spring would
+    // ease into a target's centroid/zoom from center on load rather than
+    // snapping there, if one ever were active this early.
     //
-    // Pan/zoom for whichever branch below is applied instantly, same as
-    // before; rotation always eases to the same fixed CUBE_ISO_PITCH/YAW
-    // baseline regardless of branch (defaultCameraView never carries
-    // rotation — see its own declaration comment; Camera Targets never did
-    // either), as a single bird's-eye -> resting-rotation tween — cubeRotX/Y
-    // start pinned to the bird's-eye pose (see their declaration) for
-    // exactly this: so the model's first look, once it's actually loaded,
-    // is dropping down into place rather than just appearing already framed.
-    defaultCameraView = restoreDefaultCameraView();
-    const restoredTargetIndex = restoreCameraTargetActiveIndex();
-    if (restoredTargetIndex === undefined) {
-      if (defaultCameraView) applyDefaultCameraViewPanZoom(defaultCameraView);
-    } else if (restoredTargetIndex !== null) {
-      goToCameraTarget(restoredTargetIndex);
-    } else if (defaultCameraView) {
-      applyDefaultCameraViewPanZoom(defaultCameraView);
-    }
+    // Pan/zoom is applied instantly, same as before; rotation always eases
+    // to the same fixed CUBE_ISO_PITCH/YAW baseline (defaultCameraView never
+    // carries rotation — see its own declaration comment; Camera Targets
+    // never did either), as a single bird's-eye -> resting-rotation tween —
+    // cubeRotX/Y start pinned to the bird's-eye pose (see their declaration)
+    // for exactly this: so the model's first look, once it's actually
+    // loaded, is dropping down into place rather than just appearing already
+    // framed.
+    defaultCameraView = BAKED_DEFAULT_CAMERA_VIEW;
+    applyDefaultCameraViewPanZoom(defaultCameraView);
     // suppressParallax: false — keep ambient hover tilt live through the
     // whole drop instead of freezing it (see cubeRotResetSuppressParallax).
     tweenCubeRotationTo(CUBE_ISO_PITCH, CUBE_ISO_YAW, MODEL_LOAD_ROTATION_INTRO_MS, false, EASE_INTRO_BEZIER);
