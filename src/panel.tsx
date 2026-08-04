@@ -122,6 +122,7 @@ export function Panel() {
   const undoArrowIconPress = useIconPressHandlers<UndoIconHandle>();
   const clearArrowsIconPress = useIconPressHandlers<XIconHandle>();
   const spaceIndicator = useTextSwap(!!state.spaceHeld, TEXT_SWAP_MS);
+  const photoIndicator = useTextSwap(!!state.photoMode, TEXT_SWAP_MS);
 
   useEffect(() => controls.subscribe((patch: object) => setState((s) => ({ ...s, ...patch }))), []);
 
@@ -232,7 +233,38 @@ export function Panel() {
       )}
 
       {panelPhase !== "closed" && (
-        <div className="pointer-events-none fixed bottom-6 left-1/2 z-10 -translate-x-1/2">
+        <div className="pointer-events-none fixed bottom-6 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
+          <div
+            className={cn(
+              "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
+              photoIndicator.displayed
+                ? "border-transparent bg-white text-black"
+                : "border-input bg-popover/80 text-foreground",
+              panelPhase === "open" && "is-open",
+              panelPhase === "closing" && "is-closing",
+            )}
+          >
+            <span
+              className={cn(
+                "t-text-swap",
+                photoIndicator.phase === "exit" && (state.photoMode ? "is-exit-up" : "is-exit-down"),
+                photoIndicator.phase === "enterStart" &&
+                  (state.photoMode ? "is-enter-from-bottom" : "is-enter-from-top"),
+              )}
+            >
+              {photoIndicator.displayed ? (
+                <>
+                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Enter</Kbd> to capture,{" "}
+                  <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">P</Kbd> to exit
+                </>
+              ) : (
+                <>
+                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">P</Kbd> for photo mode
+                </>
+              )}
+            </span>
+          </div>
+
           <div
             className={cn(
               "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",

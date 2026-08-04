@@ -799,7 +799,7 @@ gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, CUBE_INDICES, gl.STATIC_DRAW);
 // rather than down near the other uniform lookups.
 const BLUEPRINT_THEMES = {
   dark: {
-    bg: [0.02, 0.09, 0.2],
+    bg: [4 / 255, 28 / 255, 44 / 255], // #041C2C
     fill: [4 / 255, 28 / 255, 44 / 255], // #041C2C
     line: [124 / 255, 134 / 255, 142 / 255], // #7C868E
   },
@@ -1359,6 +1359,25 @@ function setHoverMovementPaused(value) {
   if (value) resetCubeRotation();
 }
 
+// "Photo mode": entered/left with the P key (see the keydown handler below)
+// to compose a clean shot before exporting — while active, ambient hover
+// parallax is locked out (same guard list as hoverMovementPaused/
+// editingDefaultView, see updateParallaxTargetFromPointer) and the
+// orientation is snapped to the default isometric angle via
+// resetCubeRotation, same as enabling "Pause hover movement" does. Unlike
+// hoverMovementPaused, this doesn't otherwise restrict drag-rotation/zoom/
+// pan — it only fixes the *starting* orientation and freezes hover, so
+// there's nothing to undo on exit.
+let photoMode = false;
+
+function setPhotoMode(value) {
+  value = !!value;
+  if (value === photoMode) return;
+  photoMode = value;
+  if (value) resetCubeRotation();
+  notifyModelState(); // drives the panel's bottom-center photo-mode indicator, same as spaceHeld
+}
+
 // "Disable rotation" control: click-and-drag rotation is off by default so
 // visitors can't accidentally spin the model away from its framed angle.
 let rotationDisabled = true;
@@ -1535,6 +1554,28 @@ window.addEventListener('keydown', (event) => {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   event.preventDefault();
   setModelFlowDraw(!modelFlowDrawMode);
+});
+
+// P is the same kind of plain toggle as A above, for photo mode (see
+// setPhotoMode/photoMode's own comment).
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyP' || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  setPhotoMode(!photoMode);
+});
+
+// Enter captures the photo while photo mode is active — a no-op otherwise,
+// so it never fights the browser's/panel's own default Enter behavior (e.g.
+// submitting a focused form control, which the input/textarea/select guard
+// below also excludes explicitly).
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'Enter' || !photoMode || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  capturePhoto();
 });
 
 // 1/2/3 jump straight to Camera Target 1/2/3 (see goToCameraTarget), same
@@ -1736,8 +1777,10 @@ function updateParallaxTargetFromPointer(event) {
   // do — see setEditingDefaultView: while parking the free camera for the
   // baked-in default, ambient tilt drifting the view around while the user
   // is trying to pan/zoom precisely would fight the exact composition
-  // they're lining up.
-  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld || editingDefaultView) return;
+  // they're lining up. photoMode locks it too, so the orientation stays at
+  // the fixed default isometric angle setPhotoMode snapped to — see its own
+  // comment.
+  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld || editingDefaultView || photoMode) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
   cubeParallaxTargetY = nx * CUBE_PARALLAX_MAX_RAD;
@@ -2346,6 +2389,7 @@ const CAMERA_TARGET_ZOOM_MAX = 5;
 function getModelState() {
   return {
     spaceHeld,
+    photoMode,
     rotationDisabled,
     // Included so schedulePanSync/flushPanSync's notifyModelState() (fired
     // continuously while Space-dragging) keeps the "Model X/Y position"
@@ -4817,6 +4861,50 @@ let canvasBaseHeight = 0;
 function applyCanvasSize() {
   canvas.width = Math.max(1, Math.round(canvasBaseWidth * renderScale));
   canvas.height = Math.max(1, Math.round(canvasBaseHeight * renderScale));
+}
+
+// Photo mode export (see photoMode/capturePhoto): the larger axis of the
+// exported PNG, in pixels — the other axis follows from the current
+// viewport's own aspect ratio (window.innerWidth/innerHeight), so the photo
+// frames identically to whatever's on screen, just at a fixed high
+// resolution instead of whatever DPR/renderScale the live canvas happens to
+// be running at.
+const PHOTO_EXPORT_MAX_DIMENSION = 3840;
+
+// Temporarily renders one frame at PHOTO_EXPORT_MAX_DIMENSION resolution and
+// downloads it as a PNG, then restores the live backing-store size. Resizing
+// `canvas.width`/`height` (rather than adding a separate offscreen canvas)
+// keeps this on the exact same draw path — gl.viewport in renderCubeFrame
+// reads canvas.width/height directly — and since the target keeps the
+// current window's aspect ratio, cubeProjectionHalfX/Y (set for that same
+// aspect by the last resize()) are already correct with no need to
+// recompute them.
+//
+// canvas.toBlob snapshots the drawing buffer synchronously at the moment
+// it's called (the actual PNG encode happens async, off that snapshot) —
+// gl was created without preserveDrawingBuffer, so this only works because
+// the resize-back below runs after that synchronous snapshot, not before.
+function capturePhoto() {
+  const aspect = window.innerWidth / window.innerHeight;
+  canvas.width = aspect >= 1 ? PHOTO_EXPORT_MAX_DIMENSION : Math.round(PHOTO_EXPORT_MAX_DIMENSION * aspect);
+  canvas.height = aspect >= 1 ? Math.round(PHOTO_EXPORT_MAX_DIMENSION / aspect) : PHOTO_EXPORT_MAX_DIMENSION;
+  renderCubeFrame();
+
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `bluprint-model-${Date.now()}.png`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, 'image/png');
+
+  // Back to the live resolution immediately, so nothing looks broken on the
+  // next composite — see the function comment above for why this is safe to
+  // do before the async encode above has actually finished.
+  applyCanvasSize();
+  renderCubeFrame();
 }
 
 function resize() {
