@@ -123,6 +123,7 @@ export function Panel() {
   const clearArrowsIconPress = useIconPressHandlers<XIconHandle>();
   const spaceIndicator = useTextSwap(!!state.spaceHeld, TEXT_SWAP_MS);
   const photoIndicator = useTextSwap(!!state.photoMode, TEXT_SWAP_MS);
+  const flowDrawIndicator = useTextSwap(!!state.modelFlowDrawMode, TEXT_SWAP_MS);
 
   useEffect(() => controls.subscribe((patch: object) => setState((s) => ({ ...s, ...patch }))), []);
 
@@ -234,6 +235,52 @@ export function Panel() {
 
       {panelPhase !== "closed" && (
         <div className="pointer-events-none fixed bottom-6 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
+          <button
+            className={cn(
+              "t-fade-center pointer-events-auto cursor-pointer overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
+              flowDrawIndicator.displayed
+                ? "border-transparent bg-white text-black"
+                : "border-input bg-popover/80 text-foreground",
+              panelPhase === "open" && "is-open",
+              panelPhase === "closing" && "is-closing",
+            )}
+            onClick={() => {
+              const next = !state.modelFlowDrawMode;
+              controls.setModelFlowDraw(next);
+              // main.js resets position on enable, and disables rotation
+              // again on disable — mirror that here too, same as the
+              // dedicated "Reset position"/rotation controls do.
+              setState((s) => ({
+                ...s,
+                modelFlowDrawMode: next,
+                modelOffsetX: next ? 0 : s.modelOffsetX,
+                modelOffsetY: next ? 0 : s.modelOffsetY,
+                rotationDisabled: next ? s.rotationDisabled : true,
+              }));
+            }}
+            type="button"
+          >
+            <span
+              className={cn(
+                "t-text-swap",
+                flowDrawIndicator.phase === "exit" && (state.modelFlowDrawMode ? "is-exit-up" : "is-exit-down"),
+                flowDrawIndicator.phase === "enterStart" &&
+                  (state.modelFlowDrawMode ? "is-enter-from-bottom" : "is-enter-from-top"),
+              )}
+            >
+              {flowDrawIndicator.displayed ? (
+                <>
+                  Click to draw, double-click to finish,{" "}
+                  <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">A</Kbd> to exit
+                </>
+              ) : (
+                <>
+                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">A</Kbd> for flow draw mode
+                </>
+              )}
+            </span>
+          </button>
+
           <div
             className={cn(
               "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
@@ -813,27 +860,6 @@ export function Panel() {
             <h2 className="font-semibold text-base text-foreground">Flow Controls</h2>
 
             <div className="flex flex-wrap items-center gap-4">
-              <Button
-                onClick={() => {
-                  const next = !state.modelFlowDrawMode;
-                  controls.setModelFlowDraw(next);
-                  // main.js resets position on enable, and disables rotation
-                  // again on disable — mirror that here too, same as the
-                  // dedicated "Reset position"/rotation controls do.
-                  setState((s) => ({
-                    ...s,
-                    modelFlowDrawMode: next,
-                    modelOffsetX: next ? 0 : s.modelOffsetX,
-                    modelOffsetY: next ? 0 : s.modelOffsetY,
-                    rotationDisabled: next ? s.rotationDisabled : true,
-                  }));
-                }}
-                size="xs"
-                variant={state.modelFlowDrawMode ? "default" : "outline"}
-              >
-                Flow Draw Mode
-                <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">A</Kbd>
-              </Button>
               <Label className="gap-2.5 text-xs">
                 <Switch
                   checked={state.showModelFlowArrow}
