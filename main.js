@@ -1405,6 +1405,19 @@ window.addEventListener('keydown', (event) => {
   setModelFlowDraw(!modelFlowDrawMode);
 });
 
+// 1/2/3 jump straight to Camera Target 1/2/3 (see goToCameraTarget), same
+// shortcut as each target's own "Go" button in the panel.
+const CAMERA_TARGET_DIGIT_KEYS = { Digit1: 0, Digit2: 1, Digit3: 2 };
+window.addEventListener('keydown', (event) => {
+  const slotIndex = CAMERA_TARGET_DIGIT_KEYS[event.code];
+  if (slotIndex === undefined || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (!cameraTargetSlots[slotIndex]) return; // nothing assigned to this slot yet
+  event.preventDefault();
+  goToCameraTarget(slotIndex);
+});
+
 // Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
 // and out, reusing the exact same underlying scale as the "Model size"
 // slider (see applyCubeSizePercent) — so it zooms into the pivot crosshair
