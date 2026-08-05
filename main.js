@@ -160,36 +160,6 @@ function setFlowPulseFrequency(value) {
 // FLOW_PULSE_FREQUENCY_MAX, the slider's own cap).
 const flowPulseCentersScratch = new Float32Array(FLOW_PULSE_FREQUENCY_MAX);
 
-// Glow/bloom controls (see the glow-only render pass + two-pass blur in
-// renderCubeFrame). Intensity boosts the glow source's brightness before
-// blurring — blurring a small bright dot spreads its energy over a much
-// larger area, dimming its peak proportionally, so this compensates to keep
-// the bloom actually visible rather than washed out — without touching the
-// pulse's own on-model color. Size scales the blur's sample spread (see
-// uBloomSpread in BLUR_FRAGMENT_SHADER) — bigger spread reads as a wider,
-// softer glow.
-const GLOW_INTENSITY_MIN = 100;
-const GLOW_INTENSITY_MAX = 1000;
-let glowIntensityPercent = restoreNumber('glowIntensity', 400);
-
-function setGlowIntensityPercent(value) {
-  const clamped = Math.max(GLOW_INTENSITY_MIN, Math.min(GLOW_INTENSITY_MAX, value));
-  glowIntensityPercent = clamped;
-  persistNumber('glowIntensity', clamped);
-  return clamped;
-}
-
-const GLOW_SIZE_MIN = 25;
-const GLOW_SIZE_MAX = 400;
-let glowSizePercent = restoreNumber('glowSize', 100);
-
-function setGlowSizePercent(value) {
-  const clamped = Math.max(GLOW_SIZE_MIN, Math.min(GLOW_SIZE_MAX, value));
-  glowSizePercent = clamped;
-  persistNumber('glowSize', clamped);
-  return clamped;
-}
-
 // The loaded model's size, as a percentage multiplier on top of CUBE_SCALE
 // (see renderCubeFrame) — 100 (the default) = CUBE_SCALE unchanged, up to
 // 1000 = 10x that.
@@ -482,12 +452,6 @@ const CUBE_FRAGMENT_SHADER = `
   uniform float uPlusFrequency;
   uniform float uPlusArmHalf;
   uniform float uPlusThickness;
-  // When true, skip all normal shading and output just the flow pulse's own
-  // color/intensity (black everywhere else) — used for a separate low-res
-  // render pass (see renderCubeFrame/BLOOM_DOWNSCALE) that gets blurred and
-  // added back additively over the real frame, for actual light-bleed bloom
-  // instead of the pulse just being a bright patch on the model's own faces.
-  uniform bool uGlowOnly;
 
   // Shared by all three fill patterns below (lines/dots/plus): projects
   // object-space position onto the two axes spanning the face (dropping
@@ -585,8 +549,7 @@ const CUBE_FRAGMENT_SHADER = `
   // ever drawn on get a negative aFlowCoord (see recomputeModelFlowCoords) so
   // they never light up, rather than defaulting to 0 and falsely flashing
   // whenever the pulse happens to pass near the start of some other part's
-  // arrow. Shared by the normal shaded pass and the glow-only bloom-source
-  // pass below.
+  // arrow.
   //
   // Comet shape rather than a symmetric Gaussian band: d>0 is ahead of the
   // pulse center in the direction of travel (increasing vFlowCoord, same
@@ -618,12 +581,9 @@ const CUBE_FRAGMENT_SHADER = `
   // ground-parallel tube keeps its full length on screen from a bird's-eye
   // view, but a vertical one is now pointing straight at the camera). Once
   // a sigma that's a fixed WORLD size gets squeezed into a fraction of a
-  // pixel by either effect, it can't be sampled correctly — and boosted by
-  // "Glow intensity" and spread by the bloom blur, that undersampling is
-  // exactly the blocky/double-lobed look reported at steep angles and far
-  // zoom. Widening the sigma here keeps the pulse resolvable to begin with,
-  // instead of compensating for it after the fact with more bloom
-  // resolution (see BLOOM_SUPERSAMPLE).
+  // pixel by either effect, it can't be sampled correctly, which is exactly
+  // the blocky/double-lobed look reported at steep angles and far zoom.
+  // Widening the sigma here keeps the pulse resolvable to begin with.
   const float FLOW_MIN_SIGMA_PX = 1.0;
   float flowPulseIntensity() {
     if (!(uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0)) return 0.0;
@@ -654,14 +614,6 @@ const CUBE_FRAGMENT_SHADER = `
   }
 
   void main() {
-    if (uGlowOnly) {
-      // uFlowColor is pre-boosted (see the "Glow intensity" slider in
-      // renderCubeFrame) brighter than what's actually drawn on the model, since blurring
-      // dims the peak — everything else renders black so the blur only
-      // picks up the pulse itself, not the model's own fill/wireframe.
-      gl_FragColor = vec4(uFlowColor * flowPulseIntensity(), 1.0);
-      return;
-    }
     float diff = max(dot(normalize(vNormal), normalize(uLightDir)), 0.0) * uLightIntensity;
     float brightness = 0.2 + diff * 0.8;
     // Blueprint mode: ignore the material/cube color entirely and shade a
@@ -889,7 +841,6 @@ const uDotRadius = gl.getUniformLocation(cubeProgram, 'uDotRadius');
 const uPlusFrequency = gl.getUniformLocation(cubeProgram, 'uPlusFrequency');
 const uPlusArmHalf = gl.getUniformLocation(cubeProgram, 'uPlusArmHalf');
 const uPlusThickness = gl.getUniformLocation(cubeProgram, 'uPlusThickness');
-const uGlowOnly = gl.getUniformLocation(cubeProgram, 'uGlowOnly');
 
 const aLinePosition = gl.getAttribLocation(lineProgram, 'aLinePosition');
 const aLineColor = gl.getAttribLocation(lineProgram, 'aLineColor');
@@ -4319,292 +4270,6 @@ function drawAxisGizmo(rx, ry) {
   }
 }
 
-// Real bloom for the flow pulse (see uGlowOnly in CUBE_FRAGMENT_SHADER):
-// render just the pulse's own color/intensity — nothing else — to a small
-// offscreen texture (BLOOM_DOWNSCALE below full resolution, cheap to blur),
-// then build a small mip chain from it (BLOOM_MIP_LEVELS below, plus the
-// downsample/blur/upsample loop in renderCubeFrame) and composite the
-// summed result additively over the finished frame. Unlike the earlier
-// in-shader "wider Gaussian" approximation, this actually bleeds light
-// across the model's silhouette rather than just widening the lit patch on
-// the pulse's own faces.
-//
-// A single-scale blur only ever produces one blob size — real bloom is the
-// sum of several. Each mip level here is half the size of the one above
-// it, so the same one-pass 5-tap blur reaches proportionally further at
-// every level: the base level stays a tight, bright core, and each deeper
-// level adds a progressively softer, wider halo on top of it (see the
-// upsample-and-add loop in renderCubeFrame). This also sidesteps the
-// undersampling that made a single very wide blur look blocky — by the
-// time a deep level gets blurred, its content has already been smoothed by
-// every downsample step above it, so there's no sharp detail left to alias.
-//
-// The glow-only source draw is also the *only* place in this app that
-// loses antialiasing: the main scene renders straight to the canvas's own
-// default framebuffer, which gets real MSAA from the `antialias: true`
-// context flag, but this pass renders into a plain offscreen texture,
-// which WebGL1 can't multisample at all. A pulse that's small on screen —
-// zoomed out, far from the camera, or (this turns out to matter just as
-// much) *foreshortened* by the camera angle, like a vertical tube seen
-// from nearly straight above — can end up only a texel or two wide in an
-// unantialiased buffer, so it aliases into hard on/off blocks. The mip
-// chain below, however smooth, can only spread that blocky shape around;
-// it can't remove blockiness that's already baked into what it's blurring.
-// Matching the base level's resolution to the canvas's own (BLOOM_DOWNSCALE
-// = 1, no downscale) helps but isn't sufficient on its own — foreshortening
-// can shrink a tube's on-screen width well below one canvas pixel even at
-// 1:1, no zooming out required. BLOOM_SUPERSAMPLE (below) is what actually
-// buys headroom against that: rendering higher than the base resolution
-// and filtering back down is the standard fix for aliasing that survives
-// at native res, in any WebGL version, with no extension to depend on.
-const BLOOM_DOWNSCALE = 1;
-
-// The glow-only pass renders at BLOOM_SUPERSAMPLE times the base level's
-// resolution (bloomSuperSource, below) and gets filtered back down to the
-// base level (bloomSource) through the same multi-tap box downsample used
-// between mip levels (see drawDownsamplePass/DOWNSAMPLE_FRAGMENT_SHADER) —
-// this is what actually antialiases the source, since neither this app's
-// WebGL1 context nor a plain offscreen texture can multisample. 2 is the
-// standard SSAA factor: enough to resolve a foreshortened tube's silhouette
-// cleanly without the cost exploding (it's one extra draw of the same
-// glow-only geometry, at 4x the base level's pixel count).
-const BLOOM_SUPERSAMPLE = 2;
-
-// Mip levels beyond the base (bloomSource) — each half the size of the one
-// before it. 4 is the sweet spot real-time renderers converge on for this
-// technique: enough levels for a convincingly soft, wide falloff, without
-// piling up framebuffer-switch overhead from too many tiny passes.
-const BLOOM_MIP_LEVELS = 4;
-
-// Creates an RGBA render target (texture + the framebuffer that renders into
-// it) at the given size, with its own depth renderbuffer attached — the
-// glow-only pass (see below) needs real depth testing too, so a pulse on a
-// part of the model that's actually hidden behind another part doesn't
-// still bleed bloom through it. LINEAR filtering lets the blur shader's
-// bilinear sampling do half its work for free (see BLUR_FRAGMENT_SHADER's
-// 5-tap offsets, which rely on it) and doubles as the mip chain's
-// downsample/upsample filter. CLAMP_TO_EDGE avoids wrap-around bleeding at
-// the downsampled texture's edges.
-function createRenderTarget(width, height) {
-  const texture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  const depthBuffer = gl.createRenderbuffer();
-  gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
-  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
-  const framebuffer = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return { texture, framebuffer, depthBuffer, width, height };
-}
-
-function deleteRenderTarget(target) {
-  gl.deleteTexture(target.texture);
-  gl.deleteFramebuffer(target.framebuffer);
-  gl.deleteRenderbuffer(target.depthBuffer);
-}
-
-// Recreated lazily whenever the canvas's backing-store size changes (see
-// ensureBloomTargets, called each frame from renderCubeFrame) rather than
-// tied into resize()/applyCanvasSize directly, since renderScale (dynamic
-// resolution scaling) changes canvas.width/height independently of a real
-// window resize.
-let bloomSuperSource = null; // the glow-only pass actually renders here, at BLOOM_SUPERSAMPLE times bloomSource's resolution — antialiasing headroom, filtered away by the downsample into bloomSource right after
-let bloomSource = null; // bloomSuperSource downsampled to 1/BLOOM_DOWNSCALE of canvas resolution — the mip chain's base level, and by the end of the bloom block, the final summed result
-let bloomBlurA = null; // horizontal-blur scratch buffer for the base level (see renderCubeFrame)
-let bloomWidth = 0;
-let bloomHeight = 0;
-// bloomMips[i] = { primary, scratch } for mip level i+1 — primary holds
-// that level's downsampled-then-blurred content (and later, on the way
-// back up, the running sum of every level below it); scratch is just the
-// horizontal-blur intermediate, same trick as bloomBlurA.
-let bloomMips = [];
-// Set at the end of the bloom block in renderCubeFrame (always bloomSource
-// — the mip chain's base level doubles as the accumulator), read by the
-// composite draw later in that same function.
-let bloomResult = null;
-
-function ensureBloomTargets() {
-  const w = Math.max(1, Math.round(canvas.width / BLOOM_DOWNSCALE));
-  const h = Math.max(1, Math.round(canvas.height / BLOOM_DOWNSCALE));
-  if (w === bloomWidth && h === bloomHeight && bloomSource) return;
-  bloomWidth = w;
-  bloomHeight = h;
-  if (bloomSource) {
-    deleteRenderTarget(bloomSuperSource);
-    deleteRenderTarget(bloomSource);
-    deleteRenderTarget(bloomBlurA);
-    for (const mip of bloomMips) {
-      deleteRenderTarget(mip.primary);
-      deleteRenderTarget(mip.scratch);
-    }
-  }
-  bloomSuperSource = createRenderTarget(w * BLOOM_SUPERSAMPLE, h * BLOOM_SUPERSAMPLE);
-  bloomSource = createRenderTarget(w, h);
-  bloomBlurA = createRenderTarget(w, h);
-  bloomMips = [];
-  let mw = w;
-  let mh = h;
-  for (let i = 0; i < BLOOM_MIP_LEVELS; i++) {
-    mw = Math.max(1, Math.round(mw / 2));
-    mh = Math.max(1, Math.round(mh / 2));
-    bloomMips.push({ primary: createRenderTarget(mw, mh), scratch: createRenderTarget(mw, mh) });
-  }
-}
-
-// Fullscreen-triangle vertex shader shared by the blur and composite passes
-// below — a single triangle that overshoots the [-1,1] clip-space square on
-// two sides is the standard trick to cover the viewport with no seam down
-// the middle (unlike two triangles sharing a diagonal edge).
-const POST_VERTEX_SHADER = `
-  attribute vec2 aPostPosition;
-  varying vec2 vUv;
-  void main() {
-    vUv = aPostPosition * 0.5 + 0.5;
-    gl_Position = vec4(aPostPosition, 0.0, 1.0);
-  }
-`;
-
-// Separable Gaussian blur, one direction per draw call (uDirection is (1,0)
-// for the horizontal pass, (0,1) for the vertical one) — the classic 5-tap
-// linear-sampled approximation (weights/offsets from the well-known
-// "efficient Gaussian blur with linear sampling" technique), which gets a
-// 9-tap-wide blur out of 5 texture reads by landing each sample between two
-// texels and letting the GPU's bilinear filtering blend them. Also doubles
-// as the final composite copy (see renderCubeFrame): with uDirection at
-// (0,0) every offset collapses to zero and the weights still sum to 1, so
-// it passes the texture through unblurred.
-const BLUR_FRAGMENT_SHADER = `
-  precision mediump float;
-  varying vec2 vUv;
-  uniform sampler2D uTexture;
-  uniform vec2 uTexelSize;
-  uniform vec2 uDirection;
-  // "Glow size" — scales how far apart the taps sample, widening/narrowing
-  // the blur's spread. Harmless for the composite pass too: that one always
-  // passes direction (0,0), so the offsets collapse to zero regardless.
-  uniform float uBloomSpread;
-  void main() {
-    vec2 off1 = uDirection * uTexelSize * uBloomSpread * 1.3846153846;
-    vec2 off2 = uDirection * uTexelSize * uBloomSpread * 3.2307692308;
-    vec4 sum = texture2D(uTexture, vUv) * 0.2270270270;
-    sum += texture2D(uTexture, vUv + off1) * 0.3162162162;
-    sum += texture2D(uTexture, vUv - off1) * 0.3162162162;
-    sum += texture2D(uTexture, vUv + off2) * 0.0702702703;
-    sum += texture2D(uTexture, vUv - off2) * 0.0702702703;
-    gl_FragColor = sum;
-  }
-`;
-
-// Downsample filter used between mip levels (see the bloomMips loop in
-// renderCubeFrame) — deliberately NOT the same single-tap trick the
-// composite/copy passes use (uDirection (0,0) on BLUR_FRAGMENT_SHADER).
-// A single bilinear sample is only a correct box-average of the 2x2 texels
-// it lands on; it says nothing about the texels *outside* that footprint.
-// That's fine for already-broad content, but the flow pulse's "core" lobe
-// (see FLOW_COMET_CORE_BOOST) can be a genuinely small, bright, compact
-// feature — and a small feature that happens to straddle two sample
-// positions across a chain of four successive halvings can get its energy
-// split unevenly between them, resurfacing later as two separate blobs
-// with a dark gap between instead of one smooth peak once everything's
-// summed back up. Sampling the four texels diagonally around the center
-// too (the standard "COD-style" downsample box) means every source texel
-// within a 4x4 neighborhood contributes to some destination texel, so a
-// small bright feature can't fall in the gap between samples.
-const DOWNSAMPLE_FRAGMENT_SHADER = `
-  precision mediump float;
-  varying vec2 vUv;
-  uniform sampler2D uTexture;
-  uniform vec2 uTexelSize;
-  void main() {
-    vec4 sum = texture2D(uTexture, vUv) * 4.0;
-    sum += texture2D(uTexture, vUv + uTexelSize * vec2(-1.0, -1.0));
-    sum += texture2D(uTexture, vUv + uTexelSize * vec2( 1.0, -1.0));
-    sum += texture2D(uTexture, vUv + uTexelSize * vec2(-1.0,  1.0));
-    sum += texture2D(uTexture, vUv + uTexelSize * vec2( 1.0,  1.0));
-    gl_FragColor = sum / 8.0;
-  }
-`;
-
-const downsampleProgram = gl.createProgram();
-gl.attachShader(downsampleProgram, compileShader(gl.VERTEX_SHADER, POST_VERTEX_SHADER));
-gl.attachShader(downsampleProgram, compileShader(gl.FRAGMENT_SHADER, DOWNSAMPLE_FRAGMENT_SHADER));
-// Same reasoning as postProgram's aPostPosition binding below — pinned past
-// every other program's own attributes so switching between this program
-// and postProgram/cubeProgram within a frame can't cross-contaminate
-// attrib state at a shared index.
-gl.bindAttribLocation(downsampleProgram, 7, 'aPostPosition');
-gl.linkProgram(downsampleProgram);
-if (!gl.getProgramParameter(downsampleProgram, gl.LINK_STATUS)) {
-  throw new Error(gl.getProgramInfoLog(downsampleProgram));
-}
-const uDownsampleTexture = gl.getUniformLocation(downsampleProgram, 'uTexture');
-const uDownsampleTexelSize = gl.getUniformLocation(downsampleProgram, 'uTexelSize');
-
-// Mirrors drawPostPass, but through downsampleProgram — callers are
-// responsible for gl.useProgram(downsampleProgram) (and rebinding the
-// shared postTriangleBuffer/aPostPosition, since attrib *state* is
-// per-index but the currently useProgram'd program is what's actually
-// active) before calling this, same as drawPostPass's own callers do.
-function drawDownsamplePass(source, target) {
-  gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
-  gl.viewport(0, 0, target.width, target.height);
-  gl.bindTexture(gl.TEXTURE_2D, source.texture);
-  gl.uniform1i(uDownsampleTexture, 0);
-  gl.uniform2f(uDownsampleTexelSize, 1 / source.width, 1 / source.height);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-
-const postProgram = gl.createProgram();
-gl.attachShader(postProgram, compileShader(gl.VERTEX_SHADER, POST_VERTEX_SHADER));
-gl.attachShader(postProgram, compileShader(gl.FRAGMENT_SHADER, BLUR_FRAGMENT_SHADER));
-// Pinned to an attribute index (7) well past cubeProgram/lineProgram's own
-// handful of attributes (0-5ish, implementation-assigned) — vertex attrib
-// enable/pointer state lives per-index, not per-program, so if this instead
-// happened to land on the same index as e.g. cubeProgram's aPosition,
-// binding it here would silently corrupt the main scene's own attribute
-// once rendering switches back to cubeProgram after the blur passes. Must
-// be called before linking for it to take effect.
-gl.bindAttribLocation(postProgram, 7, 'aPostPosition');
-gl.linkProgram(postProgram);
-if (!gl.getProgramParameter(postProgram, gl.LINK_STATUS)) {
-  throw new Error(gl.getProgramInfoLog(postProgram));
-}
-const aPostPosition = gl.getAttribLocation(postProgram, 'aPostPosition');
-const uPostTexture = gl.getUniformLocation(postProgram, 'uTexture');
-const uPostTexelSize = gl.getUniformLocation(postProgram, 'uTexelSize');
-const uPostDirection = gl.getUniformLocation(postProgram, 'uDirection');
-const uPostBloomSpread = gl.getUniformLocation(postProgram, 'uBloomSpread');
-
-// Single overscanned triangle covering clip space — see POST_VERTEX_SHADER.
-const POST_TRIANGLE = new Float32Array([-1, -1, 3, -1, -1, 3]);
-const postTriangleBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, postTriangleBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, POST_TRIANGLE, gl.STATIC_DRAW);
-
-// One blur pass: binds `target`'s framebuffer, samples `source`'s texture,
-// blurring along `direction` ((1,0) or (0,1); (0,0) for an unblurred copy —
-// see BLUR_FRAGMENT_SHADER). Assumes postProgram is already the active
-// program and the vertex attrib/buffer are already bound (see their one-time
-// setup just above and in renderCubeFrame's composite call) — every caller
-// this frame shares that same state, so there's no point rebinding per call.
-function drawPostPass(source, target, direction, spread = glowSizePercent / 100) {
-  gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.framebuffer : null);
-  gl.viewport(0, 0, target ? target.width : canvas.width, target ? target.height : canvas.height);
-  gl.bindTexture(gl.TEXTURE_2D, source.texture);
-  gl.uniform1i(uPostTexture, 0);
-  gl.uniform2f(uPostTexelSize, 1 / source.width, 1 / source.height);
-  gl.uniform2f(uPostDirection, direction[0], direction[1]);
-  gl.uniform1f(uPostBloomSpread, spread);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-
 function renderCubeFrame() {
   gl.viewport(0, 0, canvas.width, canvas.height);
   if (blueprintEnabled) {
@@ -4856,96 +4521,6 @@ function renderCubeFrame() {
     // distance instead of a distance proportional to its own length.
     gl.uniform1f(uFlowTailWorldSigma, flowSigma * (flowTailLengthPercent / 100) * MODEL_FLOW_TAIL_REFERENCE_LENGTH);
     gl.uniform1f(uFlowTailFalloffExponent, flowTailFalloffValue);
-  }
-
-  // Real bloom for the flow pulse (see uGlowOnly/BLOOM_DOWNSCALE/
-  // BLOOM_SUPERSAMPLE/BLOOM_MIP_LEVELS above): render the pulse-only glow at
-  // supersampled resolution, downsample it to antialias it, run it through a
-  // small mip chain, and leave the summed result in bloomResult for the
-  // composite draw at the end of this function. Reuses the same attribs/
-  // modelView/projection already bound above — just a framebuffer/viewport/
-  // uniform swap around one extra draw call of the same geometry. Skipped
-  // entirely when there's no pulse.
-  if (flowActive) {
-    ensureBloomTargets();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, bloomSuperSource.framebuffer);
-    gl.viewport(0, 0, bloomSuperSource.width, bloomSuperSource.height);
-    gl.clearColor(0, 0, 0, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.uniform1i(uGlowOnly, 1);
-    const glowIntensity = glowIntensityPercent / 100;
-    gl.uniform3f(
-      uFlowColor,
-      BLUEPRINT_FLOW_COLOR[0] * glowIntensity,
-      BLUEPRINT_FLOW_COLOR[1] * glowIntensity,
-      BLUEPRINT_FLOW_COLOR[2] * glowIntensity,
-    );
-    gl.drawArrays(gl.TRIANGLES, 0, customModelVertexCount);
-    gl.uniform1i(uGlowOnly, 0);
-    gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
-
-    // Depth-testing a fullscreen blur/downsample pass against whatever the
-    // (unrelated) target's depth buffer happens to hold makes no sense —
-    // off for every pass in the chain below, restored before returning to
-    // the real scene render.
-    gl.disable(gl.DEPTH_TEST);
-
-    // Antialias the supersampled source down to the base level's resolution
-    // — see BLOOM_SUPERSAMPLE above for why this is the step that actually
-    // resolves thin/foreshortened geometry cleanly, rather than just
-    // relying on the base level matching canvas resolution.
-    gl.useProgram(downsampleProgram);
-    gl.bindBuffer(gl.ARRAY_BUFFER, postTriangleBuffer);
-    gl.enableVertexAttribArray(aPostPosition);
-    gl.vertexAttribPointer(aPostPosition, 2, gl.FLOAT, false, 0, 0);
-    drawDownsamplePass(bloomSuperSource, bloomSource);
-
-    gl.useProgram(postProgram);
-    const bloomSpread = glowSizePercent / 100;
-
-    // Blur the base level in place: H into the scratch buffer, then V back
-    // into bloomSource — safe because by the time the V pass reads
-    // bloomBlurA, the H pass has already finished with bloomSource's
-    // original (unblurred) content, so overwriting it is fine.
-    drawPostPass(bloomSource, bloomBlurA, [1, 0], bloomSpread);
-    drawPostPass(bloomBlurA, bloomSource, [0, 1], bloomSpread);
-
-    // Downsample (see drawDownsamplePass/DOWNSAMPLE_FRAGMENT_SHADER above —
-    // a wider box sample than the blur passes' own single-tap copy, so a
-    // small bright feature can't fall between samples) + blur each mip
-    // level from the (already blurred) level above it — same in-place H/V
-    // trick per level. Each level's content is smoother going in than the
-    // level above it, which is what keeps a single one-pass blur from
-    // undersampling even at the deepest, most spread-out levels.
-    let bloomPrev = bloomSource;
-    for (const mip of bloomMips) {
-      gl.useProgram(downsampleProgram);
-      drawDownsamplePass(bloomPrev, mip.primary);
-      gl.useProgram(postProgram);
-      drawPostPass(mip.primary, mip.scratch, [1, 0], bloomSpread);
-      drawPostPass(mip.scratch, mip.primary, [0, 1], bloomSpread);
-      bloomPrev = mip.primary;
-    }
-
-    // Walk back up, additively upsampling each level onto the one above it.
-    // This is what turns "one blur size" into a natural-looking bloom: the
-    // base level stays a tight, bright core, and each deeper level
-    // contributes a progressively softer, wider halo on top of it — instead
-    // of the single uniform-width smear a one-scale blur produces.
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE);
-    for (let i = bloomMips.length - 1; i >= 0; i--) {
-      const upsampleTarget = i === 0 ? bloomSource : bloomMips[i - 1].primary;
-      drawPostPass(bloomMips[i].primary, upsampleTarget, [0, 0]);
-    }
-    gl.disable(gl.BLEND);
-
-    bloomResult = bloomSource;
-    gl.enable(gl.DEPTH_TEST);
-
-    gl.useProgram(cubeProgram);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, canvas.width, canvas.height);
   }
 
   // In blueprint mode the filled pass is nudged back with polygon offset so
@@ -5282,26 +4857,6 @@ function renderCubeFrame() {
     }
   }
 
-  // Composite the blurred flow-pulse bloom (see the glow-only render+blur
-  // pass above) additively over the finished frame — last thing drawn
-  // before the (separate, 2D-canvas) axis gizmo, so it sits on top of the
-  // fill/wireframe/arrow overlays/pivot orb alike.
-  if (flowActive) {
-    gl.useProgram(postProgram);
-    gl.bindBuffer(gl.ARRAY_BUFFER, postTriangleBuffer);
-    gl.enableVertexAttribArray(aPostPosition);
-    gl.vertexAttribPointer(aPostPosition, 2, gl.FLOAT, false, 0, 0);
-    // A fullscreen additive pass has no business depth-testing against
-    // whatever the real scene left in the depth buffer — every pixel of the
-    // bloom should add, regardless of what's nearest there.
-    gl.disable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE);
-    drawPostPass(bloomResult, null, [0, 0]); // direction (0,0): unblurred copy (see BLUR_FRAGMENT_SHADER)
-    gl.disable(gl.BLEND);
-    gl.enable(gl.DEPTH_TEST);
-  }
-
   drawAxisGizmo(rx, ry);
 }
 
@@ -5633,12 +5188,6 @@ export const controls = {
       flowTailFalloff: flowTailFalloffValue,
       flowTailFalloffMin: FLOW_TAIL_FALLOFF_MIN,
       flowTailFalloffMax: FLOW_TAIL_FALLOFF_MAX,
-      glowIntensity: glowIntensityPercent,
-      glowIntensityMin: GLOW_INTENSITY_MIN,
-      glowIntensityMax: GLOW_INTENSITY_MAX,
-      glowSize: glowSizePercent,
-      glowSizeMin: GLOW_SIZE_MIN,
-      glowSizeMax: GLOW_SIZE_MAX,
       cubeSize: cubeSizePercent,
       cubeSizeMin: CUBE_SIZE_MIN,
       cubeSizeMax: CUBE_SIZE_MAX,
@@ -5691,8 +5240,6 @@ export const controls = {
   setFlowCoreLengthPercent,
   setFlowTailLengthPercent,
   setFlowTailFalloff,
-  setGlowIntensityPercent,
-  setGlowSizePercent,
   setCubeSizePercent,
   setModelOffsetXPercent,
   setModelOffsetYPercent,

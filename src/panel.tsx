@@ -1083,46 +1083,6 @@ export function Panel() {
                 </div>
               </Slider>
             </Field>
-
-            <Separator />
-
-            <h2 className="font-semibold text-base text-foreground">Glow Controls</h2>
-
-            <Field>
-              <Slider
-                max={state.glowIntensityMax}
-                min={state.glowIntensityMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const intensity = value as number;
-                  controls.setGlowIntensityPercent(intensity);
-                  setState((s) => ({ ...s, glowIntensity: intensity }));
-                }}
-                value={state.glowIntensity}
-              >
-                <div className="mb-3 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Glow intensity</FieldLabel>
-                  <SliderValue className="text-xs text-muted-foreground" />
-                </div>
-              </Slider>
-            </Field>
-
-            <Field>
-              <Slider
-                max={state.glowSizeMax}
-                min={state.glowSizeMin}
-                onValueChange={(value: number | readonly number[]) => {
-                  const size = value as number;
-                  controls.setGlowSizePercent(size);
-                  setState((s) => ({ ...s, glowSize: size }));
-                }}
-                value={state.glowSize}
-              >
-                <div className="mb-3 flex w-full items-center justify-between gap-1">
-                  <FieldLabel className="text-xs sm:text-xs">Glow size</FieldLabel>
-                  <SliderValue className="text-xs text-muted-foreground" />
-                </div>
-              </Slider>
-            </Field>
           </div>
         </div>
       )}
