@@ -146,7 +146,7 @@ function setFlowTailFalloff(value) {
 // array the shader loops over.
 const FLOW_PULSE_FREQUENCY_MIN = 1;
 const FLOW_PULSE_FREQUENCY_MAX = 8;
-let flowPulseFrequencyValue = restoreNumber('flowPulseFrequency', 4);
+let flowPulseFrequencyValue = restoreNumber('flowPulseFrequency', 3);
 
 function setFlowPulseFrequency(value) {
   const clamped = Math.max(FLOW_PULSE_FREQUENCY_MIN, Math.min(FLOW_PULSE_FREQUENCY_MAX, Math.round(value)));
@@ -607,22 +607,46 @@ const CUBE_FRAGMENT_SHADER = `
   // flat-topped band.
   const float FLOW_COMET_HEAD_SIGMA_MULT = 0.12;
   const float FLOW_COMET_CORE_BOOST = 1.5;
+  // Every sigma below gets floored to cover at least this many screen
+  // pixels — same fix as hatchLinesMask/dotsMask/plusMask above, applied to
+  // the pulse instead of a fill pattern. vFlowCoord is a 0-1 fraction of
+  // this specific arrow's own path length, so how many screen pixels one
+  // unit of it spans isn't fixed — it shrinks the same way any world-space
+  // length does when zoomed out, but *also* when the path's local direction
+  // swings toward/away from the camera (orthographic projection collapses
+  // length-along-view-direction to near nothing, independent of zoom — a
+  // ground-parallel tube keeps its full length on screen from a bird's-eye
+  // view, but a vertical one is now pointing straight at the camera). Once
+  // a sigma that's a fixed WORLD size gets squeezed into a fraction of a
+  // pixel by either effect, it can't be sampled correctly — and boosted by
+  // "Glow intensity" and spread by the bloom blur, that undersampling is
+  // exactly the blocky/double-lobed look reported at steep angles and far
+  // zoom. Widening the sigma here keeps the pulse resolvable to begin with,
+  // instead of compensating for it after the fact with more bloom
+  // resolution (see BLOOM_SUPERSAMPLE).
+  const float FLOW_MIN_SIGMA_PX = 1.0;
   float flowPulseIntensity() {
     if (!(uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0)) return 0.0;
+    float coordGradLen = length(vec2(dFdx(vFlowCoord), dFdy(vFlowCoord)));
+    float minCoordSigma = coordGradLen * FLOW_MIN_SIGMA_PX;
     float total = 0.0;
     for (int i = 0; i < MAX_FLOW_PULSES; i++) {
       if (i >= uFlowPulseCount) break;
       float d = vFlowCoord - uFlowPulseCenters[i];
       float base;
       if (d > 0.0) {
-        float sigma = uFlowSigma * FLOW_COMET_HEAD_SIGMA_MULT;
+        float sigma = max(uFlowSigma * FLOW_COMET_HEAD_SIGMA_MULT, minCoordSigma);
         base = exp(-(d * d) / (2.0 * sigma * sigma));
       } else {
         float dArc = abs(d) * vFlowPathLen;
-        float tailSigma = max(uFlowTailWorldSigma, 1e-6);
+        // minCoordSigma is in vFlowCoord's own 0-1-per-path units — scale it
+        // by vFlowPathLen (same conversion dArc itself uses) to floor
+        // tailSigma in the world-space units it actually needs to be in.
+        float minWorldSigma = minCoordSigma * vFlowPathLen;
+        float tailSigma = max(max(uFlowTailWorldSigma, minWorldSigma), 1e-6);
         base = exp(-0.5 * pow(dArc / tailSigma, uFlowTailFalloffExponent));
       }
-      float coreSigma = uFlowSigma * uFlowCoreSigmaMult;
+      float coreSigma = max(uFlowSigma * uFlowCoreSigmaMult, minCoordSigma);
       float core = exp(-(d * d) / (2.0 * coreSigma * coreSigma));
       total += base + core * FLOW_COMET_CORE_BOOST;
     }
@@ -1175,51 +1199,95 @@ let cubeParallaxInitRevealFromY = 0;
 // where the deceleration itself is what reads as "arriving."
 const EASE_OUT_CUBIC = (t) => 1 - (1 - t) ** 3;
 
-// General CSS-style cubic-bezier easing: the curve's control points are
-// (0,0), (x1,y1), (x2,y2), (1,1), with t treated as the *time* axis (x) and
-// the return value as the eased *progress* (y). x(u) has no closed-form
-// inverse, so this solves for the bezier parameter u where x(u) == t via
-// Newton-Raphson — a handful of iterations converges well past visible
-// precision for a monotonic-in-x curve (x1/x2 within [0,1], as any real
-// easing curve's are) — then evaluates y(u).
-function cubicBezierEasing(x1, y1, x2, y2) {
-  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
-  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
-  const sampleX = (u) => ((ax * u + bx) * u + cx) * u;
-  const sampleY = (u) => ((ay * u + by) * u + cy) * u;
-  const sampleDerivX = (u) => (3 * ax * u + 2 * bx) * u + cx;
-  return (t) => {
-    if (t <= 0) return 0;
-    if (t >= 1) return 1;
-    let u = t;
-    for (let i = 0; i < 8; i++) {
-      const dx = sampleX(u) - t;
-      const d = sampleDerivX(u);
-      if (Math.abs(d) < 1e-6) break;
-      u -= dx / d;
-    }
-    return sampleY(u);
-  };
-}
+// Ease-out quad — same decelerate-to-rest shape as EASE_OUT_CUBIC but a
+// gentler curve (t^2 vs t^3 falloff): less abrupt at the start, so it reads
+// as a softer pull-back. Used for loadBundledDefaultModel's intro zoom
+// (see cubeRotResetZoomEasing) rather than EASE_OUT_CUBIC's snappier feel,
+// which suited the fast 180ms UI resets it was written for.
+const EASE_OUT_QUAD = (t) => 1 - (1 - t) ** 2;
 
-// cubic-bezier(0.85, 0, 0.15, 1) — a steep, symmetric ease-in-out: it holds
-// near 0 and near 1 longer than a plain quad ease-in-out would, then sweeps
-// through the middle sharply, giving loadBundledDefaultModel's bird's-eye-in
-// intro a more deliberate pause-then-snap character over its duration.
-const EASE_INTRO_BEZIER = cubicBezierEasing(0.85, 0, 0.15, 1);
+// Ease-in-out quad — the in-out counterpart of EASE_OUT_QUAD above (same
+// t^2 falloff shape, mirrored to also accelerate in rather than starting at
+// full speed): symmetric acceleration in, deceleration out. Used for
+// loadBundledDefaultModel's intro phase 2 pan and zoom alike (see
+// startIntroCameraTargetTween's call site).
+const EASE_IN_OUT_QUAD = (t) => (t < 0.5 ? 2 * t ** 2 : 1 - (-2 * t + 2) ** 2 / 2);
+
+// Ease-in-out sine — the gentlest of the in-out curves here: a plain cosine
+// half-wave, so acceleration itself changes smoothly throughout (no abrupt
+// kink at the midpoint the polynomial eases above have). Used for
+// loadBundledDefaultModel's intro yaw settle (see startIntroYawTween's call
+// site), which runs far longer than anything else in the intro and reads
+// best as one continuous, unhurried turn rather than a curve tuned for a
+// snappier motion.
+const EASE_IN_OUT_SINE = (t) => -(Math.cos(Math.PI * t) - 1) / 2;
+
+// Ease-in-out expo: near-flat at both ends (t^0..slow start, (1-t)^0..slow
+// finish) with an exponential sweep through the middle — holds near 0 and
+// near 1 longer than a plain quad/cubic ease-in-out would, giving
+// loadBundledDefaultModel's bird's-eye-in intro a deliberate pause-then-snap
+// character over its duration. The 0/1 endpoints are special-cased since
+// 2^(-Infinity)-style underflow at t exactly 0 or 1 is what the formula
+// would otherwise (harmlessly, but needlessly) rely on floating point to
+// resolve to 0.
+const EASE_IN_OUT_EXPO = (t) => {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  return t < 0.5 ? 2 ** (20 * t - 10) / 2 : (2 - 2 ** (-20 * t + 10)) / 2;
+};
 
 const CUBE_ROT_RESET_MS = 180; // fast — quicker than the modal open duration, barely more than a frame or two of "not instant"
 let cubeRotResetStartTime = null;
-let cubeRotResetFrom = null; // { rotX, rotY, parX, parY, parTargetX, parTargetY } snapshot taken at tween start
+let cubeRotResetFrom = null; // { rotX, rotY, parX, parY, parTargetX, parTargetY, sizePercent } snapshot taken at tween start
 let cubeRotResetTargetX = CUBE_ISO_PITCH;
 let cubeRotResetTargetY = CUBE_ISO_YAW;
+// Target cubeSizePercent for this tween's optional zoom-in-then-out (see
+// zoomInFactor below) — always whatever cubeSizePercent already was when
+// the tween started (e.g. the baked default, applied just before
+// loadBundledDefaultModel's tweenCubeRotationTo call), so the tween always
+// *settles* at the same level a non-zooming caller would've held all along.
+// Meaningless (and unused) whenever cubeRotResetZoomInFactor is 0.
+let cubeRotResetTargetSizePercent = 100;
+// Fraction above cubeRotResetTargetSizePercent the tween *starts* zoomed
+// in at, easing back down to the target over the same curve/clock as the
+// rotation itself (see renderCubeFrame) rather than as a separate tween —
+// 0 for every existing fast reset-style caller (no zoom change at all);
+// loadBundledDefaultModel's intro is the one caller that passes ~0.2, so
+// the opening bird's-eye -> resting-rotation drop starts ~20% closer in and
+// zooms out to the resting framing as it settles, instead of holding a
+// fixed distance through the whole rotation.
+let cubeRotResetZoomInFactor = 0;
 // This tween's duration, in ms — defaults to CUBE_ROT_RESET_MS's fast snap
 // for every existing caller (Reset rotation, Space bird's-eye rise/return,
 // the "Go to default" button); loadBundledDefaultModel's initial bird's-eye
 // -> resting-rotation intro is the one caller that passes something slower.
 let cubeRotResetDurationMs = CUBE_ROT_RESET_MS;
-// This tween's easing curve — see EASE_OUT_CUBIC/EASE_INTRO_BEZIER above.
+// Delay, in ms, before rotation starts moving from its snapshot — the
+// tween's start time (and the zoom's, which always starts immediately at
+// t=0 regardless of this) is unaffected; only rotation's own t/eased clock
+// is offset by this. 0 for every existing caller; loadBundledDefaultModel's
+// intro passes ~500 so the zoom-out visibly starts pulling back before the
+// rotation joins in, rather than both firing in the same instant.
+let cubeRotResetDelayMs = 0;
+// The zoom's own duration, in ms — independent of cubeRotResetDurationMs
+// (rotation's) so the zoom can keep easing after rotation has already
+// landed, both sharing the same start time. Defaults to durationMs (the
+// two run in lockstep, as they did before this was split out) for every
+// existing caller; loadBundledDefaultModel's intro passes a longer one so
+// the zoom-out keeps going through the pause before phase 2. Meaningless
+// (and unused) whenever cubeRotResetZoomInFactor is 0.
+let cubeRotResetZoomDurationMs = CUBE_ROT_RESET_MS;
+// This tween's easing curve — see EASE_OUT_CUBIC/EASE_IN_OUT_EXPO above.
 let cubeRotResetEasing = EASE_OUT_CUBIC;
+// The zoom's own easing curve — independent of cubeRotResetEasing
+// (rotation's) for the same reason its duration is split out above.
+// Defaults to EASE_OUT_CUBIC (decelerate-into-place, no overshoot) rather
+// than mirroring `easing`, since a zoom reads best as a straightforward
+// pull-back that keeps slowing down all the way to rest — unlike
+// rotation's EASE_IN_OUT_EXPO pause-then-snap character, which would make
+// the zoom look like it stalls partway through. Meaningless (and unused)
+// whenever cubeRotResetZoomInFactor is 0.
+let cubeRotResetZoomEasing = EASE_OUT_CUBIC;
 // Whether this tween also drives cubeParallaxX/Y itself (decaying the
 // snapshot back toward zero, same as the base rotation easing toward its
 // target — see renderCubeFrame) instead of leaving them to the normal
@@ -1231,7 +1299,13 @@ let cubeRotResetEasing = EASE_OUT_CUBIC;
 // path and just lets the two motions run concurrently.
 let cubeRotResetSuppressParallax = true;
 
-function tweenCubeRotationTo(targetRotX, targetRotY, durationMs = CUBE_ROT_RESET_MS, suppressParallax = true, easing = EASE_OUT_CUBIC) {
+function tweenCubeRotationTo(targetRotX, targetRotY, durationMs = CUBE_ROT_RESET_MS, suppressParallax = true, easing = EASE_OUT_CUBIC, zoomInFactor = 0, zoomDurationMs = durationMs, zoomEasing = EASE_OUT_CUBIC, delayMs = 0) {
+  // cubeSizePercent as it already stands when the tween starts is the level
+  // it settles back to at the end — for loadBundledDefaultModel that's the
+  // baked default view's sizePercent, already applied synchronously just
+  // before this call (see applyDefaultCameraViewPanZoom), unchanged from
+  // before this tween had any zoom effect at all.
+  const targetSizePercent = cubeSizePercent;
   cubeRotResetFrom = {
     rotX: cubeRotX,
     rotY: cubeRotY,
@@ -1239,17 +1313,53 @@ function tweenCubeRotationTo(targetRotX, targetRotY, durationMs = CUBE_ROT_RESET
     parY: cubeParallaxY,
     parTargetX: cubeParallaxTargetX,
     parTargetY: cubeParallaxTargetY,
+    sizePercent: targetSizePercent * (1 + zoomInFactor),
   };
   cubeRotResetTargetX = targetRotX;
   cubeRotResetTargetY = targetRotY;
+  cubeRotResetTargetSizePercent = targetSizePercent;
+  cubeRotResetZoomInFactor = zoomInFactor;
+  cubeRotResetZoomDurationMs = zoomDurationMs;
+  cubeRotResetZoomEasing = zoomEasing;
   cubeRotResetSuppressParallax = suppressParallax;
   cubeRotResetDurationMs = durationMs;
   cubeRotResetEasing = easing;
+  cubeRotResetDelayMs = delayMs;
   cubeRotResetStartTime = performance.now();
 }
 
 function resetCubeRotation() {
+  introYawTweenActive = false; // a manual reset takes over yaw too — see introYawTweenActive's own comment
   tweenCubeRotationTo(CUBE_ISO_PITCH, CUBE_ISO_YAW);
+}
+
+// Intro-only Y-axis (yaw) settle: loadBundledDefaultModel wants cubeRotY to
+// keep gently turning across BOTH phase 1 and phase 2's combined duration
+// (see MODEL_LOAD_TOTAL_INTRO_MS), well past phase 1's own short rotation
+// tween (cubeRotResetStartTime above, which fully lands by the end of phase
+// 1). A separate tween is what makes that possible — tweenCubeRotationTo
+// couples X/Y to a single shared clock, so reusing it here would force yaw
+// onto pitch's much shorter timeline. Applied in renderCubeFrame after the
+// cubeRotResetStartTime block, so it has the final say over cubeRotY
+// whenever both are active (i.e., for the whole of phase 1) — pitch and yaw
+// visually move together at first even though they're on separate clocks,
+// since phase 1's own (moot, while this tween is active) yaw target is set
+// to a no-op — see startIntroYawTween's call site.
+let introYawTweenActive = false;
+let introYawTweenStartTime = null;
+let introYawFrom = 0;
+let introYawTo = 0;
+let introYawDurationMs = 0;
+let introYawEasing = EASE_OUT_CUBIC;
+
+function startIntroYawTween(fromRad, toRad, durationMs, easing) {
+  cubeRotY = fromRad;
+  introYawFrom = fromRad;
+  introYawTo = toRad;
+  introYawDurationMs = durationMs;
+  introYawEasing = easing;
+  introYawTweenStartTime = performance.now();
+  introYawTweenActive = true;
 }
 
 // "Pause hover movement" control: freezes the ambient parallax tilt so the
@@ -1328,6 +1438,7 @@ window.addEventListener('keydown', (event) => {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   event.preventDefault();
   spaceHeld = true;
+  introYawTweenActive = false; // manual bird's-eye rise takes over yaw too — see introYawTweenActive's own comment
   tweenCubeRotationTo(CUBE_BIRDSEYE_PITCH, CUBE_BIRDSEYE_YAW);
   if (!cubeDragging) updateCubeCursor();
   notifyModelState(); // panel's "Press space to move" indicator flips to "Release to enter rotation mode"
@@ -2087,6 +2198,13 @@ let customModelObjects = []; // [{name, center:[x,y,z], size:number, bounds:{min
 let cameraTargetSlots = [null, null, null];
 let cameraTargetActiveIndex = null;
 let cameraTargetCurrent = [0, 0, 0];
+// Pending "phase 2" of loadBundledDefaultModel's intro (see
+// MODEL_LOAD_ROTATION_INTRO_MS there) — the timer that, once the opening
+// rotation tween lands, eases on into Camera Target 1. Cancelled by
+// goToCameraTarget/resetCameraTarget below so a manual 1/2/3 press or a
+// "Go to default" (0 key) during those first few seconds isn't overridden
+// once this timer fires.
+let introCameraTargetTimer = null;
 
 // A 4th, freeform baked-in camera pan+zoom alongside the 3 named Camera
 // Targets above — captures modelOffsetXPercent/Y/Z (the manual pan) and
@@ -2191,6 +2309,18 @@ function setEditingDefaultView(enabled) {
 // driving the camera, so it's useful purely for checking which objects are
 // wired up as targets.
 let showCameraTargetBoxes = false;
+// Mirrors the React panel's own "controls hidden" state (H key / hamburger
+// button, see src/panel.tsx's `hidden` state) — main.js has no DOM
+// dependency on the panel and can't read that state directly, so panel.tsx
+// pushes it in via setPanelsHidden whenever it changes. Used purely to gate
+// the pivot orb + floor guide draw call in renderCubeFrame: those are a
+// dev/presenter aid for seeing the current rotation/zoom pivot, and reading
+// as clutter over an otherwise-clean shot once the panels (and therefore
+// the presenter chrome generally) are intentionally hidden.
+let panelsHidden = false;
+function setPanelsHidden(hidden) {
+  panelsHidden = !!hidden;
+}
 // Extra scale multiplier applied on top of cubeSizeScale while a camera
 // target is active (see renderCubeFrame) — springs to 1x whenever no target
 // is active, and to an exact "frame to fit" goal otherwise (see
@@ -2312,30 +2442,109 @@ function setCameraTargetSlot(slotIndex, objectName) {
   notifyModelState();
 }
 
+// The object-space point manual pan is currently centering on screen (same
+// formula as pivotObj in renderCubeFrame) — used to seed a camera-target
+// transition's starting position when coming from manual-pan mode, so the
+// switch (which suppresses manual pan outright, see getObjectSpacePan)
+// doesn't read as an instant jump before the transition's own motion takes
+// over. Shared by goToCameraTarget and startIntroCameraTargetTween.
+function seedCameraTargetPosFromManualPan() {
+  const [panX, panY, panZ] = getObjectSpacePan();
+  // Must match the actual render scale `s` (see pivotObj/getCurrentCameraOffset
+  // in renderCubeFrame) exactly, not just cubeSizeScale — CUBE_SCALE is a
+  // ~0.033 base multiplier baked into every object-space distance, so
+  // omitting it here understated the seed by ~30x, which rendered as a
+  // wrong-magnitude jump on the very first camera-target frame before the
+  // spring corrected course. cameraTargetZoomCurrent is 1 at this point
+  // (we're coming from rest in manual-pan mode), included anyway to stay
+  // exactly in sync with `s` if that ever weren't the case.
+  const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
+  return s > 0 ? [-panX / s, -panY / s, -panZ / s] : [0, 0, 0];
+}
+
+// The centering position + "frame to fit" zoom a given Camera Target slot
+// eases toward — extracted from renderCubeFrame's per-frame spring-goal
+// calculation (see the cameraTargetActiveIndex branch there) so
+// startIntroCameraTargetTween can also read it once, up front, as a fixed
+// tween endpoint instead of a goal the spring re-reads every frame.
+function computeCameraTargetGoal(slotIndex) {
+  const targetName = cameraTargetSlots[slotIndex];
+  const target = targetName ? customModelObjects.find((o) => o.name === targetName) : null;
+  const center = target ? target.center : [0, 0, 0];
+  let zoomGoal = 1;
+  if (target && target.bounds) {
+    // "Frame to fit" zoom, using the target's bounding box projected
+    // through the fixed isometric resting rotation (CUBE_ISO_PITCH/
+    // CUBE_ISO_YAW) rather than the scene's *current* rx/ry — this is the
+    // "initial state" rotation every target starts from, so the fit
+    // reflects the object's actual (rotated, isometric) silhouette instead
+    // of a flat/unrotated one, while still being a fixed per-object value
+    // that doesn't chase hover/drag rotation while a target is active.
+    // Still reactive to the "Model size" slider and window resize
+    // (cubeSizeScale/cubeProjectionHalfY), just not to rotation. Being
+    // orthographic, on-screen size depends only on this projected extent
+    // and the uniform scale below, never on distance from the camera, so
+    // solving for the exact CAMERA_TARGET_VERTICAL_SAFE_ZONE fill fraction
+    // is exact.
+    const { minX, maxX, minY, maxY, minZ, maxZ } = target.bounds;
+    const [ccx, ccy, ccz] = target.center;
+    let minProjY = Infinity, maxProjY = -Infinity;
+    for (const x of [minX, maxX]) {
+      for (const y of [minY, maxY]) {
+        for (const z of [minZ, maxZ]) {
+          const afterY = rotateYVec3([x - ccx, y - ccy, z - ccz], CUBE_ISO_YAW);
+          const afterX = rotateXVec3(afterY, CUBE_ISO_PITCH);
+          if (afterX[1] < minProjY) minProjY = afterX[1];
+          if (afterX[1] > maxProjY) maxProjY = afterX[1];
+        }
+      }
+    }
+    const projectedHeight = maxProjY - minProjY;
+    if (projectedHeight > 1e-6) {
+      const fillFraction = 1 - 2 * CAMERA_TARGET_VERTICAL_SAFE_ZONE;
+      // Normally divides by the *live* cubeSizeScale so the "Model size"
+      // slider can't change the on-screen framing (it cancels out against
+      // the same term in `s` in renderCubeFrame). While draw mode is
+      // active, divides by the frozen drawModeZoomBaselinePercent instead
+      // (see setModelFlowDraw) so that cancellation doesn't also eat
+      // scroll-to-zoom, which drives cubeSizeScale through the exact same
+      // path.
+      const zoomGoalSizeScale = drawModeZoomBaselinePercent !== null
+        ? drawModeZoomBaselinePercent / 100
+        : cubeSizeScale;
+      zoomGoal = Math.max(
+        CAMERA_TARGET_ZOOM_MIN,
+        Math.min(
+          CAMERA_TARGET_ZOOM_MAX,
+          (fillFraction * 2 * cubeProjectionHalfY) / (projectedHeight * CUBE_SCALE * zoomGoalSizeScale)
+        )
+      );
+    }
+  }
+  return { center, zoomGoal };
+}
+
 function goToCameraTarget(slotIndex) {
   if (!cameraTargetSlots[slotIndex]) return;
+  if (introCameraTargetTimer !== null) {
+    clearTimeout(introCameraTargetTimer);
+    introCameraTargetTimer = null;
+  }
+  introCamTargetTweenActive = false;
   // Coming from manual-pan mode (no target active — e.g. the default view):
   // seed the spring at the object-space point the manual pan is currently
-  // centering on screen (same formula as pivotObj in renderCubeFrame),
-  // rather than leaving it wherever it was last settled to rest (usually
-  // [0,0,0]). Otherwise the manual pan — suppressed the instant a target
-  // activates, see getObjectSpacePan — vanishes in a single frame while the
-  // spring separately eases from the wrong starting point, which reads as
-  // an instant jump with no transition at all. Switching directly between
-  // two already-active targets skips this: cameraTargetCurrent already
-  // holds the live in-flight position, which is the correct start as-is.
+  // centering on screen, rather than leaving it wherever it was last
+  // settled to rest (usually [0,0,0]). Otherwise the manual pan —
+  // suppressed the instant a target activates, see getObjectSpacePan —
+  // vanishes in a single frame while the spring separately eases from the
+  // wrong starting point, which reads as an instant jump with no
+  // transition at all. Switching directly between two already-active
+  // targets (or away from a still-tweening intro, see
+  // introCamTargetTweenActive above) skips this: cameraTargetCurrent
+  // already holds the live in-flight position, which is the correct start
+  // as-is.
   if (cameraTargetActiveIndex === null) {
-    const [panX, panY, panZ] = getObjectSpacePan();
-    // Must match the actual render scale `s` (see pivotObj/getCurrentCameraOffset
-    // in renderCubeFrame) exactly, not just cubeSizeScale — CUBE_SCALE is a
-    // ~0.033 base multiplier baked into every object-space distance, so
-    // omitting it here understated the seed by ~30x, which rendered as a
-    // wrong-magnitude jump on the very first camera-target frame before the
-    // spring corrected course. cameraTargetZoomCurrent is 1 at this point
-    // (we're coming from rest in manual-pan mode), included anyway to stay
-    // exactly in sync with `s` if that ever weren't the case.
-    const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
-    cameraTargetCurrent = s > 0 ? [-panX / s, -panY / s, -panZ / s] : [0, 0, 0];
+    cameraTargetCurrent = seedCameraTargetPosFromManualPan();
     cameraTargetVelocity = [0, 0, 0];
     cameraTargetSpringLastTime = null;
   }
@@ -2343,9 +2552,63 @@ function goToCameraTarget(slotIndex) {
   notifyModelState();
 }
 
+// Intro-only alternative to goToCameraTarget: instead of the spring every
+// manual 1/2/3 press or panel button uses (see goToCameraTarget/
+// renderCubeFrame's stepSpring calls), eases position and zoom to Camera
+// Target 1 on their own fixed durations/easing curves — the intro's phase 2
+// wants a specific, tunable timing/feel rather than the spring's live,
+// physically-simulated one. Position and zoom can have independent
+// duration/easing (zoomDurationMs/zoomEasing default to the position ones
+// if omitted), same split as tweenCubeRotationTo's rotation/zoom.
+let introCamTargetTweenActive = false;
+let introCamTargetTweenStartTime = null;
+let introCamTargetTweenFromPos = [0, 0, 0];
+let introCamTargetTweenToPos = [0, 0, 0];
+let introCamTargetTweenFromZoom = 1;
+let introCamTargetTweenToZoom = 1;
+let introCamTargetPosDurationMs = CUBE_ROT_RESET_MS;
+let introCamTargetPosEasing = EASE_OUT_CUBIC;
+let introCamTargetZoomDurationMs = CUBE_ROT_RESET_MS;
+let introCamTargetZoomEasing = EASE_OUT_CUBIC;
+// Delay, in ms, before zoom starts moving from its snapshot — position is
+// unaffected and always starts immediately at t=0, same delay/no-delay
+// split as tweenCubeRotationTo's cubeRotResetDelayMs (rotation there plays
+// the delayed role; here it's zoom).
+let introCamTargetZoomDelayMs = 0;
+
+function startIntroCameraTargetTween(slotIndex, posDurationMs, posEasing, zoomDurationMs = posDurationMs, zoomEasing = posEasing, zoomDelayMs = 0) {
+  if (!cameraTargetSlots[slotIndex]) return;
+  // cameraTargetActiveIndex is guaranteed null here (nothing else can have
+  // activated a target before this fires — see the cancellation in
+  // goToCameraTarget/resetCameraTarget), so this always seeds from manual
+  // pan, same as goToCameraTarget's own first-activation branch.
+  introCamTargetTweenFromPos = seedCameraTargetPosFromManualPan();
+  introCamTargetTweenFromZoom = cameraTargetZoomCurrent;
+  const goal = computeCameraTargetGoal(slotIndex);
+  introCamTargetTweenToPos = goal.center;
+  introCamTargetTweenToZoom = goal.zoomGoal;
+  cameraTargetCurrent = [...introCamTargetTweenFromPos];
+  cameraTargetVelocity = [0, 0, 0];
+  cameraTargetSpringLastTime = null;
+  cameraTargetActiveIndex = slotIndex;
+  introCamTargetPosDurationMs = posDurationMs;
+  introCamTargetPosEasing = posEasing;
+  introCamTargetZoomDurationMs = zoomDurationMs;
+  introCamTargetZoomEasing = zoomEasing;
+  introCamTargetZoomDelayMs = zoomDelayMs;
+  introCamTargetTweenStartTime = performance.now();
+  introCamTargetTweenActive = true;
+  notifyModelState();
+}
+
 // Drops back to the manual pan sliders (getModelViewOffset) instead of a
 // camera target driving the offset — see getCurrentCameraOffset.
 function resetCameraTarget() {
+  if (introCameraTargetTimer !== null) {
+    clearTimeout(introCameraTargetTimer);
+    introCameraTargetTimer = null;
+  }
+  introCamTargetTweenActive = false;
   cameraTargetActiveIndex = null;
   notifyModelState();
 }
@@ -2483,10 +2746,83 @@ async function loadModelFromFiles(files) {
   }
 }
 
-// Duration of the opening bird's-eye -> resting-rotation tween below — much
-// slower than CUBE_ROT_RESET_MS's snappy 180ms since this is a deliberate
-// one-time cinematic drop into place on load, not a quick UI-driven reset.
-const MODEL_LOAD_ROTATION_INTRO_MS = 3000;
+// Delay before the opening bird's-eye -> resting-rotation tween below
+// actually starts rotating — the zoom-out (see the tweenCubeRotationTo call
+// below) still starts immediately at load, so this reads as the pull-back
+// beginning alone for a beat before the rotation joins in, rather than both
+// firing in the same instant.
+const MODEL_LOAD_ROTATION_INTRO_DELAY_MS = 1000;
+
+// Duration of the opening bird's-eye -> resting-rotation tween below, once
+// it starts (after MODEL_LOAD_ROTATION_INTRO_DELAY_MS).
+const MODEL_LOAD_ROTATION_INTRO_MS = 2000;
+
+// Pause between intro phase 1 (the tween above) landing and phase 2 (the
+// push into Camera Target 1, below) starting — long enough to read as a
+// deliberate beat of stillness on the resting pose before the camera moves
+// again, rather than the two phases blurring into one continuous motion.
+const MODEL_LOAD_INTRO_PHASE_GAP_MS = 2000;
+
+// How much earlier than the gap would otherwise put it phase 2 actually
+// starts (see introCameraTargetTimer below) — phase 1's own zoom is still
+// timed to finish at the full MODEL_LOAD_PHASE1_TOTAL_MS +
+// MODEL_LOAD_INTRO_PHASE_GAP_MS mark either way. Set equal to the gap
+// itself so it fully cancels the gap's effect on phase 2's *start time* —
+// phase 2 begins the instant phase 1's rotation lands, with zero residual
+// pause, while phase 1's own zoom keeps running independently until its
+// own MODEL_LOAD_PHASE1_TOTAL_MS + MODEL_LOAD_INTRO_PHASE_GAP_MS mark.
+// This also happens to close phase 2's own zoom start-delay gap: with
+// MODEL_LOAD_PHASE2_ZOOM_DELAY_MS unchanged, phase-2 zoom now starts
+// moving at the exact millisecond phase-1 zoom lands (see the timeline in
+// plans/001-close-intro-phase-seam.md).
+const MODEL_LOAD_PHASE_OVERLAP_MS = 2000;
+
+// Total span of intro phase 1, from load to the resting pose landing —
+// rotation's own delay + duration. The zoom (which starts at t=0, no delay)
+// is timed to finish exactly here plus the phase gap (see the
+// tweenCubeRotationTo call below), independent of when phase 2 itself
+// starts (see MODEL_LOAD_PHASE_OVERLAP_MS above).
+const MODEL_LOAD_PHASE1_TOTAL_MS = MODEL_LOAD_ROTATION_INTRO_DELAY_MS + MODEL_LOAD_ROTATION_INTRO_MS;
+
+// Phase 2's pan duration (see startIntroCameraTargetTween) — pan itself has
+// no delay, so this is also how long it takes from phase 2's start to land.
+const MODEL_LOAD_PHASE2_PAN_MS = 5000;
+
+// Phase 2's zoom duration and start delay — zoom holds at its starting
+// scale until MODEL_LOAD_PHASE2_ZOOM_DELAY_MS after phase 2 begins, then
+// eases over MODEL_LOAD_PHASE2_ZOOM_MS, landing at the same moment the pan
+// does (2000 + 3000 = MODEL_LOAD_PHASE2_PAN_MS). ZOOM_DELAY_MS is left at
+// 2000 rather than scaled up with everything else here — that's what makes
+// it start moving at the exact millisecond phase 1's own zoom lands
+// (MODEL_LOAD_PHASE2_START_MS + 2000 = MODEL_LOAD_PHASE1_TOTAL_MS +
+// MODEL_LOAD_INTRO_PHASE_GAP_MS with the current constants), closing the
+// seam between phase 1 and phase 2's zoom motion (see
+// plans/001-close-intro-phase-seam.md) — changing this value would reopen
+// that gap.
+const MODEL_LOAD_PHASE2_ZOOM_MS = 3000;
+const MODEL_LOAD_PHASE2_ZOOM_DELAY_MS = 2000;
+
+// When phase 2 itself starts, relative to load — named so
+// introCameraTargetTimer's delay and MODEL_LOAD_TOTAL_INTRO_MS below don't
+// have to repeat the same formula.
+const MODEL_LOAD_PHASE2_START_MS = MODEL_LOAD_PHASE1_TOTAL_MS + MODEL_LOAD_INTRO_PHASE_GAP_MS - MODEL_LOAD_PHASE_OVERLAP_MS;
+
+// Full intro span, load to phase 2 fully landing — phase 2's own longer of
+// pan/zoom (zoom's delay + duration) added to when phase 2 starts.
+const MODEL_LOAD_TOTAL_INTRO_MS = MODEL_LOAD_PHASE2_START_MS
+  + Math.max(MODEL_LOAD_PHASE2_PAN_MS, MODEL_LOAD_PHASE2_ZOOM_DELAY_MS + MODEL_LOAD_PHASE2_ZOOM_MS);
+
+// cubeRotY's own separate settle tween (see startIntroYawTween below) runs
+// this long — deliberately MODEL_LOAD_TOTAL_INTRO_MS plus 2 more seconds,
+// so it keeps turning for a beat after both phases have otherwise fully
+// landed, rather than tying it to either phase's own (much shorter)
+// timeline or cutting off the instant they do.
+const MODEL_LOAD_YAW_DURATION_MS = MODEL_LOAD_TOTAL_INTRO_MS + 2000;
+
+// How far short of CUBE_ISO_YAW (the default orthographic pose's resting
+// yaw) the model starts, in degrees — MODEL_LOAD_YAW_DURATION_MS turns it
+// the rest of the way in.
+const MODEL_LOAD_YAW_START_OFFSET_DEG = -30;
 
 // Bundled default model (public/models/), shown on startup — same
 // parse/apply path as a manual upload, just fetched from a static asset
@@ -2530,7 +2866,66 @@ async function loadBundledDefaultModel() {
     applyDefaultCameraViewPanZoom(defaultCameraView);
     // suppressParallax: false — keep ambient hover tilt live through the
     // whole drop instead of freezing it (see cubeRotResetSuppressParallax).
-    tweenCubeRotationTo(CUBE_ISO_PITCH, CUBE_ISO_YAW, MODEL_LOAD_ROTATION_INTRO_MS, false, EASE_INTRO_BEZIER);
+    // zoomInFactor 0.5: phase 1 starts ~50% zoomed in past the baked
+    // default's zoom and eases back out to exactly that default level as it
+    // rotates into the resting pose — so the baked default stays the same
+    // fixed framing the rest of the app already assumes (phase 2's push
+    // into Camera Target 1 below, "Go to default", etc.), and only the
+    // opening beat itself pulls back to reach it. zoomDurationMs stretches
+    // that zoom-out across all of phase 1 (delay + rotation duration, see
+    // MODEL_LOAD_PHASE1_TOTAL_MS) *and* the MODEL_LOAD_INTRO_PHASE_GAP_MS
+    // pause after it, so the pull-back is still visibly settling into the
+    // gap instead of finishing the instant rotation lands. zoomEasing is
+    // EASE_OUT_QUAD rather than matching the rotation's own EASE_IN_OUT_EXPO
+    // pause-then-snap curve, or EASE_OUT_CUBIC (the sharper default built
+    // for fast 180ms UI resets) — a gentler decelerate-to-rest that suits
+    // this much longer, purely cinematic pull-back. delayMs holds rotation
+    // at the bird's-eye pose for MODEL_LOAD_ROTATION_INTRO_DELAY_MS while
+    // the zoom (which ignores this delay, see cubeRotResetDelayMs) is
+    // already underway.
+    //
+    // Yaw itself is handed off entirely to startIntroYawTween below (see
+    // its own comment) — passing this call's own current cubeRotY (just set
+    // by startIntroYawTween, immediately above) as its yaw target makes this
+    // tween's Y contribution a deliberate no-op (from === target), so
+    // there's exactly one thing driving cubeRotY through the whole intro,
+    // not two tweens racing on the same variable.
+    startIntroYawTween(
+      CUBE_ISO_YAW + (MODEL_LOAD_YAW_START_OFFSET_DEG * Math.PI) / 180,
+      CUBE_ISO_YAW,
+      MODEL_LOAD_YAW_DURATION_MS,
+      EASE_IN_OUT_SINE,
+    );
+    tweenCubeRotationTo(
+      CUBE_ISO_PITCH, cubeRotY, MODEL_LOAD_ROTATION_INTRO_MS, false, EASE_IN_OUT_EXPO, 0.5,
+      MODEL_LOAD_PHASE1_TOTAL_MS + MODEL_LOAD_INTRO_PHASE_GAP_MS, EASE_OUT_QUAD,
+      MODEL_LOAD_ROTATION_INTRO_DELAY_MS,
+    );
+    // Intro phase 2: MODEL_LOAD_PHASE_OVERLAP_MS before the rotation tween
+    // above (plus its trailing zoom-out) would otherwise fully finish
+    // settling, ease on into Camera Target 1 (the bundled bundle's
+    // '1-For_Home' scene) over its own fixed duration and easing curves
+    // (see startIntroCameraTargetTween) rather than the physically-
+    // simulated spring goToCameraTarget uses for a manual 1/2/3 press — so
+    // the intro's last beat reads as arriving somewhere specific, on a
+    // deliberately tuned timing, instead of just stopping at a generic
+    // framing. Pan and zoom share the same EASE_IN_OUT_QUAD curve — the
+    // in-out counterpart of phase 1's own zoom curve (EASE_OUT_QUAD, see its
+    // call site above) — but zoom additionally holds at its starting scale
+    // for MODEL_LOAD_PHASE2_ZOOM_DELAY_MS before easing over
+    // MODEL_LOAD_PHASE2_ZOOM_MS (see its own comment on why that lands it
+    // exactly alongside the pan). startIntroCameraTargetTween itself is a
+    // no-op if slot 0 ends up unassigned (e.g. a fresh manual model load
+    // beat this timer to it), and this timer is cancelled by
+    // goToCameraTarget/resetCameraTarget if the presenter picks a target
+    // (or "Go to default") manually before it fires.
+    introCameraTargetTimer = setTimeout(
+      () => startIntroCameraTargetTween(
+        0, MODEL_LOAD_PHASE2_PAN_MS, EASE_IN_OUT_QUAD, MODEL_LOAD_PHASE2_ZOOM_MS, EASE_IN_OUT_QUAD,
+        MODEL_LOAD_PHASE2_ZOOM_DELAY_MS,
+      ),
+      MODEL_LOAD_PHASE2_START_MS,
+    );
     if (!restoreModelFlowPath()) applyDefaultModelFlowPath();
   } catch (err) {
     console.error(err);
@@ -2988,19 +3383,41 @@ function rotateYVec3(v, theta) {
   return [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c];
 }
 
-// Advances one axis of the camera-target spring by dt seconds
-// (semi-implicit/symplectic Euler: velocity updates from the current
-// position first, then position updates from the *new* velocity — more
-// stable than naive Euler for a stiff spring at typical frame dt's).
+// Advances one axis of the camera-target spring by dt seconds using the
+// closed-form solution of the damped-oscillator ODE (rather than stepping a
+// numeric integrator like semi-implicit Euler). A numeric step's error is a
+// function of dt, and rAF's per-frame dt jitters by a couple of ms even at a
+// steady average fps (invisible to the FPS overlay, which only ever sees an
+// average over its display window) — during the slow tail of the decel that
+// jitter stops being negligible next to the shrinking real per-frame delta
+// and reads as choppy motion despite fps looking fine. The closed form
+// instead evaluates the exact position/velocity at time dt analytically, so
+// any dt (however irregular) lands exactly on the true decay curve with no
+// integration error to amplify. Both springs in this file (position and
+// zoom) are configured overdamped (ratio ~1.16, see CAMERA_TARGET_SPRING_*
+// comments) so only that branch is implemented — an underdamped/critical
+// branch would be needed if a future spring here used ratio <= 1.
 // Returns [newPosition, newVelocity]. stiffness/damping default to
 // CAMERA_TARGET_SPRING_STIFFNESS/DAMPING (position's spring) — the zoom
 // call in renderCubeFrame passes CAMERA_TARGET_ZOOM_SPRING_STIFFNESS/DAMPING
 // instead, its own softer spring (see those constants' comment).
 function stepSpring(position, velocity, goal, dt, stiffness = CAMERA_TARGET_SPRING_STIFFNESS, damping = CAMERA_TARGET_SPRING_DAMPING) {
-  const accel = stiffness * (goal - position) - damping * velocity;
-  const newVelocity = velocity + accel * dt;
-  const newPosition = position + newVelocity * dt;
-  return [newPosition, newVelocity];
+  if (dt <= 0) return [position, velocity];
+  const omega0 = Math.sqrt(stiffness);
+  const zeta = damping / (2 * omega0);
+  const y0 = position - goal; // offset from goal; the ODE is homogeneous in this frame
+  const v0 = velocity;
+  // Overdamped (zeta > 1): two real negative roots, y(t) = A*e^(r1*t) + B*e^(r2*t).
+  const spread = omega0 * Math.sqrt(zeta * zeta - 1);
+  const r1 = -zeta * omega0 + spread;
+  const r2 = -zeta * omega0 - spread;
+  const a = (v0 - y0 * r2) / (r1 - r2);
+  const b = y0 - a;
+  const e1 = Math.exp(r1 * dt);
+  const e2 = Math.exp(r2 * dt);
+  const y = a * e1 + b * e2;
+  const newVelocity = a * r1 * e1 + b * r2 * e2;
+  return [y + goal, newVelocity];
 }
 
 // Inverse of renderCubeFrame's modelView build (translate(ox,oy,oz) *
@@ -3905,12 +4322,59 @@ function drawAxisGizmo(rx, ry) {
 // Real bloom for the flow pulse (see uGlowOnly in CUBE_FRAGMENT_SHADER):
 // render just the pulse's own color/intensity — nothing else — to a small
 // offscreen texture (BLOOM_DOWNSCALE below full resolution, cheap to blur),
-// blur it in two separable passes (horizontal then vertical, ping-ponging
-// between two more render targets), then composite the result additively
-// over the finished frame. Unlike the earlier in-shader "wider Gaussian"
-// approximation, this actually bleeds light across the model's silhouette
-// rather than just widening the lit patch on the pulse's own faces.
-const BLOOM_DOWNSCALE = 4;
+// then build a small mip chain from it (BLOOM_MIP_LEVELS below, plus the
+// downsample/blur/upsample loop in renderCubeFrame) and composite the
+// summed result additively over the finished frame. Unlike the earlier
+// in-shader "wider Gaussian" approximation, this actually bleeds light
+// across the model's silhouette rather than just widening the lit patch on
+// the pulse's own faces.
+//
+// A single-scale blur only ever produces one blob size — real bloom is the
+// sum of several. Each mip level here is half the size of the one above
+// it, so the same one-pass 5-tap blur reaches proportionally further at
+// every level: the base level stays a tight, bright core, and each deeper
+// level adds a progressively softer, wider halo on top of it (see the
+// upsample-and-add loop in renderCubeFrame). This also sidesteps the
+// undersampling that made a single very wide blur look blocky — by the
+// time a deep level gets blurred, its content has already been smoothed by
+// every downsample step above it, so there's no sharp detail left to alias.
+//
+// The glow-only source draw is also the *only* place in this app that
+// loses antialiasing: the main scene renders straight to the canvas's own
+// default framebuffer, which gets real MSAA from the `antialias: true`
+// context flag, but this pass renders into a plain offscreen texture,
+// which WebGL1 can't multisample at all. A pulse that's small on screen —
+// zoomed out, far from the camera, or (this turns out to matter just as
+// much) *foreshortened* by the camera angle, like a vertical tube seen
+// from nearly straight above — can end up only a texel or two wide in an
+// unantialiased buffer, so it aliases into hard on/off blocks. The mip
+// chain below, however smooth, can only spread that blocky shape around;
+// it can't remove blockiness that's already baked into what it's blurring.
+// Matching the base level's resolution to the canvas's own (BLOOM_DOWNSCALE
+// = 1, no downscale) helps but isn't sufficient on its own — foreshortening
+// can shrink a tube's on-screen width well below one canvas pixel even at
+// 1:1, no zooming out required. BLOOM_SUPERSAMPLE (below) is what actually
+// buys headroom against that: rendering higher than the base resolution
+// and filtering back down is the standard fix for aliasing that survives
+// at native res, in any WebGL version, with no extension to depend on.
+const BLOOM_DOWNSCALE = 1;
+
+// The glow-only pass renders at BLOOM_SUPERSAMPLE times the base level's
+// resolution (bloomSuperSource, below) and gets filtered back down to the
+// base level (bloomSource) through the same multi-tap box downsample used
+// between mip levels (see drawDownsamplePass/DOWNSAMPLE_FRAGMENT_SHADER) —
+// this is what actually antialiases the source, since neither this app's
+// WebGL1 context nor a plain offscreen texture can multisample. 2 is the
+// standard SSAA factor: enough to resolve a foreshortened tube's silhouette
+// cleanly without the cost exploding (it's one extra draw of the same
+// glow-only geometry, at 4x the base level's pixel count).
+const BLOOM_SUPERSAMPLE = 2;
+
+// Mip levels beyond the base (bloomSource) — each half the size of the one
+// before it. 4 is the sweet spot real-time renderers converge on for this
+// technique: enough levels for a convincingly soft, wide falloff, without
+// piling up framebuffer-switch overhead from too many tiny passes.
+const BLOOM_MIP_LEVELS = 4;
 
 // Creates an RGBA render target (texture + the framebuffer that renders into
 // it) at the given size, with its own depth renderbuffer attached — the
@@ -3918,8 +4382,9 @@ const BLOOM_DOWNSCALE = 4;
 // part of the model that's actually hidden behind another part doesn't
 // still bleed bloom through it. LINEAR filtering lets the blur shader's
 // bilinear sampling do half its work for free (see BLUR_FRAGMENT_SHADER's
-// 5-tap offsets, which rely on it). CLAMP_TO_EDGE avoids wrap-around
-// bleeding at the downsampled texture's edges.
+// 5-tap offsets, which rely on it) and doubles as the mip chain's
+// downsample/upsample filter. CLAMP_TO_EDGE avoids wrap-around bleeding at
+// the downsampled texture's edges.
 function createRenderTarget(width, height) {
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -3936,7 +4401,13 @@ function createRenderTarget(width, height) {
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
   gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return { texture, framebuffer, width, height };
+  return { texture, framebuffer, depthBuffer, width, height };
+}
+
+function deleteRenderTarget(target) {
+  gl.deleteTexture(target.texture);
+  gl.deleteFramebuffer(target.framebuffer);
+  gl.deleteRenderbuffer(target.depthBuffer);
 }
 
 // Recreated lazily whenever the canvas's backing-store size changes (see
@@ -3944,11 +4415,20 @@ function createRenderTarget(width, height) {
 // tied into resize()/applyCanvasSize directly, since renderScale (dynamic
 // resolution scaling) changes canvas.width/height independently of a real
 // window resize.
-let bloomSource = null; // the glow-only pass renders here, at 1/BLOOM_DOWNSCALE resolution
-let bloomBlurA = null; // horizontal blur pass output / vertical blur pass input
-let bloomBlurB = null; // vertical blur pass output — this is what gets composited back
+let bloomSuperSource = null; // the glow-only pass actually renders here, at BLOOM_SUPERSAMPLE times bloomSource's resolution — antialiasing headroom, filtered away by the downsample into bloomSource right after
+let bloomSource = null; // bloomSuperSource downsampled to 1/BLOOM_DOWNSCALE of canvas resolution — the mip chain's base level, and by the end of the bloom block, the final summed result
+let bloomBlurA = null; // horizontal-blur scratch buffer for the base level (see renderCubeFrame)
 let bloomWidth = 0;
 let bloomHeight = 0;
+// bloomMips[i] = { primary, scratch } for mip level i+1 — primary holds
+// that level's downsampled-then-blurred content (and later, on the way
+// back up, the running sum of every level below it); scratch is just the
+// horizontal-blur intermediate, same trick as bloomBlurA.
+let bloomMips = [];
+// Set at the end of the bloom block in renderCubeFrame (always bloomSource
+// — the mip chain's base level doubles as the accumulator), read by the
+// composite draw later in that same function.
+let bloomResult = null;
 
 function ensureBloomTargets() {
   const w = Math.max(1, Math.round(canvas.width / BLOOM_DOWNSCALE));
@@ -3956,9 +4436,26 @@ function ensureBloomTargets() {
   if (w === bloomWidth && h === bloomHeight && bloomSource) return;
   bloomWidth = w;
   bloomHeight = h;
+  if (bloomSource) {
+    deleteRenderTarget(bloomSuperSource);
+    deleteRenderTarget(bloomSource);
+    deleteRenderTarget(bloomBlurA);
+    for (const mip of bloomMips) {
+      deleteRenderTarget(mip.primary);
+      deleteRenderTarget(mip.scratch);
+    }
+  }
+  bloomSuperSource = createRenderTarget(w * BLOOM_SUPERSAMPLE, h * BLOOM_SUPERSAMPLE);
   bloomSource = createRenderTarget(w, h);
   bloomBlurA = createRenderTarget(w, h);
-  bloomBlurB = createRenderTarget(w, h);
+  bloomMips = [];
+  let mw = w;
+  let mh = h;
+  for (let i = 0; i < BLOOM_MIP_LEVELS; i++) {
+    mw = Math.max(1, Math.round(mw / 2));
+    mh = Math.max(1, Math.round(mh / 2));
+    bloomMips.push({ primary: createRenderTarget(mw, mh), scratch: createRenderTarget(mw, mh) });
+  }
 }
 
 // Fullscreen-triangle vertex shader shared by the blur and composite passes
@@ -4005,6 +4502,65 @@ const BLUR_FRAGMENT_SHADER = `
   }
 `;
 
+// Downsample filter used between mip levels (see the bloomMips loop in
+// renderCubeFrame) — deliberately NOT the same single-tap trick the
+// composite/copy passes use (uDirection (0,0) on BLUR_FRAGMENT_SHADER).
+// A single bilinear sample is only a correct box-average of the 2x2 texels
+// it lands on; it says nothing about the texels *outside* that footprint.
+// That's fine for already-broad content, but the flow pulse's "core" lobe
+// (see FLOW_COMET_CORE_BOOST) can be a genuinely small, bright, compact
+// feature — and a small feature that happens to straddle two sample
+// positions across a chain of four successive halvings can get its energy
+// split unevenly between them, resurfacing later as two separate blobs
+// with a dark gap between instead of one smooth peak once everything's
+// summed back up. Sampling the four texels diagonally around the center
+// too (the standard "COD-style" downsample box) means every source texel
+// within a 4x4 neighborhood contributes to some destination texel, so a
+// small bright feature can't fall in the gap between samples.
+const DOWNSAMPLE_FRAGMENT_SHADER = `
+  precision mediump float;
+  varying vec2 vUv;
+  uniform sampler2D uTexture;
+  uniform vec2 uTexelSize;
+  void main() {
+    vec4 sum = texture2D(uTexture, vUv) * 4.0;
+    sum += texture2D(uTexture, vUv + uTexelSize * vec2(-1.0, -1.0));
+    sum += texture2D(uTexture, vUv + uTexelSize * vec2( 1.0, -1.0));
+    sum += texture2D(uTexture, vUv + uTexelSize * vec2(-1.0,  1.0));
+    sum += texture2D(uTexture, vUv + uTexelSize * vec2( 1.0,  1.0));
+    gl_FragColor = sum / 8.0;
+  }
+`;
+
+const downsampleProgram = gl.createProgram();
+gl.attachShader(downsampleProgram, compileShader(gl.VERTEX_SHADER, POST_VERTEX_SHADER));
+gl.attachShader(downsampleProgram, compileShader(gl.FRAGMENT_SHADER, DOWNSAMPLE_FRAGMENT_SHADER));
+// Same reasoning as postProgram's aPostPosition binding below — pinned past
+// every other program's own attributes so switching between this program
+// and postProgram/cubeProgram within a frame can't cross-contaminate
+// attrib state at a shared index.
+gl.bindAttribLocation(downsampleProgram, 7, 'aPostPosition');
+gl.linkProgram(downsampleProgram);
+if (!gl.getProgramParameter(downsampleProgram, gl.LINK_STATUS)) {
+  throw new Error(gl.getProgramInfoLog(downsampleProgram));
+}
+const uDownsampleTexture = gl.getUniformLocation(downsampleProgram, 'uTexture');
+const uDownsampleTexelSize = gl.getUniformLocation(downsampleProgram, 'uTexelSize');
+
+// Mirrors drawPostPass, but through downsampleProgram — callers are
+// responsible for gl.useProgram(downsampleProgram) (and rebinding the
+// shared postTriangleBuffer/aPostPosition, since attrib *state* is
+// per-index but the currently useProgram'd program is what's actually
+// active) before calling this, same as drawPostPass's own callers do.
+function drawDownsamplePass(source, target) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+  gl.viewport(0, 0, target.width, target.height);
+  gl.bindTexture(gl.TEXTURE_2D, source.texture);
+  gl.uniform1i(uDownsampleTexture, 0);
+  gl.uniform2f(uDownsampleTexelSize, 1 / source.width, 1 / source.height);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
 const postProgram = gl.createProgram();
 gl.attachShader(postProgram, compileShader(gl.VERTEX_SHADER, POST_VERTEX_SHADER));
 gl.attachShader(postProgram, compileShader(gl.FRAGMENT_SHADER, BLUR_FRAGMENT_SHADER));
@@ -4038,14 +4594,14 @@ gl.bufferData(gl.ARRAY_BUFFER, POST_TRIANGLE, gl.STATIC_DRAW);
 // program and the vertex attrib/buffer are already bound (see their one-time
 // setup just above and in renderCubeFrame's composite call) — every caller
 // this frame shares that same state, so there's no point rebinding per call.
-function drawPostPass(source, target, direction) {
+function drawPostPass(source, target, direction, spread = glowSizePercent / 100) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.framebuffer : null);
   gl.viewport(0, 0, target ? target.width : canvas.width, target ? target.height : canvas.height);
   gl.bindTexture(gl.TEXTURE_2D, source.texture);
   gl.uniform1i(uPostTexture, 0);
   gl.uniform2f(uPostTexelSize, 1 / source.width, 1 / source.height);
   gl.uniform2f(uPostDirection, direction[0], direction[1]);
-  gl.uniform1f(uPostBloomSpread, glowSizePercent / 100);
+  gl.uniform1f(uPostBloomSpread, spread);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
@@ -4067,10 +4623,35 @@ function renderCubeFrame() {
     // tweens; the slow load intro leaves it false so live hover keeps
     // running via the normal path underneath the rotation tween instead of
     // going dead for its whole 2s.
-    const t = Math.min(1, (performance.now() - cubeRotResetStartTime) / cubeRotResetDurationMs);
+    const now = performance.now();
+    // Rotation's own clock is offset by cubeRotResetDelayMs (0 for every
+    // caller but loadBundledDefaultModel's intro) — clamped to 0 rather than
+    // going negative so it just holds at the "from" snapshot (eased(0) = 0)
+    // until the delay elapses, then plays out over cubeRotResetDurationMs
+    // same as always. The zoom below deliberately does NOT get this offset;
+    // it starts immediately at the tween's own t=0.
+    const t = Math.min(1, Math.max(0, now - cubeRotResetStartTime - cubeRotResetDelayMs) / cubeRotResetDurationMs);
     const eased = cubeRotResetEasing(t);
     cubeRotX = cubeRotResetFrom.rotX + (cubeRotResetTargetX - cubeRotResetFrom.rotX) * eased;
     cubeRotY = cubeRotResetFrom.rotY + (cubeRotResetTargetY - cubeRotResetFrom.rotY) * eased;
+    // Zoom runs on cubeRotResetZoomDurationMs, its own clock sharing only
+    // the same start time — independent of the rotation's t/eased above so
+    // it can keep easing (loadBundledDefaultModel's intro: through the
+    // MODEL_LOAD_INTRO_PHASE_GAP_MS pause) after rotation has already
+    // landed on its target.
+    const zoomT = cubeRotResetZoomInFactor !== 0
+      ? Math.min(1, (now - cubeRotResetStartTime) / cubeRotResetZoomDurationMs)
+      : 1;
+    if (cubeRotResetZoomInFactor !== 0) {
+      const zoomEased = cubeRotResetZoomEasing(zoomT);
+      // Same pivot-anchored scale path the "Model size" slider and
+      // scroll-wheel zoom use (see applyCubeSizePercent) — batches the
+      // persist+notify through the same rAF debounce scroll-zoom already
+      // uses (scheduleWheelZoomSync) instead of hitting localStorage/the
+      // panel every frame of the tween.
+      applyCubeSizePercent(cubeRotResetFrom.sizePercent + (cubeRotResetTargetSizePercent - cubeRotResetFrom.sizePercent) * zoomEased);
+      scheduleWheelZoomSync();
+    }
     if (cubeRotResetSuppressParallax) {
       cubeParallaxTargetX = cubeRotResetFrom.parTargetX * (1 - eased);
       cubeParallaxTargetY = cubeRotResetFrom.parTargetY * (1 - eased);
@@ -4079,12 +4660,20 @@ function renderCubeFrame() {
     } else {
       advanceParallax();
     }
-    if (t >= 1) {
+    if (t >= 1 && zoomT >= 1) {
       cubeRotResetStartTime = null;
       cubeRotResetFrom = null;
     }
   } else {
     advanceParallax();
+  }
+
+  if (introYawTweenActive) {
+    // Runs after the block above so it has the final say over cubeRotY
+    // whenever both are active — see introYawTweenActive's own comment.
+    const yawT = Math.min(1, (performance.now() - introYawTweenStartTime) / introYawDurationMs);
+    cubeRotY = introYawFrom + (introYawTo - introYawFrom) * introYawEasing(yawT);
+    if (yawT >= 1) introYawTweenActive = false;
   }
 
   const rx = cubeRotX + cubeParallaxX;
@@ -4094,85 +4683,69 @@ function renderCubeFrame() {
   // offset's source and the extra zoom multiplier change, so drag/hover
   // rotation holds automatically regardless of target.
   const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
-  const activeTarget = activeTargetName ? customModelObjects.find((o) => o.name === activeTargetName) : null;
-  const goalCenter = activeTarget ? activeTarget.center : [0, 0, 0];
-  let zoomGoal = 1;
-  if (activeTarget && activeTarget.bounds) {
-    // "Frame to fit" zoom, using the target's bounding box projected
-    // through the fixed isometric resting rotation (CUBE_ISO_PITCH/
-    // CUBE_ISO_YAW) rather than the scene's *current* rx/ry — this is
-    // the "initial state" rotation every target starts from, so the
-    // fit reflects the object's actual (rotated, isometric) silhouette
-    // instead of a flat/unrotated one, while still being a fixed
-    // per-object value that doesn't chase hover/drag rotation while a
-    // target is active. Still reactive to the "Model size" slider and
-    // window resize (cubeSizeScale/cubeProjectionHalfY), just not to
-    // rotation. Being orthographic, on-screen size depends only on this
-    // projected extent and the uniform scale below, never on distance
-    // from the camera, so solving for the exact
-    // CAMERA_TARGET_VERTICAL_SAFE_ZONE fill fraction is exact.
-    const { minX, maxX, minY, maxY, minZ, maxZ } = activeTarget.bounds;
-    const [ccx, ccy, ccz] = activeTarget.center;
-    let minProjY = Infinity, maxProjY = -Infinity;
-    for (const x of [minX, maxX]) {
-      for (const y of [minY, maxY]) {
-        for (const z of [minZ, maxZ]) {
-          const afterY = rotateYVec3([x - ccx, y - ccy, z - ccz], CUBE_ISO_YAW);
-          const afterX = rotateXVec3(afterY, CUBE_ISO_PITCH);
-          if (afterX[1] < minProjY) minProjY = afterX[1];
-          if (afterX[1] > maxProjY) maxProjY = afterX[1];
-        }
-      }
+  if (introCamTargetTweenActive) {
+    // loadBundledDefaultModel's intro phase 2: fixed duration/easing
+    // instead of the spring below (see startIntroCameraTargetTween) — the
+    // goal was already resolved once, up front, rather than being re-read
+    // every frame the way the spring's is.
+    const introNow = performance.now();
+    const posT = Math.min(1, (introNow - introCamTargetTweenStartTime) / introCamTargetPosDurationMs);
+    const posEased = introCamTargetPosEasing(posT);
+    cameraTargetCurrent = [0, 1, 2].map(
+      (i) => introCamTargetTweenFromPos[i] + (introCamTargetTweenToPos[i] - introCamTargetTweenFromPos[i]) * posEased
+    );
+    // Zoom's own clock is offset by introCamTargetZoomDelayMs (0 unless a
+    // caller passes one) — clamped to 0 rather than going negative so it
+    // just holds at the "from" snapshot (eased(0) = 0) until the delay
+    // elapses, same pattern as cubeRotResetDelayMs above.
+    const zoomT = Math.min(1, Math.max(0, introNow - introCamTargetTweenStartTime - introCamTargetZoomDelayMs) / introCamTargetZoomDurationMs);
+    const zoomEased = introCamTargetZoomEasing(zoomT);
+    cameraTargetZoomCurrent = introCamTargetTweenFromZoom + (introCamTargetTweenToZoom - introCamTargetTweenFromZoom) * zoomEased;
+    if (posT >= 1 && zoomT >= 1) {
+      // Hand off cleanly to the spring path (below, from next frame on):
+      // both are already sitting exactly at this slot's goal, so the spring
+      // has nothing left to do until something (a manual switch, a resize)
+      // gives it a new goal to chase.
+      introCamTargetTweenActive = false;
+      cameraTargetVelocity = [0, 0, 0];
+      cameraTargetZoomVelocity = 0;
+      cameraTargetSpringLastTime = null;
     }
-    const projectedHeight = maxProjY - minProjY;
-    if (projectedHeight > 1e-6) {
-      const fillFraction = 1 - 2 * CAMERA_TARGET_VERTICAL_SAFE_ZONE;
-      // Normally divides by the *live* cubeSizeScale so the "Model size"
-      // slider can't change the on-screen framing (it cancels out against
-      // the same term in `s` below). While draw mode is active, divides by
-      // the frozen drawModeZoomBaselinePercent instead (see
-      // setModelFlowDraw) so that cancellation doesn't also eat scroll-to-
-      // zoom, which drives cubeSizeScale through the exact same path.
-      const zoomGoalSizeScale = drawModeZoomBaselinePercent !== null
-        ? drawModeZoomBaselinePercent / 100
-        : cubeSizeScale;
-      zoomGoal = Math.max(
-        CAMERA_TARGET_ZOOM_MIN,
-        Math.min(
-          CAMERA_TARGET_ZOOM_MAX,
-          (fillFraction * 2 * cubeProjectionHalfY) / (projectedHeight * CUBE_SCALE * zoomGoalSizeScale)
-        )
-      );
+    cameraTargetAtRest = false; // a target is active (or just finished activating) — never the manual-pan "at rest" state while this branch runs
+  } else {
+    const goal = activeTargetName ? computeCameraTargetGoal(cameraTargetActiveIndex) : { center: [0, 0, 0], zoomGoal: 1 };
+    const goalCenter = goal.center;
+    const zoomGoal = goal.zoomGoal;
+    // Step the damped spring toward this frame's goal (see stepSpring
+    // above). Unlike a tween, there's nothing to "restart" when the goal
+    // changes — switching targets mid-flight, or a resize nudging the
+    // frame-to-fit zoom, just becomes a new goal the spring keeps pulling
+    // toward from wherever it already is, carrying whatever velocity it
+    // already had.
+    const now = performance.now();
+    const dt = cameraTargetSpringLastTime === null
+      ? 0
+      : Math.min(CAMERA_TARGET_SPRING_MAX_DT, (now - cameraTargetSpringLastTime) / 1000);
+    cameraTargetSpringLastTime = now;
+    const nextPos = [0, 0, 0];
+    for (let i = 0; i < 3; i++) {
+      [nextPos[i], cameraTargetVelocity[i]] = stepSpring(cameraTargetCurrent[i], cameraTargetVelocity[i], goalCenter[i], dt);
     }
+    cameraTargetCurrent = nextPos;
+    [cameraTargetZoomCurrent, cameraTargetZoomVelocity] = stepSpring(
+      cameraTargetZoomCurrent, cameraTargetZoomVelocity, zoomGoal, dt,
+      CAMERA_TARGET_ZOOM_SPRING_STIFFNESS, CAMERA_TARGET_ZOOM_SPRING_DAMPING,
+    );
+    // "At rest" (see getObjectSpacePan) only when there's no active target
+    // AND the spring has actually settled at the origin/1x — not merely
+    // whenever cameraTargetActiveIndex is null, since the spring is still
+    // moving for a beat after a target's deactivated.
+    cameraTargetAtRest = !activeTargetName
+      && Math.hypot(...cameraTargetCurrent) < CAMERA_TARGET_SPRING_REST_EPSILON
+      && Math.hypot(...cameraTargetVelocity) < CAMERA_TARGET_SPRING_REST_EPSILON
+      && Math.abs(cameraTargetZoomCurrent - 1) < CAMERA_TARGET_SPRING_REST_EPSILON
+      && Math.abs(cameraTargetZoomVelocity) < CAMERA_TARGET_SPRING_REST_EPSILON;
   }
-  // Step the damped spring toward this frame's goal (see stepSpring above).
-  // Unlike a tween, there's nothing to "restart" when the goal changes —
-  // switching targets mid-flight, or a resize nudging the frame-to-fit
-  // zoom, just becomes a new goal the spring keeps pulling toward from
-  // wherever it already is, carrying whatever velocity it already had.
-  const now = performance.now();
-  const dt = cameraTargetSpringLastTime === null
-    ? 0
-    : Math.min(CAMERA_TARGET_SPRING_MAX_DT, (now - cameraTargetSpringLastTime) / 1000);
-  cameraTargetSpringLastTime = now;
-  const nextPos = [0, 0, 0];
-  for (let i = 0; i < 3; i++) {
-    [nextPos[i], cameraTargetVelocity[i]] = stepSpring(cameraTargetCurrent[i], cameraTargetVelocity[i], goalCenter[i], dt);
-  }
-  cameraTargetCurrent = nextPos;
-  [cameraTargetZoomCurrent, cameraTargetZoomVelocity] = stepSpring(
-    cameraTargetZoomCurrent, cameraTargetZoomVelocity, zoomGoal, dt,
-    CAMERA_TARGET_ZOOM_SPRING_STIFFNESS, CAMERA_TARGET_ZOOM_SPRING_DAMPING,
-  );
-  // "At rest" (see getObjectSpacePan) only when there's no active target AND
-  // the spring has actually settled at the origin/1x — not merely whenever
-  // cameraTargetActiveIndex is null, since the spring is still moving for a
-  // beat after a target's deactivated.
-  cameraTargetAtRest = !activeTargetName
-    && Math.hypot(...cameraTargetCurrent) < CAMERA_TARGET_SPRING_REST_EPSILON
-    && Math.hypot(...cameraTargetVelocity) < CAMERA_TARGET_SPRING_REST_EPSILON
-    && Math.abs(cameraTargetZoomCurrent - 1) < CAMERA_TARGET_SPRING_REST_EPSILON
-    && Math.abs(cameraTargetZoomVelocity) < CAMERA_TARGET_SPRING_REST_EPSILON;
   const s = CUBE_SCALE * cubeSizeScale * cameraTargetZoomCurrent;
   const [offsetX, offsetY] = getCurrentCameraOffset(rx, ry, s);
   const [panX, panY, panZ] = getObjectSpacePan();
@@ -4285,16 +4858,18 @@ function renderCubeFrame() {
     gl.uniform1f(uFlowTailFalloffExponent, flowTailFalloffValue);
   }
 
-  // Real bloom for the flow pulse (see uGlowOnly/BLOOM_DOWNSCALE above):
-  // render the pulse-only glow to a small offscreen target, blur it, and
-  // leave the result in bloomBlurB for the composite draw at the end of
-  // this function. Reuses the same attribs/modelView/projection already
-  // bound above — just a framebuffer/viewport/uniform swap around one extra
-  // draw call of the same geometry. Skipped entirely when there's no pulse.
+  // Real bloom for the flow pulse (see uGlowOnly/BLOOM_DOWNSCALE/
+  // BLOOM_SUPERSAMPLE/BLOOM_MIP_LEVELS above): render the pulse-only glow at
+  // supersampled resolution, downsample it to antialias it, run it through a
+  // small mip chain, and leave the summed result in bloomResult for the
+  // composite draw at the end of this function. Reuses the same attribs/
+  // modelView/projection already bound above — just a framebuffer/viewport/
+  // uniform swap around one extra draw call of the same geometry. Skipped
+  // entirely when there's no pulse.
   if (flowActive) {
     ensureBloomTargets();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, bloomSource.framebuffer);
-    gl.viewport(0, 0, bloomSource.width, bloomSource.height);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bloomSuperSource.framebuffer);
+    gl.viewport(0, 0, bloomSuperSource.width, bloomSuperSource.height);
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.uniform1i(uGlowOnly, 1);
@@ -4309,16 +4884,63 @@ function renderCubeFrame() {
     gl.uniform1i(uGlowOnly, 0);
     gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
 
-    gl.useProgram(postProgram);
+    // Depth-testing a fullscreen blur/downsample pass against whatever the
+    // (unrelated) target's depth buffer happens to hold makes no sense —
+    // off for every pass in the chain below, restored before returning to
+    // the real scene render.
+    gl.disable(gl.DEPTH_TEST);
+
+    // Antialias the supersampled source down to the base level's resolution
+    // — see BLOOM_SUPERSAMPLE above for why this is the step that actually
+    // resolves thin/foreshortened geometry cleanly, rather than just
+    // relying on the base level matching canvas resolution.
+    gl.useProgram(downsampleProgram);
     gl.bindBuffer(gl.ARRAY_BUFFER, postTriangleBuffer);
     gl.enableVertexAttribArray(aPostPosition);
     gl.vertexAttribPointer(aPostPosition, 2, gl.FLOAT, false, 0, 0);
-    // Depth-testing a fullscreen blur pass against whatever the (unrelated)
-    // target's depth buffer happens to hold makes no sense — off for both
-    // blur passes, restored before returning to the real scene render.
-    gl.disable(gl.DEPTH_TEST);
-    drawPostPass(bloomSource, bloomBlurA, [1, 0]);
-    drawPostPass(bloomBlurA, bloomBlurB, [0, 1]);
+    drawDownsamplePass(bloomSuperSource, bloomSource);
+
+    gl.useProgram(postProgram);
+    const bloomSpread = glowSizePercent / 100;
+
+    // Blur the base level in place: H into the scratch buffer, then V back
+    // into bloomSource — safe because by the time the V pass reads
+    // bloomBlurA, the H pass has already finished with bloomSource's
+    // original (unblurred) content, so overwriting it is fine.
+    drawPostPass(bloomSource, bloomBlurA, [1, 0], bloomSpread);
+    drawPostPass(bloomBlurA, bloomSource, [0, 1], bloomSpread);
+
+    // Downsample (see drawDownsamplePass/DOWNSAMPLE_FRAGMENT_SHADER above —
+    // a wider box sample than the blur passes' own single-tap copy, so a
+    // small bright feature can't fall between samples) + blur each mip
+    // level from the (already blurred) level above it — same in-place H/V
+    // trick per level. Each level's content is smoother going in than the
+    // level above it, which is what keeps a single one-pass blur from
+    // undersampling even at the deepest, most spread-out levels.
+    let bloomPrev = bloomSource;
+    for (const mip of bloomMips) {
+      gl.useProgram(downsampleProgram);
+      drawDownsamplePass(bloomPrev, mip.primary);
+      gl.useProgram(postProgram);
+      drawPostPass(mip.primary, mip.scratch, [1, 0], bloomSpread);
+      drawPostPass(mip.scratch, mip.primary, [0, 1], bloomSpread);
+      bloomPrev = mip.primary;
+    }
+
+    // Walk back up, additively upsampling each level onto the one above it.
+    // This is what turns "one blur size" into a natural-looking bloom: the
+    // base level stays a tight, bright core, and each deeper level
+    // contributes a progressively softer, wider halo on top of it — instead
+    // of the single uniform-width smear a one-scale blur produces.
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    for (let i = bloomMips.length - 1; i >= 0; i--) {
+      const upsampleTarget = i === 0 ? bloomSource : bloomMips[i - 1].primary;
+      drawPostPass(bloomMips[i].primary, upsampleTarget, [0, 0]);
+    }
+    gl.disable(gl.BLEND);
+
+    bloomResult = bloomSource;
     gl.enable(gl.DEPTH_TEST);
 
     gl.useProgram(cubeProgram);
@@ -4619,7 +5241,10 @@ function renderCubeFrame() {
     // the current pan (see getObjectSpacePan's comment for why that's the
     // pivot), or the active camera target's centroid when one's selected,
     // since that's what camera-target mode locks to screen-center instead.
-    {
+    // Skipped outright while the panels are hidden (see panelsHidden) — a
+    // presenter-facing dev aid, not something that belongs in an otherwise
+    // clean shot.
+    if (!panelsHidden) {
       const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
       const pivotObj = activeTargetName ? cameraTargetCurrent : [-panX / s, -panY / s, -panZ / s];
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
@@ -4672,7 +5297,7 @@ function renderCubeFrame() {
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
-    drawPostPass(bloomBlurB, null, [0, 0]); // direction (0,0): unblurred copy (see BLUR_FRAGMENT_SHADER)
+    drawPostPass(bloomResult, null, [0, 0]); // direction (0,0): unblurred copy (see BLUR_FRAGMENT_SHADER)
     gl.disable(gl.BLEND);
     gl.enable(gl.DEPTH_TEST);
   }
@@ -5101,4 +5726,5 @@ export const controls = {
   setShowCameraTargetBoxes,
   setEditingDefaultView,
   goToDefaultCameraView,
+  setPanelsHidden,
 };

@@ -132,6 +132,10 @@ export function Panel() {
   }, [hidden]);
 
   useEffect(() => {
+    controls.setPanelsHidden(hidden);
+  }, [hidden]);
+
+  useEffect(() => {
     const onKeydown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== "h") return;
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
