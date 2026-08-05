@@ -107,7 +107,7 @@ function setFlowSpeedPercent(value) {
 // end, lower behaves more like a thin exponential streak.
 const FLOW_CORE_LENGTH_MIN = 1;
 const FLOW_CORE_LENGTH_MAX = 200;
-let flowCoreLengthPercent = restoreNumber('flowCoreLength', 1);
+let flowCoreLengthPercent = restoreNumber('flowCoreLength', 60);
 
 function setFlowCoreLengthPercent(value) {
   const clamped = Math.max(FLOW_CORE_LENGTH_MIN, Math.min(FLOW_CORE_LENGTH_MAX, value));
@@ -470,15 +470,21 @@ const CUBE_FRAGMENT_SHADER = `
   uniform vec3 uBlueprintFillColor;
   uniform vec3 uBlueprintFillColorGreen;
   uniform bool uFlowActive;
-  // Shared normalized (0-1-per-arrow) travel-loop state, identical for
-  // every arrow — same "same TIME to traverse" pulse motion every arrow
-  // has always used (see flowPeriodMs/pulseProgress in renderCubeFrame).
-  // uFlowBasePulseCenter is the primary pulse's own center; each arrow's
-  // other concurrent pulses (see uFlowPulseDensity below) are spaced out
-  // from it using uFlowRange/uFlowPad, all computed per-vertex in
-  // flowPulseIntensity rather than precomputed on the CPU, since how many
-  // pulses a given arrow gets depends on vFlowPathLen.
-  uniform float uFlowBasePulseCenter;
+  // uFlowWorldPos is a shared, ever-growing world-space distance at the
+  // *reference* speed (see flowSpeedWorldPerMs in renderCubeFrame) — the
+  // speed a MODEL_FLOW_REFERENCE_LENGTH-long (uFlowReferenceLength) arrow
+  // actually travels at. flowPulseIntensity below scales it per-vertex by
+  // sqrt(vFlowPathLen / uFlowReferenceLength) so longer arrows move faster
+  // than shorter ones — not proportionally faster (that would make every
+  // arrow's lap TIME constant again, i.e. back in sync), just enough that
+  // long arrows read livelier while still drifting out of phase with short
+  // ones over time. The scaled result is then wrapped by this vertex's own
+  // vFlowPathLen to get *this* arrow's own 0-1 travel-loop progress, and
+  // this arrow's other concurrent pulses (see uFlowPulseDensity below) are
+  // spaced out from that using uFlowRange/uFlowPad — all per-vertex since
+  // pulse count, speed, and lap time all depend on vFlowPathLen.
+  uniform float uFlowWorldPos;
+  uniform float uFlowReferenceLength;
   uniform float uFlowRange;
   uniform float uFlowPad;
   // Pulses-per-MODEL_FLOW_REFERENCE_LENGTH-of-path-length (see
@@ -488,15 +494,26 @@ const CUBE_FRAGMENT_SHADER = `
   // carries proportionally more concurrent pulses instead of the same
   // handful stretched thin over more physical distance. GLSL ES 1.00 loops
   // need a constant upper bound, so MAX_FLOW_PULSES caps the loop and each
-  // arrow's own computed count is checked with a dynamic break.
-  const int MAX_FLOW_PULSES = 8;
+  // arrow's own computed count is checked with a dynamic break. Raised from
+  // the old 8 (which matched FLOW_PULSE_FREQUENCY_MAX, but that's the
+  // density baseline for a MODEL_FLOW_REFERENCE_LENGTH-long arrow, not a
+  // ceiling on any specific arrow's own count — a ~29-unit arrow at the
+  // default "Pulse frequency" already computes ~49) so long arrows keep
+  // scaling instead of saturating well before the default density would
+  // otherwise allow — dialed back down from a first pass at 64, which read
+  // as too dense/costly on the longest arrows. Each extra unit here is
+  // extra worst-case per-fragment cost (one more possible loop
+  // iteration/exp() pair), so don't raise this far past what the longest
+  // arrows actually need.
+  const int MAX_FLOW_PULSES = 32;
   uniform float uFlowPulseDensity;
   uniform float uFlowSigma;
   uniform vec3 uFlowColor;
   uniform vec3 uFlowCoreColor;
-  // Absolute world-space core/tail reach (not a fraction of any one path's
-  // own length — see MODEL_FLOW_REFERENCE_LENGTH) so both stay the same
-  // physical size on every arrow regardless of how long it is drawn.
+  // Absolute world-space head/core/tail reach (not a fraction of any one
+  // path's own length — see MODEL_FLOW_REFERENCE_LENGTH) so all three stay
+  // the same physical size on every arrow regardless of how long it is drawn.
+  uniform float uFlowHeadWorldSigma;
   uniform float uFlowCoreWorldSigma;
   uniform float uFlowTailWorldSigma;
   uniform float uFlowTailFalloffExponent;
@@ -610,22 +627,21 @@ const CUBE_FRAGMENT_SHADER = `
   // Comet shape rather than a symmetric Gaussian band: d>0 is ahead of the
   // pulse center in the direction of travel (increasing vFlowCoord, same
   // direction uFlowPulseCenter sweeps over time) — the comet's bright head,
-  // so it uses a narrow fixed sigma that cuts off sharply just past center.
-  // d<0 is behind — already passed, fading — so it uses uFlowTailWorldSigma
-  // (user-adjustable "Tail length", converted to an absolute world-space
-  // distance via vFlowPathLen so it doesn't grow/shrink with this specific
-  // arrow's own length) for its reach, and uFlowTailFalloffExponent
+  // narrow and fixed like the tail/core below, so it cuts off sharply just
+  // past center. d<0 is behind — already passed, fading — so it uses
+  // uFlowTailWorldSigma (user-adjustable "Tail length", an absolute
+  // world-space distance via dArc below so it doesn't grow/shrink with this
+  // specific arrow's own length) for its reach, and uFlowTailFalloffExponent
   // ("Tail falloff") for the curve's shape independent of that reach: 2.0
   // matches a plain Gaussian, higher stays near full brightness longer then
   // drops more sharply near the tail's end, lower behaves more like a thin
   // exponential streak. On top of both sits a second, much tighter "hot
   // core" lobe (uFlowCoreWorldSigma, "Core length" — symmetric, and, like
-  // the tail, an absolute world-space size rather than a fraction of this
-  // arrow's own length, so it doesn't grow/shrink with path length either)
-  // adding extra brightness concentrated right at the head, so it
+  // the head and tail, an absolute world-space size rather than a fraction
+  // of this arrow's own length, so it doesn't grow/shrink with path length
+  // either) adding extra brightness concentrated right at the head, so it
   // reads as a distinct bright point instead of just the front edge of a
   // flat-topped band.
-  const float FLOW_COMET_HEAD_SIGMA_MULT = 0.12;
   // 1.5 read fine back when the (now-removed) bloom pass pre-boosted
   // uFlowColor by up to 4x before blurring it — blur then spread that
   // extra brightness into an obviously bigger halo, so even a modest
@@ -663,6 +679,20 @@ const CUBE_FRAGMENT_SHADER = `
     // vFlowPathLen (same conversion dArc below uses) to floor tail/core
     // sigma in the world-space units they actually need to be in.
     float minWorldSigma = minCoordSigma * vFlowPathLen;
+    // This arrow's own travel-loop progress. uFlowWorldPos is a shared
+    // absolute world-space distance at the *reference* speed (see
+    // flowSpeedWorldPerMs in renderCubeFrame); sqrt(lapLen/uFlowReferenceLength)
+    // scales that up for longer arrows (down for shorter ones) so longer
+    // arrows move faster in absolute terms, without scaling exactly enough
+    // to keep every arrow's lap TIME equal — arrows still drift out of
+    // phase with each other over time, which is intentional (see the file
+    // header comment above "3D flow arrows"). The result is then wrapped by
+    // *this* vertex's own vFlowPathLen to get this arrow's 0-1 progress.
+    // GLSL's mod() always lands in [0, lapLen) for lapLen > 0, unlike JS's
+    // %, so no separate handling for negative input is needed here.
+    float lapLen = max(vFlowPathLen, 1e-6);
+    float arrowWorldPos = uFlowWorldPos * sqrt(lapLen / uFlowReferenceLength);
+    float basePulseCenter = -uFlowPad + mod(arrowWorldPos, lapLen) / lapLen * uFlowRange;
     // This arrow's own pulse count — longer arrows (bigger vFlowPathLen)
     // get proportionally more, see uFlowPulseDensity above. Floored to the
     // nearest whole pulse and never less than 1, so even a short arrow
@@ -680,7 +710,7 @@ const CUBE_FRAGMENT_SHADER = `
       // a boundary. GLSL's mod() (x - y*floor(x/y)) always lands in
       // [0, uFlowRange) for uFlowRange > 0, unlike JS's %, so no separate
       // handling for negative input is needed here.
-      float shifted = uFlowBasePulseCenter - float(i) * spacing + uFlowPad;
+      float shifted = basePulseCenter - float(i) * spacing + uFlowPad;
       float wrapped = mod(shifted, uFlowRange);
       float d = vFlowCoord - (wrapped - uFlowPad);
       // World-space distance from the pulse center — unlike d itself (a
@@ -690,8 +720,8 @@ const CUBE_FRAGMENT_SHADER = `
       float dArc = abs(d) * vFlowPathLen;
       float base;
       if (d > 0.0) {
-        float sigma = max(uFlowSigma * FLOW_COMET_HEAD_SIGMA_MULT, minCoordSigma);
-        base = exp(-(d * d) / (2.0 * sigma * sigma));
+        float sigma = max(uFlowHeadWorldSigma, minWorldSigma);
+        base = exp(-(dArc * dArc) / (2.0 * sigma * sigma));
       } else {
         float tailSigma = max(max(uFlowTailWorldSigma, minWorldSigma), 1e-6);
         base = uFlowTailVisible ? exp(-0.5 * pow(dArc / tailSigma, uFlowTailFalloffExponent)) : 0.0;
@@ -923,13 +953,15 @@ const uBlueprint = gl.getUniformLocation(cubeProgram, 'uBlueprint');
 const uBlueprintFillColor = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColor');
 const uBlueprintFillColorGreen = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColorGreen');
 const uFlowActive = gl.getUniformLocation(cubeProgram, 'uFlowActive');
-const uFlowBasePulseCenter = gl.getUniformLocation(cubeProgram, 'uFlowBasePulseCenter');
+const uFlowWorldPos = gl.getUniformLocation(cubeProgram, 'uFlowWorldPos');
+const uFlowReferenceLength = gl.getUniformLocation(cubeProgram, 'uFlowReferenceLength');
 const uFlowRange = gl.getUniformLocation(cubeProgram, 'uFlowRange');
 const uFlowPad = gl.getUniformLocation(cubeProgram, 'uFlowPad');
 const uFlowPulseDensity = gl.getUniformLocation(cubeProgram, 'uFlowPulseDensity');
 const uFlowSigma = gl.getUniformLocation(cubeProgram, 'uFlowSigma');
 const uFlowColor = gl.getUniformLocation(cubeProgram, 'uFlowColor');
 const uFlowCoreColor = gl.getUniformLocation(cubeProgram, 'uFlowCoreColor');
+const uFlowHeadWorldSigma = gl.getUniformLocation(cubeProgram, 'uFlowHeadWorldSigma');
 const uFlowCoreWorldSigma = gl.getUniformLocation(cubeProgram, 'uFlowCoreWorldSigma');
 const uFlowTailWorldSigma = gl.getUniformLocation(cubeProgram, 'uFlowTailWorldSigma');
 const uFlowTailFalloffExponent = gl.getUniformLocation(cubeProgram, 'uFlowTailFalloffExponent');
@@ -2996,17 +3028,19 @@ window.addEventListener('drop', (event) => {
 
 // --- 3D flow arrows: draw one or more paths on the model's green parts, pulse follows each ---
 //
-// A Gaussian glow band travels along each user-drawn path, looping over
-// FLOW_PULSE_PERIOD_BASE_MS (scaled by the user-adjustable flowSpeedPercent)
-// in sync across all of them. Each "path" is drawn
-// directly on the model's surface (via raycasting into the green triangles
-// under the cursor), and each vertex's position along its nearest path is
-// computed once (in object space) rather than per-frame. Supports any number
-// of arrows — e.g. separate branches of a green run that don't share a
-// single line — by giving every green vertex a flow coordinate normalized to
-// *its own nearest arrow's* length (0-1) rather than an absolute arc length,
-// so one shared pulse phase/width animates every arrow in sync regardless of
-// how many there are or how long each one is (see recomputeModelFlowCoords).
+// A Gaussian glow band travels along each user-drawn path at a shared
+// absolute world-space speed (see FLOW_PULSE_PERIOD_BASE_MS/
+// flowSpeedWorldPerMs), scaled by the user-adjustable flowSpeedPercent. Each
+// "path" is drawn directly on the model's surface (via raycasting into the
+// green triangles under the cursor), and each vertex's position along its
+// nearest path is computed once (in object space) rather than per-frame.
+// Supports any number of arrows — e.g. separate branches of a green run
+// that don't share a single line — by giving every green vertex a flow
+// coordinate normalized to *its own nearest arrow's* length (0-1) rather
+// than an absolute arc length; since the pulse moves at the same speed on
+// every arrow, a short arrow's lap takes less time than a long arrow's, so
+// arrows are intentionally *not* kept in phase with each other (see
+// recomputeModelFlowCoords).
 
 const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // Baked-in starter arrows for the bundled default model (see
@@ -3022,13 +3056,18 @@ const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // and replace if the model ever changes again.
 const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[-33.67333602905275,0.6334688513144009,-5.099300492059335],[-33.673336029052734,0.6339370829337714,-5.179315505773158],[-33.673336029052734,0.10385314082481045,-5.178646390804898],[-34.33642197886703,0.09333333373069763,-5.17300515430707],[-34.336034799862055,0.09333333373069763,-6.6424453440926]],"touchedObjectIndices":[500],"enabledObjectIndices":[500],"sourceOffset":0,"masterTotalLen":2.742734374529774},{"points":[[-34.833863038597045,0.09333333373069763,-4.990590645997877],[-33.68693837931779,0.09333333373069763,-4.9914932159016985],[-33.67333602905275,0.4826526655058707,-4.993658371678258]],"touchedObjectIndices":[469],"enabledObjectIndices":[469],"sourceOffset":0,"masterTotalLen":1.536487915533214},{"points":[[-33.78354617495815,0.2800000011920787,-4.123070418601841],[-33.67767859420686,0.2800000011920787,-4.124411198391016],[-33.67333602905274,0.6302302259155255,-4.124307431025137],[-33.67333602905274,0.6295758712951454,-4.878244125480762]],"touchedObjectIndices":[452],"enabledObjectIndices":[452],"sourceOffset":0,"masterTotalLen":1.2100702102757512},{"points":[[-33.32420476002098,1.2577114491708272,-5.285326013957132],[-33.32296006593586,1.2583338584281734,-4.995782500557958],[-33.657797496354306,1.090916293413585,-4.994099790208907],[-33.669162634621344,1.0733935068405174,-4.986517049287329],[-33.67333221435546,0.7885513701981637,-4.994376147461708]],"touchedObjectIndices":[455],"enabledObjectIndices":[455],"sourceOffset":0,"masterTotalLen":0.9711104332982854},{"points":[[-3.545370438687139,0.0889253318309784,-4.02120909084195],[-2.3039824711500287,0.0889253318309926,-4.022964701175553],[-2.307952797638868,0.0889253318309926,-5.128014704598215],[-1.6991531674456155,0.0889253318309784,-5.127725425432118],[-1.6936733722686768,0.4806781991282705,-5.130003931825662]],"touchedObjectIndices":[464],"enabledObjectIndices":[464],"sourceOffset":0,"masterTotalLen":3.3470438599599985},{"points":[[-1.2446098828058325,2.8791640714992326,-6.6464924812316895],[-1.2434510702200967,2.9714566618539493,-6.646492481231682],[-1.2362821235638108,2.989035367965684,-6.5128454175166155],[-1.2455523082880262,1.9655008783336427,-6.499578475952148],[-1.243214283300901,1.9481827020645284,-5.137658892077695],[-1.560959332080536,1.9481827020645284,-5.139350339433168],[-1.5664444792017136,2.0933260917663716,-5.129035598032328],[-1.6844905121384706,2.0933260917663574,-5.132020131464714],[-1.693333387374878,0.7782431359708681,-5.130084734400263]],"touchedObjectIndices":[272],"enabledObjectIndices":[272],"sourceOffset":0,"masterTotalLen":4.509542884635783},{"points":[[-0.5052271805852371,0.0889253318309784,-4.183513742795114],[-0.5110608126283864,0.0889253318309784,-4.026547851175067],[-0.9624689833783862,0.0889253318309784,-4.024944936016851]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":0,"masterTotalLen":3.568297247388635},{"points":[[-0.9593934528637931,0.0889253318309926,-4.189260081557322],[-0.9624689833783862,0.0889253318309784,-4.024944936016851]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":0.6084852742361518,"masterTotalLen":3.568297247388635},{"points":[[-0.9624689833783862,0.0889253318309784,-4.024944936016851],[-1.4159273931998086,0.08892533183096418,-4.030957359749507]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":0.6084852742361518,"masterTotalLen":3.568297247388635},{"points":[[-1.4036374297271124,0.0889253318309784,-4.187952105857235],[-1.4159273931998086,0.08892533183096418,-4.030957359749507]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":1.0619835417928363,"masterTotalLen":3.568297247388635},{"points":[[-1.4159273931998086,0.08892533183096418,-4.030957359749507],[-2.0966853166633825,0.0889253318309784,-4.024516778344889],[-2.1049183626496557,0.0889253318309784,-5.049078083369096],[-1.6952627329553849,0.08892533183096418,-5.051043516499163],[-1.693673372268691,0.48014507145907004,-5.057147795352122]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":1.0619835417928363,"masterTotalLen":3.568297247388635},{"points":[[-3.014371155879864,0.08868800103665819,-8.063377333100462],[-2.508953709940149,0.08868800103662977,-8.062679889324755],[-2.5107751005562715,0.08868800103662977,-6.641391648079718]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":0,"masterTotalLen":4.561781532348327},{"points":[[-2.5107751005562715,0.08868800103662977,-6.641391648079718],[-3.019299699296553,0.08868800103664398,-6.637623239598327]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":1.9267073354602382,"masterTotalLen":4.561781532348327},{"points":[[-2.5107751005562715,0.08868800103662977,-6.641391648079718],[-2.512596986987414,0.08868800103664398,-5.20532039295415]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":1.9267073354602382,"masterTotalLen":4.561781532348327},{"points":[[-2.512596986987414,0.08868800103664398,-5.20532039295415],[-3.0151256508047664,0.08868800103664398,-5.209381583373798]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":3.362779746262735,"masterTotalLen":4.561781532348327},{"points":[[-2.512596986987414,0.08868800103664398,-5.20532039295415],[-1.701865099401573,0.08868800103662977,-5.2064795508370025],[-1.6936733722686483,0.47687063124877227,-5.20658818051011]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":3.362779746262735,"masterTotalLen":4.561781532348327},{"points":[[56.64267714550567,4.968986209546813,-12.126598031036224],[27.523574865830284,4.967351936525006,-12.131152901015355]],"touchedObjectIndices":[255,524],"enabledObjectIndices":[255,524],"sourceOffset":0,"masterTotalLen":29.119102681777225},{"points":[[56.639257384320956,4.972883906455081,-14.18441350946614],[27.683999898248885,4.948396873634977,-14.176995998733673]],"touchedObjectIndices":[252,523],"enabledObjectIndices":[252,523],"sourceOffset":0,"masterTotalLen":28.955268790307827},{"points":[[56.59511154597794,3.960689692842152,-14.175570766584428],[27.712595036696314,3.938394158777214,-14.169512149511888]],"touchedObjectIndices":[253,521],"enabledObjectIndices":[253,521],"sourceOffset":0,"masterTotalLen":28.882525750124515},{"points":[[56.62485130331089,2.9628874175188002,-14.176398252495716],[27.615066068317844,2.947036058732351,-14.171930787410304]],"touchedObjectIndices":[254,519],"enabledObjectIndices":[254,519],"sourceOffset":0,"masterTotalLen":29.009789909688077},{"points":[[56.60939563623336,3.9604482056058146,-12.120713853240204],[27.662967160182006,3.9488361380687707,-12.122798679489222]],"touchedObjectIndices":[256,522],"enabledObjectIndices":[256,522],"sourceOffset":0,"masterTotalLen":28.946430880261726},{"points":[[56.580646683000566,2.9630913259489375,-12.125700416702443],[27.589015513606,2.957438173277069,-12.126803350970505]],"touchedObjectIndices":[257,520],"enabledObjectIndices":[257,520],"sourceOffset":0,"masterTotalLen":28.99163174153552},{"points":[[26.702889461814053,0.48938447734039414,-13.156804209939772],[26.629931553299897,0.10012843737730037,-13.15624756887133],[26.099485969574538,0.0948086678981852,-13.162904139678389],[26.10098189159153,0.094808667898171,-10.946355917461183],[26.627926738888952,0.0948086678981852,-10.955670015562845]],"touchedObjectIndices":[467],"enabledObjectIndices":[467],"sourceOffset":0,"masterTotalLen":3.6701245394262725},{"points":[[26.63094535254865,0.094808667898171,-10.837164729838705],[25.556571453468763,0.0948086678981781,-10.835559514474838],[25.551508571763442,0.0948086678981852,-9.670081876977626]],"touchedObjectIndices":[518],"enabledObjectIndices":[518],"sourceOffset":0,"masterTotalLen":10.90267950043367},{"points":[[25.551508571763442,0.0948086678981852,-9.670081876977626],[25.552221611326566,0.0948086678981781,-9.315084216802937]],"touchedObjectIndices":[518],"enabledObjectIndices":[518],"sourceOffset":2.239863732376519,"masterTotalLen":10.90267950043367},{"points":[[25.551508571763442,0.0948086678981852,-9.670081876977626],[33.844104082957955,0.0948086678981852,-9.71162043695659],[33.83814635565336,0.0948086678981781,-9.34155216874678]],"touchedObjectIndices":[518],"enabledObjectIndices":[518],"sourceOffset":2.239863732376519,"masterTotalLen":10.90267950043367},{"points":[[33.84013891067453,0.0948086678981781,-8.612637530990646],[33.84052216104054,0.094808667898171,-7.923875042596943]],"touchedObjectIndices":[529],"enabledObjectIndices":[529],"sourceOffset":0,"masterTotalLen":0.6887625950203233},{"points":[[33.843547026275836,0.0948086678981852,-7.177972647955603],[33.839323405959924,0.0948086678981852,-6.512914662659418]],"touchedObjectIndices":[528],"enabledObjectIndices":[528],"sourceOffset":0,"masterTotalLen":0.665071396749848},{"points":[[33.5561593599526,0.09336933493614197,-6.097066672414521],[33.00008397068226,0.09336933493613486,-6.0959972397190505],[33.001008896437554,0.09336933493612776,-5.970430913361219],[32.77604210412262,0.12071466445922852,-5.966940748732361]],"touchedObjectIndices":[428],"enabledObjectIndices":[428],"sourceOffset":0,"masterTotalLen":0.9082956727126772},{"points":[[33.47422256200509,0.09336933493612776,-6.176403052918243],[33.0030388426357,0.09336933493614197,-6.175757784827053],[33.003963050551604,0.09336933493613486,-6.325207934479132],[32.76859981158998,0.12071466445922852,-6.320114847679658]],"touchedObjectIndices":[427],"enabledObjectIndices":[427],"sourceOffset":0,"masterTotalLen":0.8576383516970716},{"points":[[33.47595932257196,0.09336933493614197,-7.5093493894576255],[33.004845213307625,0.09336933493614197,-7.508294379635415],[33.0055499068346,0.09336933493613486,-7.378371671184648],[32.774475361240874,0.12071466445922852,-7.374453837635869]],"touchedObjectIndices":[359],"enabledObjectIndices":[359],"sourceOffset":0,"masterTotalLen":0.8337598320828127},{"points":[[33.47743926387794,0.09336933493613486,-7.587222117028423],[33.0035173938905,0.09336933493614197,-7.5791694568789945],[33.00440896881824,0.09336933493613486,-7.726269631507278],[32.770306080176695,0.12071466445922852,-7.731668607332408]],"touchedObjectIndices":[358],"enabledObjectIndices":[358],"sourceOffset":0,"masterTotalLen":0.856849551531731},{"points":[[33.476681201714925,0.09336933493614197,-9.009880168323981],[33.004765023574926,0.09336933493614197,-9.011691697654651],[33.00420764408614,0.09336933493613486,-9.152100624320573],[32.77127923318871,0.12071466445922852,-9.154369000953528]],"touchedObjectIndices":[381],"enabledObjectIndices":[381],"sourceOffset":0,"masterTotalLen":0.8468687192852006},{"points":[[33.47899528138069,0.09336933493614197,-8.935319304603224],[32.99287904076515,0.09336933493614907,-8.934994651040851],[32.996545069571305,0.09336933493613486,-8.804234025750223],[32.77299155397665,0.12071466445922852,-8.802572480073657]],"touchedObjectIndices":[382],"enabledObjectIndices":[382],"sourceOffset":0,"masterTotalLen":0.8421542462567777},{"points":[[25.555624676521393,0.0948086678981852,-8.576366331515706],[25.55873393993857,0.094808667898171,-7.917995535178209]],"touchedObjectIndices":[526],"enabledObjectIndices":[526],"sourceOffset":0,"masterTotalLen":0.6583781382982482},{"points":[[25.550015806157173,0.0948086678981781,-7.17873453005429],[25.54999844507648,0.0948086678981852,-6.537975261961543]],"touchedObjectIndices":[527],"enabledObjectIndices":[527],"sourceOffset":0,"masterTotalLen":0.6407592683279415},{"points":[[25.841287509677116,0.09336933493614197,-8.989760054410024],[26.40927208512327,0.09336933493614907,-8.984641874082614],[26.399043672361934,0.09336933493613486,-9.122077792282537],[26.627899324151944,0.12071466445923562,-9.122611424539093]],"touchedObjectIndices":[335],"enabledObjectIndices":[335],"sourceOffset":0,"masterTotalLen":0.9363078317197809},{"points":[[25.844260286948394,0.09336933493615618,-8.911679003098609],[26.395098837335013,0.09336933493614197,-8.912205403765018],[26.398594247163405,0.09336933493614907,-8.767530111917507],[26.611770332433146,0.12071466445922141,-8.76732241082537]],"touchedObjectIndices":[336],"enabledObjectIndices":[336],"sourceOffset":0,"masterTotalLen":0.9104792141428489},{"points":[[25.86863690588295,0.09336933493614907,-7.592943547379436],[26.403673552833915,0.09336933493615618,-7.59277892855316],[26.401491278293747,0.09336933493615618,-7.730870732635107],[26.622202535407236,0.12071466445922852,-7.725840801850269]],"touchedObjectIndices":[312],"enabledObjectIndices":[312],"sourceOffset":0,"masterTotalLen":0.8956013911896795},{"points":[[25.862139697855902,0.09336933493613486,-7.5224858506586205],[26.406818854032085,0.09336933493615618,-7.521693768594748],[26.408680856399595,0.09336933493614907,-7.377864186292422],[26.634794684842756,0.12071466445923562,-7.374748403467135]],"touchedObjectIndices":[313],"enabledObjectIndices":[313],"sourceOffset":0,"masterTotalLen":0.9163040229577386},{"points":[[25.868928816897714,0.09336933493614907,-6.1796607497829],[26.399127203696043,0.09336933493614197,-6.188344970234791],[26.402831673390146,0.09336933493614907,-6.312434377158447],[26.634555151441567,0.12071466445923562,-6.312567973143766]],"touchedObjectIndices":[404],"enabledObjectIndices":[404],"sourceOffset":0,"masterTotalLen":0.8877456198313817},{"points":[[25.87837914132087,0.09336933493614197,-6.1052600381899085],[26.397076042267102,0.09336933493614907,-6.104628375877571],[26.405110454385312,0.09336933493614907,-5.9627140522099396],[26.622408764318163,0.12071466445924273,-5.958620580626187]],"touchedObjectIndices":[405],"enabledObjectIndices":[405],"sourceOffset":0,"masterTotalLen":0.879889262497587}];
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
-// Fixed reference length (world units) the tail's and core's reach are both
-// computed against instead of each arrow's own masterTotalLen, so the "Tail
-// length"/"Core length" sliders produce the same absolute size on every
-// arrow regardless of how long that specific arrow is drawn. Chosen to
-// roughly match the previous look on a mid-length arrow; tune directly if
-// tails/cores read too long/short.
+// Fixed reference length (world units) the head's, tail's, and core's reach
+// are all computed against instead of each arrow's own masterTotalLen, so
+// they produce the same absolute size on every arrow regardless of how long
+// that specific arrow is drawn. Chosen to roughly match the previous look on
+// a mid-length arrow; tune directly if the head/tail/core read too long/short.
 const MODEL_FLOW_REFERENCE_LENGTH = 3;
+// Comet head's fixed fraction of uFlowSigma (the "Pulse width" slider's own
+// base scale) — unlike FLOW_CORE_LENGTH/FLOW_TAIL_LENGTH there's no user
+// control for this, so it's just a constant multiplier converted to an
+// absolute world-space sigma (see uFlowHeadWorldSigma below) the same way
+// flowCoreLengthPercent/flowTailLengthPercent are.
+const FLOW_COMET_HEAD_SIGMA_MULT = 0.12;
 // Sentinel aFlowCoord for a green vertex no arrow reaches (no path enables
 // its object) — any negative value works since real arc-length fractions
 // are always in [0, 1]; the fragment shader's `vFlowCoord >= 0.0` check is
@@ -4574,10 +4613,15 @@ function renderCubeFrame() {
   // Traveling flow pulse: same Gaussian-band-over-time math as the image
   // mode's flow (see renderLoop's pulseLinear/pulseProgress/pulseSigma), just
   // parameterized by each vertex's normalized (0-1) position along its
-  // nearest arrow instead of grid cells or an absolute arc length — so this
-  // one shared pulse phase/width animates every arrow in modelFlowPaths in
-  // sync, regardless of how many there are or how long each one is (see
-  // recomputeModelFlowCoords). Reuses pulseBandFraction (the shared "Pulse
+  // nearest arrow instead of grid cells or an absolute arc length. flowWorldPos
+  // below is the world-space distance traveled at the *reference* speed
+  // (flowSpeedWorldPerMs) — CUBE_FRAGMENT_SHADER scales that up per-vertex
+  // by sqrt(vFlowPathLen / MODEL_FLOW_REFERENCE_LENGTH), so longer arrows'
+  // pulses move faster in absolute terms than shorter arrows', but not
+  // proportionally faster (that would make every arrow's lap TIME equal,
+  // i.e. back in sync) — arrows still drift out of phase with each other
+  // instead of looping together (see recomputeModelFlowCoords/uFlowWorldPos
+  // in CUBE_FRAGMENT_SHADER). Reuses pulseBandFraction (the shared "Pulse
   // width" slider) so one control governs both modes' pulse widths. Speed is
   // user-adjustable via flowSpeedPercent (the "Flow speed" slider). Computed
   // once here and reused for both the face pass (cubeProgram, below) and the
@@ -4587,7 +4631,7 @@ function renderCubeFrame() {
   let flowSigma = 0.02;
   let flowRange = 0;
   let flowPad = 0;
-  let flowBasePulseCenter = 0;
+  let flowWorldPos = 0;
   let flowPulseDensity = 0;
   if (flowActive) {
     flowSigma = Math.max(0.02, MODEL_FLOW_PULSE_BAND_FRACTION * pulseBandFraction * 4);
@@ -4595,10 +4639,17 @@ function renderCubeFrame() {
     flowRange = 1 + 2 * flowPad;
     // Linear for now (was an eased t^3 ease-in — the pulse noticeably
     // lingered at the start of each loop before accelerating through the
-    // rest of the arrow).
-    const flowPeriodMs = FLOW_PULSE_PERIOD_BASE_MS * (100 / flowSpeedPercent);
-    const pulseProgress = (performance.now() % flowPeriodMs) / flowPeriodMs;
-    flowBasePulseCenter = -flowPad + pulseProgress * flowRange;
+    // rest of the arrow). A MODEL_FLOW_REFERENCE_LENGTH-long arrow takes
+    // FLOW_PULSE_PERIOD_BASE_MS to complete one lap (matching the old
+    // fixed-period feel for a "typical" arrow); every other arrow's own
+    // speed (and so its own lap time) follows from its own length via the
+    // shader's sqrt scaling instead — see uFlowWorldPos's per-vertex use in
+    // CUBE_FRAGMENT_SHADER. Recomputed fresh from absolute time each frame
+    // rather than integrated, so — like the old pulseProgress — changing
+    // the "Flow speed" slider mid-flight can nudge the current phase rather
+    // than smoothly accelerate/decelerate it.
+    const flowSpeedWorldPerMs = MODEL_FLOW_REFERENCE_LENGTH / (FLOW_PULSE_PERIOD_BASE_MS * (100 / flowSpeedPercent));
+    flowWorldPos = performance.now() * flowSpeedWorldPerMs;
     // Pulses-per-MODEL_FLOW_REFERENCE_LENGTH-of-path-length — see
     // uFlowPulseDensity/FLOW_PULSE_FREQUENCY_MIN. CUBE_FRAGMENT_SHADER
     // multiplies this by each vertex's own vFlowPathLen (floored/capped) to
@@ -4609,17 +4660,19 @@ function renderCubeFrame() {
   }
   gl.uniform1i(uFlowActive, flowActive ? 1 : 0);
   if (flowActive) {
-    gl.uniform1f(uFlowBasePulseCenter, flowBasePulseCenter);
+    gl.uniform1f(uFlowWorldPos, flowWorldPos);
+    gl.uniform1f(uFlowReferenceLength, MODEL_FLOW_REFERENCE_LENGTH);
     gl.uniform1f(uFlowRange, flowRange);
     gl.uniform1f(uFlowPad, flowPad);
     gl.uniform1f(uFlowPulseDensity, flowPulseDensity);
     gl.uniform1f(uFlowSigma, flowSigma);
     gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
     gl.uniform3f(uFlowCoreColor, BLUEPRINT_FLOW_CORE_COLOR[0], BLUEPRINT_FLOW_CORE_COLOR[1], BLUEPRINT_FLOW_CORE_COLOR[2]);
-    // Absolute world-space core/tail reach — MODEL_FLOW_REFERENCE_LENGTH
+    // Absolute world-space head/core/tail reach — MODEL_FLOW_REFERENCE_LENGTH
     // stands in for "this specific arrow's own length" (see
-    // aFlowPathLen/vFlowPathLen) so every arrow's core/tail covers the same
-    // real distance instead of a distance proportional to its own length.
+    // aFlowPathLen/vFlowPathLen) so every arrow's head/core/tail covers the
+    // same real distance instead of a distance proportional to its own length.
+    gl.uniform1f(uFlowHeadWorldSigma, flowSigma * FLOW_COMET_HEAD_SIGMA_MULT * MODEL_FLOW_REFERENCE_LENGTH);
     gl.uniform1f(uFlowCoreWorldSigma, flowSigma * (flowCoreLengthPercent / 100) * MODEL_FLOW_REFERENCE_LENGTH);
     gl.uniform1f(uFlowTailWorldSigma, flowSigma * (flowTailLengthPercent / 100) * MODEL_FLOW_REFERENCE_LENGTH);
     gl.uniform1f(uFlowTailFalloffExponent, flowTailFalloffValue);
