@@ -106,7 +106,7 @@ function setFlowSpeedPercent(value) {
 // stays near full brightness longer then drops more sharply near the tail's
 // end, lower behaves more like a thin exponential streak.
 const FLOW_CORE_LENGTH_MIN = 1;
-const FLOW_CORE_LENGTH_MAX = 50;
+const FLOW_CORE_LENGTH_MAX = 200;
 let flowCoreLengthPercent = restoreNumber('flowCoreLength', 1);
 
 function setFlowCoreLengthPercent(value) {
@@ -114,6 +114,17 @@ function setFlowCoreLengthPercent(value) {
   flowCoreLengthPercent = clamped;
   persistNumber('flowCoreLength', clamped);
   return clamped;
+}
+
+// Whether the tail (the d<0, "already passed" side of the comet — see
+// flowPulseIntensity in CUBE_FRAGMENT_SHADER) renders at all. Off leaves
+// just the head/core riding the front of the pulse with nothing trailing
+// behind it. Session-only, like showModelFlowArrow/showModelFlowPoints —
+// not persisted.
+let flowTailVisible = true;
+
+function setFlowTailVisible(value) {
+  flowTailVisible = value;
 }
 
 const FLOW_TAIL_LENGTH_MIN = 50;
@@ -138,15 +149,18 @@ function setFlowTailFalloff(value) {
   return clamped;
 }
 
-// How many comet pulses chase each other along the same path at once (see
-// MAX_FLOW_PULSES/uFlowPulseCenters in CUBE_FRAGMENT_SHADER and the center
-// computation in renderCubeFrame) — evenly spaced around the shared travel
-// loop, so raising this reads as current flowing continuously rather than
-// one lone pulse looping. Capped at MAX_FLOW_PULSES, the fixed-size uniform
-// array the shader loops over.
+// Pulses-per-MODEL_FLOW_REFERENCE_LENGTH-of-path-length (see
+// flowPulseDensity/uFlowPulseDensity in renderCubeFrame/CUBE_FRAGMENT_
+// SHADER) rather than a literal fixed count — a longer arrow carries
+// proportionally more concurrent pulses chasing each other, instead of the
+// same handful stretched thin over more physical distance. At a
+// MODEL_FLOW_REFERENCE_LENGTH-long arrow this reduces to exactly this
+// value, so it still reads as a familiar "how many pulses" slider for a
+// typical arrow. Each arrow's own count is floored/capped at
+// MAX_FLOW_PULSES, the shader loop's fixed iteration bound.
 const FLOW_PULSE_FREQUENCY_MIN = 1;
 const FLOW_PULSE_FREQUENCY_MAX = 8;
-let flowPulseFrequencyValue = restoreNumber('flowPulseFrequency', 3);
+let flowPulseFrequencyValue = restoreNumber('flowPulseFrequency', 5);
 
 function setFlowPulseFrequency(value) {
   const clamped = Math.max(FLOW_PULSE_FREQUENCY_MIN, Math.min(FLOW_PULSE_FREQUENCY_MAX, Math.round(value)));
@@ -154,11 +168,6 @@ function setFlowPulseFrequency(value) {
   persistNumber('flowPulseFrequency', clamped);
   return clamped;
 }
-
-// Reused every frame in renderCubeFrame rather than reallocated, sized to
-// match MAX_FLOW_PULSES in CUBE_FRAGMENT_SHADER (kept equal to
-// FLOW_PULSE_FREQUENCY_MAX, the slider's own cap).
-const flowPulseCentersScratch = new Float32Array(FLOW_PULSE_FREQUENCY_MAX);
 
 // The loaded model's size, as a percentage multiplier on top of CUBE_SCALE
 // (see renderCubeFrame) — 100 (the default) = CUBE_SCALE unchanged, up to
@@ -274,38 +283,71 @@ function setPlusSizePercent(value) {
 // thickness/arm-length ratio from before these were user-adjustable.
 const PLUS_THICKNESS_RATIO = 0.12;
 
+// Blueprint shader theme: which background/fill palette renderCubeFrame uses
+// (see BLUEPRINT_THEMES below). Green-material parts and the wireframe line
+// color stay the same across themes — only the "paper" the drawing sits on
+// changes. Declared ahead of the light angle/intensity block below since
+// each theme keeps its own independent light defaults/storage.
+const SHADER_THEME_STORAGE_KEY = 'iconMosaic.shaderTheme';
+const storedShaderTheme = localStorage.getItem(SHADER_THEME_STORAGE_KEY);
+let shaderTheme = storedShaderTheme === 'light' ? 'light' : 'dark';
+
 // Directional light angle, as azimuth (rotation around the vertical Y axis)
 // and elevation (above/below the horizontal plane), both in degrees — see
 // renderCubeFrame, which converts these to the uLightDir vector each frame.
+// Each shader theme has its own independent values/storage/defaults (see
+// setShaderTheme, which reloads these on a theme switch) rather than one
+// shared setting — dark keeps its original flat storage keys/defaults
+// unchanged; light gets its own keys and its own (brighter, more
+// front-lit) defaults suited to a white background.
 const LIGHT_AZIMUTH_MIN = 0;
 const LIGHT_AZIMUTH_MAX = 360;
 const LIGHT_ELEVATION_MIN = -90;
 const LIGHT_ELEVATION_MAX = 90;
-let lightAzimuthValue = restoreNumber('lightAzimuth', 160);
-let lightElevationValue = restoreNumber('lightElevation', 50);
+const LIGHT_INTENSITY_MIN = 0;
+const LIGHT_INTENSITY_MAX = 200;
 
-function setLightAzimuth(value) {
-  lightAzimuthValue = value;
-  persistNumber('lightAzimuth', value);
+function lightAzimuthStorageId() {
+  return shaderTheme === 'light' ? 'lightAzimuthLight' : 'lightAzimuth';
+}
+function lightElevationStorageId() {
+  return shaderTheme === 'light' ? 'lightElevationLight' : 'lightElevation';
+}
+function lightIntensityStorageId() {
+  return shaderTheme === 'light' ? 'lightIntensityLight' : 'lightIntensity';
+}
+function lightAzimuthDefault() {
+  return shaderTheme === 'light' ? 110 : 160;
+}
+function lightElevationDefault() {
+  return shaderTheme === 'light' ? 33 : 50;
+}
+function lightIntensityDefault() {
+  return shaderTheme === 'light' ? 185 : 100;
 }
 
-function setLightElevation(value) {
-  lightElevationValue = value;
-  persistNumber('lightElevation', value);
-}
-
+let lightAzimuthValue = restoreNumber(lightAzimuthStorageId(), lightAzimuthDefault());
+let lightElevationValue = restoreNumber(lightElevationStorageId(), lightElevationDefault());
 // Scales the directional light's diffuse contribution (see uLightIntensity
 // in CUBE_FRAGMENT_SHADER), as a percent — 100 matches the original
 // fixed-brightness look, higher pushes lit faces brighter/unlit faces
 // darker, lower flattens the shading toward a uniform flat fill.
-const LIGHT_INTENSITY_MIN = 0;
-const LIGHT_INTENSITY_MAX = 200;
-let lightIntensityPercent = restoreNumber('lightIntensity', 100);
+let lightIntensityPercent = restoreNumber(lightIntensityStorageId(), lightIntensityDefault());
+
+function setLightAzimuth(value) {
+  lightAzimuthValue = value;
+  persistNumber(lightAzimuthStorageId(), value);
+}
+
+function setLightElevation(value) {
+  lightElevationValue = value;
+  persistNumber(lightElevationStorageId(), value);
+}
 
 function setLightIntensityPercent(value) {
   const clamped = Math.max(LIGHT_INTENSITY_MIN, Math.min(LIGHT_INTENSITY_MAX, value));
   lightIntensityPercent = clamped;
-  persistNumber('lightIntensity', clamped);
+  persistNumber(lightIntensityStorageId(), clamped);
   return clamped;
 }
 
@@ -321,18 +363,17 @@ function setBlueprintEnabled(value) {
   localStorage.setItem(BLUEPRINT_STORAGE_KEY, String(blueprintEnabled));
 }
 
-// Blueprint shader theme: which background/fill palette renderCubeFrame uses
-// (see BLUEPRINT_THEMES below). Green-material parts and the wireframe line
-// color stay the same across themes — only the "paper" the drawing sits on
-// changes.
-const SHADER_THEME_STORAGE_KEY = 'iconMosaic.shaderTheme';
-const storedShaderTheme = localStorage.getItem(SHADER_THEME_STORAGE_KEY);
-let shaderTheme = storedShaderTheme === 'light' ? 'light' : 'dark';
-
 function setShaderTheme(value) {
   shaderTheme = value === 'light' ? 'light' : 'dark';
   localStorage.setItem(SHADER_THEME_STORAGE_KEY, shaderTheme);
+  // Reload the light angle/intensity sliders from this theme's own
+  // storage/defaults — see lightAzimuthStorageId etc. above — and let the
+  // panel know, since these are ordinary panel-controlled slider values.
+  lightAzimuthValue = restoreNumber(lightAzimuthStorageId(), lightAzimuthDefault());
+  lightElevationValue = restoreNumber(lightElevationStorageId(), lightElevationDefault());
+  lightIntensityPercent = restoreNumber(lightIntensityStorageId(), lightIntensityDefault());
   refreshBlueprintLineColors();
+  notifyModelState();
 }
 
 // --- Source: the loaded .obj model, rendered with plain WebGL -------------
@@ -376,10 +417,10 @@ const CUBE_VERTEX_SHADER = `
   attribute float aFlowCoord;
   // The world-space arc length of whichever flow path this vertex was
   // assigned to (aFlowCoord's normalizing masterTotalLen, carried through
-  // unnormalized) — lets the fragment shader convert the tail's reach back
-  // out of aFlowCoord's per-path-normalized space into an absolute distance,
-  // so the tail's real length stays the same regardless of how long the
-  // specific arrow is. See recomputeModelFlowCoords/MODEL_FLOW_TAIL_REFERENCE_LENGTH.
+  // unnormalized) — lets the fragment shader convert the tail/core reach
+  // back out of aFlowCoord's per-path-normalized space into an absolute
+  // distance, so their real lengths stay the same regardless of how long
+  // the specific arrow is. See recomputeModelFlowCoords/MODEL_FLOW_REFERENCE_LENGTH.
   attribute float aFlowPathLen;
   // Which technical-fill pattern (if any) this vertex's face uses: 0 = none,
   // 1 = hatch lines, 2 = dots, 3 = plus marks — see materialFillPatternId,
@@ -429,22 +470,37 @@ const CUBE_FRAGMENT_SHADER = `
   uniform vec3 uBlueprintFillColor;
   uniform vec3 uBlueprintFillColorGreen;
   uniform bool uFlowActive;
-  // Fixed-size array rather than a single center so several comet pulses can
-  // chase each other along the same path (the "Pulse frequency" slider —
-  // see setFlowPulseFrequency) — GLSL ES 1.00 loops need a constant upper
-  // bound, so uFlowPulseCount (how many of the MAX_FLOW_PULSES slots are
-  // actually in use) is checked with a dynamic break instead.
+  // Shared normalized (0-1-per-arrow) travel-loop state, identical for
+  // every arrow — same "same TIME to traverse" pulse motion every arrow
+  // has always used (see flowPeriodMs/pulseProgress in renderCubeFrame).
+  // uFlowBasePulseCenter is the primary pulse's own center; each arrow's
+  // other concurrent pulses (see uFlowPulseDensity below) are spaced out
+  // from it using uFlowRange/uFlowPad, all computed per-vertex in
+  // flowPulseIntensity rather than precomputed on the CPU, since how many
+  // pulses a given arrow gets depends on vFlowPathLen.
+  uniform float uFlowBasePulseCenter;
+  uniform float uFlowRange;
+  uniform float uFlowPad;
+  // Pulses-per-MODEL_FLOW_REFERENCE_LENGTH-of-path-length (see
+  // FLOW_PULSE_FREQUENCY_MIN/flowPulseDensity in renderCubeFrame) —
+  // multiplied by this vertex's own vFlowPathLen in flowPulseIntensity
+  // below to get that specific arrow's own pulse count, so a longer arrow
+  // carries proportionally more concurrent pulses instead of the same
+  // handful stretched thin over more physical distance. GLSL ES 1.00 loops
+  // need a constant upper bound, so MAX_FLOW_PULSES caps the loop and each
+  // arrow's own computed count is checked with a dynamic break.
   const int MAX_FLOW_PULSES = 8;
-  uniform float uFlowPulseCenters[MAX_FLOW_PULSES];
-  uniform int uFlowPulseCount;
+  uniform float uFlowPulseDensity;
   uniform float uFlowSigma;
   uniform vec3 uFlowColor;
-  uniform float uFlowCoreSigmaMult;
-  // Absolute world-space tail reach (not a fraction of any one path's own
-  // length — see MODEL_FLOW_TAIL_REFERENCE_LENGTH) so the tail's visible
-  // length is the same on every arrow regardless of how long it is.
+  uniform vec3 uFlowCoreColor;
+  // Absolute world-space core/tail reach (not a fraction of any one path's
+  // own length — see MODEL_FLOW_REFERENCE_LENGTH) so both stay the same
+  // physical size on every arrow regardless of how long it is drawn.
+  uniform float uFlowCoreWorldSigma;
   uniform float uFlowTailWorldSigma;
   uniform float uFlowTailFalloffExponent;
+  uniform bool uFlowTailVisible;
   uniform vec3 uHatchLineColor;
   uniform float uLineFrequency;
   uniform float uDotFrequency;
@@ -563,13 +619,22 @@ const CUBE_FRAGMENT_SHADER = `
   // matches a plain Gaussian, higher stays near full brightness longer then
   // drops more sharply near the tail's end, lower behaves more like a thin
   // exponential streak. On top of both sits a second, much tighter "hot
-  // core" lobe (uFlowCoreSigmaMult, "Core length" — symmetric, since it's
-  // narrow enough either side barely reaches past the head/tail junction
-  // anyway) adding extra brightness concentrated right at the head, so it
+  // core" lobe (uFlowCoreWorldSigma, "Core length" — symmetric, and, like
+  // the tail, an absolute world-space size rather than a fraction of this
+  // arrow's own length, so it doesn't grow/shrink with path length either)
+  // adding extra brightness concentrated right at the head, so it
   // reads as a distinct bright point instead of just the front edge of a
   // flat-topped band.
   const float FLOW_COMET_HEAD_SIGMA_MULT = 0.12;
-  const float FLOW_COMET_CORE_BOOST = 1.5;
+  // 1.5 read fine back when the (now-removed) bloom pass pre-boosted
+  // uFlowColor by up to 4x before blurring it — blur then spread that
+  // extra brightness into an obviously bigger halo, so even a modest
+  // additive nudge here translated into a dramatic glow change. Rendered
+  // directly on the model with no blur, 1.5x on top of an already-bright
+  // pulse barely moved the on-screen result, which is why widening "Core
+  // length" only ever looked subtle after bloom was dropped. Raised to
+  // compensate so the slider still has real range on its own.
+  const float FLOW_COMET_CORE_BOOST = 4.5;
   // Every sigma below gets floored to cover at least this many screen
   // pixels — same fix as hatchLinesMask/dotsMask/plusMask above, applied to
   // the pulse instead of a fill pattern. vFlowCoord is a 0-1 fraction of
@@ -585,32 +650,58 @@ const CUBE_FRAGMENT_SHADER = `
   // the blocky/double-lobed look reported at steep angles and far zoom.
   // Widening the sigma here keeps the pulse resolvable to begin with.
   const float FLOW_MIN_SIGMA_PX = 1.0;
-  float flowPulseIntensity() {
-    if (!(uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0)) return 0.0;
+  // Returns (headTailIntensity, coreIntensity) separately rather than one
+  // combined scalar — main() below colors them independently (uFlowColor
+  // for the head/tail body, uFlowCoreColor for the hot core lobe), so the
+  // core reads as a visibly distinct hot spot instead of just extra
+  // brightness in the same color.
+  vec2 flowPulseIntensity() {
+    if (!(uBlueprint && uFlowActive && vIsGreen > 0.5 && vFlowCoord >= 0.0)) return vec2(0.0);
     float coordGradLen = length(vec2(dFdx(vFlowCoord), dFdy(vFlowCoord)));
     float minCoordSigma = coordGradLen * FLOW_MIN_SIGMA_PX;
-    float total = 0.0;
+    // minCoordSigma is in vFlowCoord's own 0-1-per-path units — scale it by
+    // vFlowPathLen (same conversion dArc below uses) to floor tail/core
+    // sigma in the world-space units they actually need to be in.
+    float minWorldSigma = minCoordSigma * vFlowPathLen;
+    // This arrow's own pulse count — longer arrows (bigger vFlowPathLen)
+    // get proportionally more, see uFlowPulseDensity above. Floored to the
+    // nearest whole pulse and never less than 1, so even a short arrow
+    // always carries at least the primary pulse.
+    int pulseCount = int(clamp(floor(uFlowPulseDensity * vFlowPathLen + 0.5), 1.0, float(MAX_FLOW_PULSES)));
+    float spacing = uFlowRange / float(pulseCount);
+    float totalBase = 0.0;
+    float totalCore = 0.0;
     for (int i = 0; i < MAX_FLOW_PULSES; i++) {
-      if (i >= uFlowPulseCount) break;
-      float d = vFlowCoord - uFlowPulseCenters[i];
+      if (i >= pulseCount) break;
+      // Extra pulses trail the primary one at even offsets around the
+      // shared travel loop, each wrapped back into [-uFlowPad, uFlowRange -
+      // uFlowPad) so they fade in/out at the loop's ends just like the
+      // primary pulse instead of popping when an offset center wanders past
+      // a boundary. GLSL's mod() (x - y*floor(x/y)) always lands in
+      // [0, uFlowRange) for uFlowRange > 0, unlike JS's %, so no separate
+      // handling for negative input is needed here.
+      float shifted = uFlowBasePulseCenter - float(i) * spacing + uFlowPad;
+      float wrapped = mod(shifted, uFlowRange);
+      float d = vFlowCoord - (wrapped - uFlowPad);
+      // World-space distance from the pulse center — unlike d itself (a
+      // fraction of this specific arrow's own length), this is the same
+      // physical distance meaning on every arrow, which is what lets the
+      // core lobe below stay a fixed size regardless of path length.
+      float dArc = abs(d) * vFlowPathLen;
       float base;
       if (d > 0.0) {
         float sigma = max(uFlowSigma * FLOW_COMET_HEAD_SIGMA_MULT, minCoordSigma);
         base = exp(-(d * d) / (2.0 * sigma * sigma));
       } else {
-        float dArc = abs(d) * vFlowPathLen;
-        // minCoordSigma is in vFlowCoord's own 0-1-per-path units — scale it
-        // by vFlowPathLen (same conversion dArc itself uses) to floor
-        // tailSigma in the world-space units it actually needs to be in.
-        float minWorldSigma = minCoordSigma * vFlowPathLen;
         float tailSigma = max(max(uFlowTailWorldSigma, minWorldSigma), 1e-6);
-        base = exp(-0.5 * pow(dArc / tailSigma, uFlowTailFalloffExponent));
+        base = uFlowTailVisible ? exp(-0.5 * pow(dArc / tailSigma, uFlowTailFalloffExponent)) : 0.0;
       }
-      float coreSigma = max(uFlowSigma * uFlowCoreSigmaMult, minCoordSigma);
-      float core = exp(-(d * d) / (2.0 * coreSigma * coreSigma));
-      total += base + core * FLOW_COMET_CORE_BOOST;
+      float coreSigma = max(uFlowCoreWorldSigma, minWorldSigma);
+      float core = exp(-(dArc * dArc) / (2.0 * coreSigma * coreSigma));
+      totalBase += base;
+      totalCore += core * FLOW_COMET_CORE_BOOST;
     }
-    return total;
+    return vec2(totalBase, totalCore);
   }
 
   void main() {
@@ -627,7 +718,8 @@ const CUBE_FRAGMENT_SHADER = `
     // faces stay bright too, not just the lit ones.
     float shade = uBlueprint ? (0.3 + diff * 1.1) : brightness;
     vec3 color = base * shade;
-    color += uFlowColor * flowPulseIntensity();
+    vec2 flowIntensity = flowPulseIntensity();
+    color += uFlowColor * flowIntensity.x + uFlowCoreColor * flowIntensity.y;
     // Fill-pattern-flagged faces (see aFillPattern / materialFillPatternId)
     // get uHatchLineColor drawn on top of everything above in whichever
     // pattern their material selected, so it reads on top of blueprint
@@ -707,17 +799,21 @@ const BLUEPRINT_THEMES = {
     line: [124 / 255, 134 / 255, 142 / 255], // #7C868E
   },
   light: {
-    bg: [244 / 255, 246 / 255, 247 / 255], // #F4F6F7
+    bg: [1, 1, 1], // #FFFFFF
     fill: [244 / 255, 246 / 255, 247 / 255], // #F4F6F7
     line: [4 / 255, 28 / 255, 44 / 255], // #041C2C
   },
 };
 const BLUEPRINT_FILL_COLOR_GREEN = [68 / 255, 214 / 255, 44 / 255]; // #44D62C
 const BLUEPRINT_LINE_COLOR_GREEN_PART = [0, 0, 0];
-// Bright additive glow color for the traveling flow pulse — added on top of
+// Bright additive glow colors for the traveling flow pulse — added on top of
 // whatever's underneath, so it reads as a light passing through rather than
-// a color swap.
-const BLUEPRINT_FLOW_COLOR = [225 / 255, 248 / 255, 221 / 255];
+// a color swap. Head/tail body and hot core lobe (see
+// FLOW_COMET_CORE_BOOST/uFlowCoreWorldSigma in CUBE_FRAGMENT_SHADER) share
+// the same white, kept as separate uniforms/colors in case they need to
+// diverge again later.
+const BLUEPRINT_FLOW_COLOR = [1, 1, 1];
+const BLUEPRINT_FLOW_CORE_COLOR = [1, 1, 1];
 
 // Builds a blueprint wireframe's edge list from a flat position array and a
 // flat triangle index list (three indices per triangle) — but only keeps
@@ -827,13 +923,17 @@ const uBlueprint = gl.getUniformLocation(cubeProgram, 'uBlueprint');
 const uBlueprintFillColor = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColor');
 const uBlueprintFillColorGreen = gl.getUniformLocation(cubeProgram, 'uBlueprintFillColorGreen');
 const uFlowActive = gl.getUniformLocation(cubeProgram, 'uFlowActive');
-const uFlowPulseCenters = gl.getUniformLocation(cubeProgram, 'uFlowPulseCenters[0]');
-const uFlowPulseCount = gl.getUniformLocation(cubeProgram, 'uFlowPulseCount');
+const uFlowBasePulseCenter = gl.getUniformLocation(cubeProgram, 'uFlowBasePulseCenter');
+const uFlowRange = gl.getUniformLocation(cubeProgram, 'uFlowRange');
+const uFlowPad = gl.getUniformLocation(cubeProgram, 'uFlowPad');
+const uFlowPulseDensity = gl.getUniformLocation(cubeProgram, 'uFlowPulseDensity');
 const uFlowSigma = gl.getUniformLocation(cubeProgram, 'uFlowSigma');
 const uFlowColor = gl.getUniformLocation(cubeProgram, 'uFlowColor');
-const uFlowCoreSigmaMult = gl.getUniformLocation(cubeProgram, 'uFlowCoreSigmaMult');
+const uFlowCoreColor = gl.getUniformLocation(cubeProgram, 'uFlowCoreColor');
+const uFlowCoreWorldSigma = gl.getUniformLocation(cubeProgram, 'uFlowCoreWorldSigma');
 const uFlowTailWorldSigma = gl.getUniformLocation(cubeProgram, 'uFlowTailWorldSigma');
 const uFlowTailFalloffExponent = gl.getUniformLocation(cubeProgram, 'uFlowTailFalloffExponent');
+const uFlowTailVisible = gl.getUniformLocation(cubeProgram, 'uFlowTailVisible');
 const uHatchLineColor = gl.getUniformLocation(cubeProgram, 'uHatchLineColor');
 const uLineFrequency = gl.getUniformLocation(cubeProgram, 'uLineFrequency');
 const uDotFrequency = gl.getUniformLocation(cubeProgram, 'uDotFrequency');
@@ -2922,12 +3022,13 @@ const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // and replace if the model ever changes again.
 const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[-33.67333602905275,0.6334688513144009,-5.099300492059335],[-33.673336029052734,0.6339370829337714,-5.179315505773158],[-33.673336029052734,0.10385314082481045,-5.178646390804898],[-34.33642197886703,0.09333333373069763,-5.17300515430707],[-34.336034799862055,0.09333333373069763,-6.6424453440926]],"touchedObjectIndices":[500],"enabledObjectIndices":[500],"sourceOffset":0,"masterTotalLen":2.742734374529774},{"points":[[-34.833863038597045,0.09333333373069763,-4.990590645997877],[-33.68693837931779,0.09333333373069763,-4.9914932159016985],[-33.67333602905275,0.4826526655058707,-4.993658371678258]],"touchedObjectIndices":[469],"enabledObjectIndices":[469],"sourceOffset":0,"masterTotalLen":1.536487915533214},{"points":[[-33.78354617495815,0.2800000011920787,-4.123070418601841],[-33.67767859420686,0.2800000011920787,-4.124411198391016],[-33.67333602905274,0.6302302259155255,-4.124307431025137],[-33.67333602905274,0.6295758712951454,-4.878244125480762]],"touchedObjectIndices":[452],"enabledObjectIndices":[452],"sourceOffset":0,"masterTotalLen":1.2100702102757512},{"points":[[-33.32420476002098,1.2577114491708272,-5.285326013957132],[-33.32296006593586,1.2583338584281734,-4.995782500557958],[-33.657797496354306,1.090916293413585,-4.994099790208907],[-33.669162634621344,1.0733935068405174,-4.986517049287329],[-33.67333221435546,0.7885513701981637,-4.994376147461708]],"touchedObjectIndices":[455],"enabledObjectIndices":[455],"sourceOffset":0,"masterTotalLen":0.9711104332982854},{"points":[[-3.545370438687139,0.0889253318309784,-4.02120909084195],[-2.3039824711500287,0.0889253318309926,-4.022964701175553],[-2.307952797638868,0.0889253318309926,-5.128014704598215],[-1.6991531674456155,0.0889253318309784,-5.127725425432118],[-1.6936733722686768,0.4806781991282705,-5.130003931825662]],"touchedObjectIndices":[464],"enabledObjectIndices":[464],"sourceOffset":0,"masterTotalLen":3.3470438599599985},{"points":[[-1.2446098828058325,2.8791640714992326,-6.6464924812316895],[-1.2434510702200967,2.9714566618539493,-6.646492481231682],[-1.2362821235638108,2.989035367965684,-6.5128454175166155],[-1.2455523082880262,1.9655008783336427,-6.499578475952148],[-1.243214283300901,1.9481827020645284,-5.137658892077695],[-1.560959332080536,1.9481827020645284,-5.139350339433168],[-1.5664444792017136,2.0933260917663716,-5.129035598032328],[-1.6844905121384706,2.0933260917663574,-5.132020131464714],[-1.693333387374878,0.7782431359708681,-5.130084734400263]],"touchedObjectIndices":[272],"enabledObjectIndices":[272],"sourceOffset":0,"masterTotalLen":4.509542884635783},{"points":[[-0.5052271805852371,0.0889253318309784,-4.183513742795114],[-0.5110608126283864,0.0889253318309784,-4.026547851175067],[-0.9624689833783862,0.0889253318309784,-4.024944936016851]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":0,"masterTotalLen":3.568297247388635},{"points":[[-0.9593934528637931,0.0889253318309926,-4.189260081557322],[-0.9624689833783862,0.0889253318309784,-4.024944936016851]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":0.6084852742361518,"masterTotalLen":3.568297247388635},{"points":[[-0.9624689833783862,0.0889253318309784,-4.024944936016851],[-1.4159273931998086,0.08892533183096418,-4.030957359749507]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":0.6084852742361518,"masterTotalLen":3.568297247388635},{"points":[[-1.4036374297271124,0.0889253318309784,-4.187952105857235],[-1.4159273931998086,0.08892533183096418,-4.030957359749507]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":1.0619835417928363,"masterTotalLen":3.568297247388635},{"points":[[-1.4159273931998086,0.08892533183096418,-4.030957359749507],[-2.0966853166633825,0.0889253318309784,-4.024516778344889],[-2.1049183626496557,0.0889253318309784,-5.049078083369096],[-1.6952627329553849,0.08892533183096418,-5.051043516499163],[-1.693673372268691,0.48014507145907004,-5.057147795352122]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":1.0619835417928363,"masterTotalLen":3.568297247388635},{"points":[[-3.014371155879864,0.08868800103665819,-8.063377333100462],[-2.508953709940149,0.08868800103662977,-8.062679889324755],[-2.5107751005562715,0.08868800103662977,-6.641391648079718]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":0,"masterTotalLen":4.561781532348327},{"points":[[-2.5107751005562715,0.08868800103662977,-6.641391648079718],[-3.019299699296553,0.08868800103664398,-6.637623239598327]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":1.9267073354602382,"masterTotalLen":4.561781532348327},{"points":[[-2.5107751005562715,0.08868800103662977,-6.641391648079718],[-2.512596986987414,0.08868800103664398,-5.20532039295415]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":1.9267073354602382,"masterTotalLen":4.561781532348327},{"points":[[-2.512596986987414,0.08868800103664398,-5.20532039295415],[-3.0151256508047664,0.08868800103664398,-5.209381583373798]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":3.362779746262735,"masterTotalLen":4.561781532348327},{"points":[[-2.512596986987414,0.08868800103664398,-5.20532039295415],[-1.701865099401573,0.08868800103662977,-5.2064795508370025],[-1.6936733722686483,0.47687063124877227,-5.20658818051011]],"touchedObjectIndices":[517],"enabledObjectIndices":[517],"sourceOffset":3.362779746262735,"masterTotalLen":4.561781532348327},{"points":[[56.64267714550567,4.968986209546813,-12.126598031036224],[27.523574865830284,4.967351936525006,-12.131152901015355]],"touchedObjectIndices":[255,524],"enabledObjectIndices":[255,524],"sourceOffset":0,"masterTotalLen":29.119102681777225},{"points":[[56.639257384320956,4.972883906455081,-14.18441350946614],[27.683999898248885,4.948396873634977,-14.176995998733673]],"touchedObjectIndices":[252,523],"enabledObjectIndices":[252,523],"sourceOffset":0,"masterTotalLen":28.955268790307827},{"points":[[56.59511154597794,3.960689692842152,-14.175570766584428],[27.712595036696314,3.938394158777214,-14.169512149511888]],"touchedObjectIndices":[253,521],"enabledObjectIndices":[253,521],"sourceOffset":0,"masterTotalLen":28.882525750124515},{"points":[[56.62485130331089,2.9628874175188002,-14.176398252495716],[27.615066068317844,2.947036058732351,-14.171930787410304]],"touchedObjectIndices":[254,519],"enabledObjectIndices":[254,519],"sourceOffset":0,"masterTotalLen":29.009789909688077},{"points":[[56.60939563623336,3.9604482056058146,-12.120713853240204],[27.662967160182006,3.9488361380687707,-12.122798679489222]],"touchedObjectIndices":[256,522],"enabledObjectIndices":[256,522],"sourceOffset":0,"masterTotalLen":28.946430880261726},{"points":[[56.580646683000566,2.9630913259489375,-12.125700416702443],[27.589015513606,2.957438173277069,-12.126803350970505]],"touchedObjectIndices":[257,520],"enabledObjectIndices":[257,520],"sourceOffset":0,"masterTotalLen":28.99163174153552}];
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
-// Fixed reference length (world units) the tail's reach is computed against
-// instead of each arrow's own masterTotalLen, so the "Tail length" slider
-// produces the same absolute tail distance on every arrow regardless of how
-// long that specific arrow is drawn. Chosen to roughly match the previous
-// look on a mid-length arrow; tune directly if tails read too long/short.
-const MODEL_FLOW_TAIL_REFERENCE_LENGTH = 3;
+// Fixed reference length (world units) the tail's and core's reach are both
+// computed against instead of each arrow's own masterTotalLen, so the "Tail
+// length"/"Core length" sliders produce the same absolute size on every
+// arrow regardless of how long that specific arrow is drawn. Chosen to
+// roughly match the previous look on a mid-length arrow; tune directly if
+// tails/cores read too long/short.
+const MODEL_FLOW_REFERENCE_LENGTH = 3;
 // Sentinel aFlowCoord for a green vertex no arrow reaches (no path enables
 // its object) — any negative value works since real arc-length fractions
 // are always in [0, 1]; the fragment shader's `vFlowCoord >= 0.0` check is
@@ -4484,43 +4585,45 @@ function renderCubeFrame() {
   // from the GPU.
   const flowActive = blueprintEnabled && customModelReady && modelFlowPaths.length > 0;
   let flowSigma = 0.02;
-  const flowPulseCentersArray = flowPulseCentersScratch;
-  const flowPulseCount = Math.min(FLOW_PULSE_FREQUENCY_MAX, Math.max(1, Math.round(flowPulseFrequencyValue)));
+  let flowRange = 0;
+  let flowPad = 0;
+  let flowBasePulseCenter = 0;
+  let flowPulseDensity = 0;
   if (flowActive) {
     flowSigma = Math.max(0.02, MODEL_FLOW_PULSE_BAND_FRACTION * pulseBandFraction * 4);
-    const flowPad = flowSigma * FLOW_PULSE_PAD_SIGMAS;
-    const flowRange = 1 + 2 * flowPad;
+    flowPad = flowSigma * FLOW_PULSE_PAD_SIGMAS;
+    flowRange = 1 + 2 * flowPad;
     // Linear for now (was an eased t^3 ease-in — the pulse noticeably
     // lingered at the start of each loop before accelerating through the
     // rest of the arrow).
     const flowPeriodMs = FLOW_PULSE_PERIOD_BASE_MS * (100 / flowSpeedPercent);
     const pulseProgress = (performance.now() % flowPeriodMs) / flowPeriodMs;
-    const basePulseCenter = -flowPad + pulseProgress * flowRange;
-    // Extra pulses (see the "Pulse frequency" slider) trail the primary one
-    // at even offsets around the same travel loop, each wrapped back into
-    // [-flowPad, 1+flowPad) so they fade in/out at the loop's ends just like
-    // the primary pulse instead of popping when an offset center wanders
-    // past a boundary.
-    const spacing = flowRange / flowPulseCount;
-    for (let i = 0; i < flowPulseCount; i++) {
-      const shifted = basePulseCenter - i * spacing + flowPad;
-      const wrapped = ((shifted % flowRange) + flowRange) % flowRange;
-      flowPulseCentersArray[i] = wrapped - flowPad;
-    }
+    flowBasePulseCenter = -flowPad + pulseProgress * flowRange;
+    // Pulses-per-MODEL_FLOW_REFERENCE_LENGTH-of-path-length — see
+    // uFlowPulseDensity/FLOW_PULSE_FREQUENCY_MIN. CUBE_FRAGMENT_SHADER
+    // multiplies this by each vertex's own vFlowPathLen (floored/capped) to
+    // get that specific arrow's own pulse count, so it still reduces to
+    // exactly flowPulseFrequencyValue for a MODEL_FLOW_REFERENCE_LENGTH-ish
+    // arrow.
+    flowPulseDensity = flowPulseFrequencyValue / MODEL_FLOW_REFERENCE_LENGTH;
   }
   gl.uniform1i(uFlowActive, flowActive ? 1 : 0);
   if (flowActive) {
-    gl.uniform1fv(uFlowPulseCenters, flowPulseCentersArray);
-    gl.uniform1i(uFlowPulseCount, flowPulseCount);
+    gl.uniform1f(uFlowBasePulseCenter, flowBasePulseCenter);
+    gl.uniform1f(uFlowRange, flowRange);
+    gl.uniform1f(uFlowPad, flowPad);
+    gl.uniform1f(uFlowPulseDensity, flowPulseDensity);
     gl.uniform1f(uFlowSigma, flowSigma);
     gl.uniform3f(uFlowColor, BLUEPRINT_FLOW_COLOR[0], BLUEPRINT_FLOW_COLOR[1], BLUEPRINT_FLOW_COLOR[2]);
-    gl.uniform1f(uFlowCoreSigmaMult, flowCoreLengthPercent / 100);
-    // Absolute world-space tail reach — MODEL_FLOW_TAIL_REFERENCE_LENGTH
+    gl.uniform3f(uFlowCoreColor, BLUEPRINT_FLOW_CORE_COLOR[0], BLUEPRINT_FLOW_CORE_COLOR[1], BLUEPRINT_FLOW_CORE_COLOR[2]);
+    // Absolute world-space core/tail reach — MODEL_FLOW_REFERENCE_LENGTH
     // stands in for "this specific arrow's own length" (see
-    // aFlowPathLen/vFlowPathLen) so every arrow's tail covers the same real
-    // distance instead of a distance proportional to its own length.
-    gl.uniform1f(uFlowTailWorldSigma, flowSigma * (flowTailLengthPercent / 100) * MODEL_FLOW_TAIL_REFERENCE_LENGTH);
+    // aFlowPathLen/vFlowPathLen) so every arrow's core/tail covers the same
+    // real distance instead of a distance proportional to its own length.
+    gl.uniform1f(uFlowCoreWorldSigma, flowSigma * (flowCoreLengthPercent / 100) * MODEL_FLOW_REFERENCE_LENGTH);
+    gl.uniform1f(uFlowTailWorldSigma, flowSigma * (flowTailLengthPercent / 100) * MODEL_FLOW_REFERENCE_LENGTH);
     gl.uniform1f(uFlowTailFalloffExponent, flowTailFalloffValue);
+    gl.uniform1i(uFlowTailVisible, flowTailVisible ? 1 : 0);
   }
 
   // In blueprint mode the filled pass is nudged back with polygon offset so
@@ -5182,6 +5285,7 @@ export const controls = {
       flowCoreLength: flowCoreLengthPercent,
       flowCoreLengthMin: FLOW_CORE_LENGTH_MIN,
       flowCoreLengthMax: FLOW_CORE_LENGTH_MAX,
+      flowTailVisible,
       flowTailLength: flowTailLengthPercent,
       flowTailLengthMin: FLOW_TAIL_LENGTH_MIN,
       flowTailLengthMax: FLOW_TAIL_LENGTH_MAX,
@@ -5238,6 +5342,7 @@ export const controls = {
   setFlowPulseFrequency,
   setFlowSpeedPercent,
   setFlowCoreLengthPercent,
+  setFlowTailVisible,
   setFlowTailLengthPercent,
   setFlowTailFalloff,
   setCubeSizePercent,

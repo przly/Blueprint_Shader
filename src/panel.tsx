@@ -1048,8 +1048,20 @@ export function Panel() {
               </Slider>
             </Field>
 
-            <Field>
+            <Label className="gap-2.5 text-xs">
+              <Switch
+                checked={state.flowTailVisible}
+                onCheckedChange={(checked: boolean) => {
+                  controls.setFlowTailVisible(checked);
+                  setState((s) => ({ ...s, flowTailVisible: checked }));
+                }}
+              />
+              Show tail
+            </Label>
+
+            <Field className={cn(!state.flowTailVisible && "opacity-40")}>
               <Slider
+                disabled={!state.flowTailVisible}
                 max={state.flowTailLengthMax}
                 min={state.flowTailLengthMin}
                 onValueChange={(value: number | readonly number[]) => {
@@ -1066,8 +1078,9 @@ export function Panel() {
               </Slider>
             </Field>
 
-            <Field>
+            <Field className={cn(!state.flowTailVisible && "opacity-40")}>
               <Slider
+                disabled={!state.flowTailVisible}
                 max={state.flowTailFalloffMax}
                 min={state.flowTailFalloffMin}
                 onValueChange={(value: number | readonly number[]) => {
