@@ -15,9 +15,29 @@
 const CARD_DURATION_MS = 10000;
 
 const cards = Array.from(document.querySelectorAll('.hero-card'));
+const cardsRow = document.querySelector('.hero-cards');
+
+// Matches hero.css's own mobile breakpoint (keep both in sync) and
+// main.js's HERO_MOBILE_BREAKPOINT_PX — below this width, hero.css turns
+// .hero-cards into a horizontal carousel (see its media query) and this
+// script becomes responsible for sliding it to whichever card is active.
+const MOBILE_CAROUSEL_QUERY = window.matchMedia('(max-width: 720px)');
 
 let currentIndex = null;
 let timerStart = null;
+
+// Slides .hero-cards so the active card sits flush with the row's own
+// left padding (its offsetLeft, measured — not computed from card
+// width/gap constants, so it stays correct regardless of viewport width
+// or any future CSS tweak to those values). No-ops outside the mobile
+// carousel breakpoint, where .hero-cards never gets a transform at all.
+function updateCarouselTransform() {
+  if (!MOBILE_CAROUSEL_QUERY.matches || currentIndex === null) {
+    cardsRow.style.transform = '';
+    return;
+  }
+  cardsRow.style.transform = `translateX(${-cards[currentIndex].offsetLeft}px)`;
+}
 
 function setActiveCard(index) {
   currentIndex = index;
@@ -32,6 +52,7 @@ function setActiveCard(index) {
     progress.style.transition = 'none';
     progress.style.width = '0%';
   });
+  updateCarouselTransform();
 }
 
 function tick(now) {
@@ -68,5 +89,12 @@ window.heroScene.onTargetChange((index) => {
 // changes, not the current state.
 const activeAtLoad = window.heroScene.getActiveTarget();
 if (activeAtLoad !== null) setActiveCard(activeAtLoad);
+
+// Card offsetLeft (what updateCarouselTransform slides against) changes
+// with viewport width, and crossing the breakpoint itself flips whether a
+// transform should apply at all — resync on both a plain resize (covers
+// orientation changes) and the breakpoint's own match state flipping.
+window.addEventListener('resize', updateCarouselTransform);
+MOBILE_CAROUSEL_QUERY.addEventListener('change', updateCarouselTransform);
 
 requestAnimationFrame(tick);

@@ -91,7 +91,16 @@
    passed. When full, it should move to the next one." Wired up in
    hero-cards.js against window.heroScene (see main.js). Unlike the rest of
    .hero-overlay, these are real interactive controls, so pointer-events is
-   re-enabled here. */
+   re-enabled here.
+
+   .hero-cards-viewport clips the carousel on mobile (see the media query
+   below and node 2873:11646) — on desktop it does nothing, since nothing
+   there ever overflows it. */
+.hero-cards-viewport {
+  width: 100%;
+  overflow: visible;
+}
+
 .hero-cards {
   display: flex;
   gap: 10px;
@@ -184,11 +193,45 @@
   display: block;
 }
 
+/* Mobile (Figma: node 2873:11646, an iPhone-width frame) — narrower
+   margins, a smaller title, and the cards become a one-at-a-time
+   horizontal carousel instead of a row: only the active card sits fully
+   in view (same 20px inset the title uses), with ~12px of each neighbor
+   peeking in at the screen edges. hero-cards.js drives .hero-cards'
+   transform (translateX to whichever card is active) — this media query
+   only sets up the geometry it needs to compute against and the slide
+   transition; keep HERO_MOBILE_BREAKPOINT_PX in main.js in sync with the
+   720px used here. */
 @media (max-width: 720px) {
-  .hero-cards {
-    flex-wrap: wrap;
+  .hero-content {
+    left: 20px;
+    right: 20px;
   }
+
+  .hero-title {
+    font-size: clamp(28px, 9vw, 36px);
+  }
+
+  .hero-cards-viewport {
+    overflow: hidden;
+    /* Break out of .hero-content's 20px inset so peeking neighbor cards
+       can bleed to the true viewport edges, matching the design — the
+       row itself re-adds that same 20px as its own padding below, so the
+       active card still lands flush with the title's own left edge. */
+    width: 100vw;
+    margin-left: -20px;
+    margin-right: -20px;
+  }
+
+  .hero-cards {
+    gap: 8px;
+    max-width: none;
+    padding-left: 20px;
+    transition: transform 450ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
   .hero-card {
-    flex: 1 1 45%;
+    flex: 0 0 calc(100vw - 40px);
+    max-width: none;
   }
 }
