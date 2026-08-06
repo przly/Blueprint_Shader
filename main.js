@@ -2009,7 +2009,17 @@ function advanceParallax() {
 // — a browser will often deliver 'pointerenter' within the first frame or
 // two, before the intro's own rotation has moved far enough for the snap
 // above to be worth avoiding in the first place.
-window.addEventListener('pointerenter', updateParallaxTargetFromPointer);
+//
+// Touch has no persistent hover, so unlike mouse (where this only fires once,
+// on first entering the window), every single touch contact re-fires
+// 'pointerenter' as a "fresh entry" — including mid-swipe, since each finger
+// lift/re-touch counts as entering anew. Left ungated, that call would run
+// unconditionally and bypass the hold-gate in the pointerdown/pointermove
+// listeners above, so a touch's pending state must be respected here too.
+window.addEventListener('pointerenter', (event) => {
+  if (IS_HERO && event.pointerType === 'touch' && !heroTouchHoldActive) return;
+  updateParallaxTargetFromPointer(event);
+});
 
 if (!IS_HERO) {
 window.addEventListener('pointerup', () => {
