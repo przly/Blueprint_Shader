@@ -5,7 +5,11 @@
 @import "@fontsource-variable/geist-mono";
 
 .hero-overlay {
-  position: fixed;
+  /* absolute (not fixed) so this scrolls away with the canvas and the rest
+     of the page instead of staying pinned on screen past the hero section —
+     inset: 0 still sizes/positions it identically to one viewport, anchored
+     to the top of the document rather than the currently visible viewport. */
+  position: absolute;
   inset: 0;
   /* Purely decorative text over the canvas — never intercepts hover-rotation
      or (eventually) FE-added UI buttons layered above this. */
