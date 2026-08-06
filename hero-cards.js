@@ -16,6 +16,7 @@ const CARD_DURATION_MS = 10000;
 
 const cards = Array.from(document.querySelectorAll('.hero-card'));
 const cardsRow = document.querySelector('.hero-cards');
+const heroContent = document.querySelector('.hero-content');
 
 // Matches hero.css's own mobile breakpoint (keep both in sync) and
 // main.js's HERO_MOBILE_BREAKPOINT_PX — below this width, hero.css turns
@@ -25,18 +26,42 @@ const MOBILE_CAROUSEL_QUERY = window.matchMedia('(max-width: 720px)');
 
 let currentIndex = null;
 let timerStart = null;
+let carouselTranslateX = 0;
 
-// Slides .hero-cards so the active card sits flush with the row's own
-// left padding (its offsetLeft, measured — not computed from card
-// width/gap constants, so it stays correct regardless of viewport width
-// or any future CSS tweak to those values). No-ops outside the mobile
-// carousel breakpoint, where .hero-cards never gets a transform at all.
+// Slides .hero-cards so the active card's actual on-screen left edge lands
+// exactly on .hero-content's own left edge — i.e. whatever the real 20px
+// mobile inset (hero.css) currently renders as, read live via
+// getBoundingClientRect rather than assumed as a hardcoded number. This is
+// deliberately not offsetLeft: since none of .hero-cards-viewport/
+// .hero-cards/.hero-card set their own `position`, offsetLeft resolves
+// against whichever ancestor happens to establish the nearest positioned
+// containing block (here, .hero-content itself) — a coincidence, not a
+// guarantee, and it silently breaks if that ancestor chain ever changes.
+// getBoundingClientRect gives true viewport coordinates for both elements,
+// with no such ambiguity. Since each card's own width is exactly
+// `calc(100vw - 40px)` (hero.css), matching the left edge alone guarantees
+// the right edge lands 20px from the opposite side too.
+//
+// Deliberately never clears the transform before measuring (an earlier
+// version briefly set it to 'none' to get an untransformed reading) —
+// getBoundingClientRect forces a synchronous layout, so that momentarily
+// committed the row to its untranslated position, and since mobile
+// browsers fire 'resize' constantly during ordinary scrolling (the address
+// bar showing/hiding), that flashed the wrong card into view mid-scroll.
+// Instead this reads the card's *current* on-screen position (transform
+// already applied), so the delta it computes is always relative to
+// wherever the row visually already is — the transition then animates
+// from that real position, never through an untransformed one.
 function updateCarouselTransform() {
   if (!MOBILE_CAROUSEL_QUERY.matches || currentIndex === null) {
     cardsRow.style.transform = '';
+    carouselTranslateX = 0;
     return;
   }
-  cardsRow.style.transform = `translateX(${-cards[currentIndex].offsetLeft}px)`;
+  const targetLeft = heroContent.getBoundingClientRect().left;
+  const cardLeft = cards[currentIndex].getBoundingClientRect().left;
+  carouselTranslateX += targetLeft - cardLeft;
+  cardsRow.style.transform = `translateX(${carouselTranslateX}px)`;
 }
 
 function setActiveCard(index) {
