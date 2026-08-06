@@ -5219,8 +5219,18 @@ function capturePhoto() {
 }
 
 function resize() {
-  const rawWidth = Math.round(window.innerWidth * DPR);
-  const rawHeight = Math.round(window.innerHeight * DPR);
+  // canvas.clientWidth/Height (the element's own actual CSS-rendered box),
+  // not window.innerWidth/innerHeight — those two are usually the same, but
+  // diverge on iOS Safari while the bottom URL bar auto-hides/shows during a
+  // scroll: window.innerHeight tracks that animation's live layout-viewport
+  // state, while the canvas's own CSS box (100vw/100vh) does not update on
+  // the same schedule. Using window.innerHeight here made the projection's
+  // aspect ratio momentarily disagree with the canvas's real on-screen box
+  // every time the bar moved, which read as the model visibly stretching.
+  const cssWidth = canvas.clientWidth;
+  const cssHeight = canvas.clientHeight;
+  const rawWidth = Math.round(cssWidth * DPR);
+  const rawHeight = Math.round(cssHeight * DPR);
   const capScale = Math.min(1, CANVAS_MAX_DIMENSION / Math.max(rawWidth, rawHeight));
   canvasBaseWidth = Math.round(rawWidth * capScale);
   canvasBaseHeight = Math.round(rawHeight * capScale);
@@ -5229,7 +5239,7 @@ function resize() {
   // render-scaled) backing store — capScale and renderScale both apply
   // uniformly to width and height, so the backing store's aspect always
   // matches this regardless of either one.
-  updateCubeProjection(window.innerWidth / window.innerHeight);
+  updateCubeProjection(cssWidth / cssHeight);
   // Depends on the cubeProjectionHalfY updateCubeProjection just set, so
   // this has to run after it, not before.
   updateHeroVerticalBias();
