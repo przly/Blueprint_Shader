@@ -6,6 +6,16 @@
 // perceive — only very high-DPR phones/tablets (3x) hit the cap.
 const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
+// Build-time flag (replaced with a literal true/false by Vite's `define` —
+// see vite.hero.config.ts) that gates every dev/authoring-only block in this
+// file: keyboard shortcuts, drag/pan/zoom interactions, flow-arrow drawing,
+// photo mode, the perf-monitor/axis-gizmo overlays, model upload, and the
+// React panel bridge. Terser's dead-code elimination physically strips
+// `if (!IS_HERO) { ... }` blocks from the hero build's output, the same
+// mechanism that strips `if (import.meta.env.DEV)` blocks from production
+// React builds — so none of that code ships to the hero bundle at all.
+const IS_HERO = typeof __HERO__ !== 'undefined' && __HERO__;
+
 // --- DOM --------------------------------------------------------------
 
 const canvas = document.getElementById('canvas');
@@ -1515,6 +1525,13 @@ updateCubeCursor();
 // or the model-name select, and preventDefault stops the page from
 // scrolling (there's normally nothing to scroll, but also stops Space from
 // re-clicking whatever button last had focus).
+// Read by updateParallaxTargetFromPointer (always active, even in the hero
+// build) — declared here, outside the `if (!IS_HERO)` guard below, so it
+// stays in scope for that function regardless of which build this is; the
+// held-R listeners that actually set it true are still gated.
+let rKeyHeld = false;
+
+if (!IS_HERO) {
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'Space' || spaceHeld) return;
   const tag = document.activeElement?.tagName;
@@ -1557,7 +1574,6 @@ window.addEventListener('blur', () => {
 // releasing R always leaves the model at whatever angle it was already at.
 // rKeyHeld (separate from rotationDisabled itself) exists purely to ignore
 // keyboard auto-repeat's duplicate keydown events while held.
-let rKeyHeld = false;
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'KeyR') return;
   const tag = document.activeElement?.tagName;
@@ -1704,7 +1720,22 @@ window.addEventListener('keydown', (event) => {
   event.preventDefault();
   goToDefaultCameraView();
 });
+} // end if (!IS_HERO) — keyboard shortcuts
 
+// wheelZoomSyncRAF/scheduleWheelZoomSync stay outside the IS_HERO guard —
+// renderCubeFrame's intro zoom tween (see cubeRotResetZoomInFactor) calls
+// scheduleWheelZoomSync directly, so both builds need it; only the
+// mouse-wheel listener itself (below) is a hero-excluded interaction.
+let wheelZoomSyncRAF = null;
+function scheduleWheelZoomSync() {
+  if (wheelZoomSyncRAF !== null) return;
+  wheelZoomSyncRAF = requestAnimationFrame(() => {
+    wheelZoomSyncRAF = null;
+    persistNumber('cubeSize', cubeSizePercent);
+    notifyModelState();
+  });
+}
+if (!IS_HERO) {
 // Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
 // and out, reusing the exact same underlying scale as the "Model size"
 // slider (see applyCubeSizePercent) — so it zooms into the pivot crosshair
@@ -1716,15 +1747,6 @@ window.addEventListener('keydown', (event) => {
 // specifically (not window) so scrolling the side panels' own overflowing
 // content doesn't also zoom the 3D view underneath them.
 const CUBE_WHEEL_ZOOM_SPEED = 0.0018; // tuned so one typical mouse-wheel notch (~100 deltaY) feels like one comfortable zoom step
-let wheelZoomSyncRAF = null;
-function scheduleWheelZoomSync() {
-  if (wheelZoomSyncRAF !== null) return;
-  wheelZoomSyncRAF = requestAnimationFrame(() => {
-    wheelZoomSyncRAF = null;
-    persistNumber('cubeSize', cubeSizePercent);
-    notifyModelState();
-  });
-}
 canvas.addEventListener(
   'wheel',
   (event) => {
@@ -1735,7 +1757,13 @@ canvas.addEventListener(
   },
   { passive: false },
 );
+} // end if (!IS_HERO) — wheel zoom
 
+if (!IS_HERO) {
+// The hero build has no rotate-drag/space-pan/Z-height-drag/edit-view-pan
+// interactions at all (see updateParallaxTargetFromPointer's own pointermove
+// listener further down, kept outside this guard) — only ambient
+// hover-parallax remains.
 canvas.addEventListener('pointerdown', (event) => {
   if (modelFlowSelectMode) return;
   if (zKeyHeld) {
@@ -1781,8 +1809,13 @@ canvas.addEventListener('pointerdown', (event) => {
   cubeLastPointer = { x: event.clientX, y: event.clientY };
   canvas.style.cursor = 'grabbing';
 });
+} // end if (!IS_HERO) — pointerdown drag interactions
 
 window.addEventListener('pointermove', (event) => {
+  if (IS_HERO) {
+    updateParallaxTargetFromPointer(event);
+    return;
+  }
   if (editPanDragging) {
     // Horizontal -> X, vertical -> Z — same ground-plane mapping panDragging
     // (Space-drag) uses; see editPanDragging's own comment for why Y never
@@ -1931,6 +1964,7 @@ function advanceParallax() {
 // above to be worth avoiding in the first place.
 window.addEventListener('pointerenter', updateParallaxTargetFromPointer);
 
+if (!IS_HERO) {
 window.addEventListener('pointerup', () => {
   cubeDragging = false;
   if (panDragging) {
@@ -1947,6 +1981,7 @@ window.addEventListener('pointerup', () => {
   }
   updateCubeCursor();
 });
+} // end if (!IS_HERO) — pointerup drag reset
 
 // --- Custom model upload (cube mode's "Use custom model" option) -------
 //
@@ -2400,7 +2435,10 @@ let showCameraTargetBoxes = false;
 // dev/presenter aid for seeing the current rotation/zoom pivot, and reading
 // as clutter over an otherwise-clean shot once the panels (and therefore
 // the presenter chrome generally) are intentionally hidden.
-let panelsHidden = false;
+// Hero starts (and stays) with this true — there's no panel to hide/show it,
+// and the pivot orb/floor guide it gates are presenter-facing dev aids that
+// should never appear on the production hero build.
+let panelsHidden = IS_HERO;
 function setPanelsHidden(hidden) {
   panelsHidden = !!hidden;
 }
@@ -3009,7 +3047,11 @@ async function loadBundledDefaultModel() {
       ),
       MODEL_LOAD_PHASE2_START_MS,
     );
-    if (!restoreModelFlowPath()) applyDefaultModelFlowPath();
+    // Hero never restores a locally-drawn arrow from localStorage — every
+    // visitor is effectively a fresh session, so it always plays the baked
+    // default flow path. IS_HERO short-circuits before restoreModelFlowPath()
+    // is even called.
+    if (IS_HERO || !restoreModelFlowPath()) applyDefaultModelFlowPath();
   } catch (err) {
     console.error(err);
   }
@@ -3017,6 +3059,7 @@ async function loadBundledDefaultModel() {
 
 // Drag-and-drop a .obj (+ optional .mtl) anywhere on the page as an
 // alternative to the file picker — same loadModelFromFiles path either way.
+if (!IS_HERO) {
 window.addEventListener('dragover', (event) => {
   event.preventDefault();
 });
@@ -3025,6 +3068,7 @@ window.addEventListener('drop', (event) => {
   const files = Array.from(event.dataTransfer?.files || []);
   if (files.length) loadModelFromFiles(files);
 });
+} // end if (!IS_HERO) — drag-and-drop model upload
 
 // --- 3D flow arrows: draw one or more paths on the model's green parts, pulse follows each ---
 //
@@ -4065,9 +4109,11 @@ function setModelFlowPointsVisible(value) {
 
 // Suppress the browser's right-click menu while drawing so right-drag reads
 // as a rotate gesture instead of popping up a context menu mid-drag.
+if (!IS_HERO) {
 canvas.addEventListener('contextmenu', (event) => {
   if (modelFlowDrawMode) event.preventDefault();
 });
+} // end if (!IS_HERO) — flow-draw contextmenu suppression
 
 // Pushes the current branch onto completedBranches, provided it has the 2+
 // points needed to form a real line — a lone point (e.g. a junction that
@@ -4155,6 +4201,7 @@ function finalizeModelFlowDrag() {
   notifyModelState();
 }
 
+if (!IS_HERO) {
 canvas.addEventListener('pointerdown', (event) => {
   if (!blueprintEnabled) return;
   if (modelFlowSelectMode) {
@@ -4289,7 +4336,14 @@ canvas.addEventListener('pointerdown', (event) => {
   modelFlowLastClickTime = now;
   modelFlowLastClickPos = { x: event.clientX, y: event.clientY };
 });
+} // end if (!IS_HERO) — flow-draw/select pointerdown
 
+// Read by renderCubeFrame's rubber-band preview (always active) — declared
+// here, outside the `if (!IS_HERO)` guards, so it stays in scope regardless
+// of build; only ever set non-null by the gated pointermove listener below.
+let modelFlowHoverClientPos = null;
+
+if (!IS_HERO) {
 // Rubber-band preview: while a branch is mid-drag, renderCubeFrame draws a
 // dashed line from the last placed point out to wherever the cursor
 // currently raycasts onto the green mesh — showing where the next click
@@ -4298,7 +4352,6 @@ canvas.addEventListener('pointerdown', (event) => {
 // event (which can fire far faster than the display refreshes) — this just
 // records the latest client position cheaply, and renderCubeFrame raycasts
 // it at most once per rendered frame, see modelFlowHoverClientPos below.
-let modelFlowHoverClientPos = null;
 canvas.addEventListener('pointermove', (event) => {
   modelFlowHoverClientPos = modelFlowDrawMode && modelFlowDrag ? { x: event.clientX, y: event.clientY } : null;
 });
@@ -4335,6 +4388,7 @@ window.addEventListener('pointerup', (event) => {
   // double-click, both handled in the pointerdown listener above — pointerup
   // has nothing left to do for draw mode itself.
 });
+} // end if (!IS_HERO) — flow-draw rubber-band preview + select pointerup
 
 // Bottom-right axis gizmo: a small always-visible indicator of which way
 // object-space X/Y/Z currently point on screen, so panning/rotating (drag,
@@ -4347,12 +4401,19 @@ window.addEventListener('pointerup', (event) => {
 // Reuses rotateXVec3/rotateYVec3 (see unprojectViewPointToObject above) with
 // the exact same rotation order renderCubeFrame's modelView applies
 // (Y then X) so the gizmo's orientation always matches the model's.
-const axisGizmoCanvas = document.getElementById('axis-gizmo');
-const axisGizmoCtx = axisGizmoCanvas.getContext('2d');
+// #axis-gizmo doesn't exist in the hero build's HTML (see hero.html) — every
+// lookup/size below is IS_HERO-guarded so module load never dereferences a
+// null canvas; drawAxisGizmo itself stays a normal top-level declaration
+// (its call site in renderCubeFrame is what's actually gated) so it's never
+// invoked in hero regardless.
+const axisGizmoCanvas = IS_HERO ? null : document.getElementById('axis-gizmo');
+const axisGizmoCtx = IS_HERO ? null : axisGizmoCanvas.getContext('2d');
 const AXIS_GIZMO_DPR = Math.max(1, window.devicePixelRatio || 1);
-axisGizmoCanvas.width = axisGizmoCanvas.clientWidth * AXIS_GIZMO_DPR || axisGizmoCanvas.width;
-axisGizmoCanvas.height = axisGizmoCanvas.clientHeight * AXIS_GIZMO_DPR || axisGizmoCanvas.height;
-const AXIS_GIZMO_RADIUS = (axisGizmoCanvas.width / 2) * 0.68; // leaves room for the end labels within the canvas
+if (!IS_HERO) {
+  axisGizmoCanvas.width = axisGizmoCanvas.clientWidth * AXIS_GIZMO_DPR || axisGizmoCanvas.width;
+  axisGizmoCanvas.height = axisGizmoCanvas.clientHeight * AXIS_GIZMO_DPR || axisGizmoCanvas.height;
+}
+const AXIS_GIZMO_RADIUS = IS_HERO ? 0 : (axisGizmoCanvas.width / 2) * 0.68; // leaves room for the end labels within the canvas
 const AXIS_GIZMO_LINE_WIDTH = 2 * AXIS_GIZMO_DPR;
 const AXIS_GIZMO_FONT = `${11 * AXIS_GIZMO_DPR}px ui-monospace, monospace`;
 // Standard red/green/blue = X/Y/Z convention (Blender, Three.js editor,
@@ -5013,7 +5074,7 @@ function renderCubeFrame() {
     }
   }
 
-  drawAxisGizmo(rx, ry);
+  if (!IS_HERO) drawAxisGizmo(rx, ry);
 }
 
 // Dynamic resolution scaling: canvas's WebGL backing store renders at up to
@@ -5135,7 +5196,12 @@ function materialFillPatternId(name) {
 // panel/state, since that updates every frame — funneling it through React
 // state would mean a full component re-render 60 times a second for a
 // display the panel itself has no other reason to know about.
-const perfMonitorEl = document.getElementById('perf-monitor-text');
+// #perf-monitor doesn't exist in the hero build's HTML — gated the same way
+// as the axis gizmo above (see its comment). recordAndDisplayFrameTiming
+// below still runs updateDynamicRenderScale for both builds (a genuine perf
+// feature, not just a dev overlay); only the DOM-writing/sparkline part is
+// hero-excluded.
+const perfMonitorEl = IS_HERO ? null : document.getElementById('perf-monitor-text');
 const PERF_DISPLAY_UPDATE_MS = 250; // readable refresh rate; measurement itself is still per-frame
 let perfLastFrameTime = performance.now();
 let perfFrameCount = 0;
@@ -5145,12 +5211,17 @@ let perfLastDisplayUpdate = perfLastFrameTime;
 // Rolling FPS sparkline (last 10s) — one point per display update, so a
 // dropped-frame stretch shows up as a visible dip instead of getting
 // smoothed away by the running min/max text above it.
-const perfHistoryCanvas = document.getElementById('perf-history');
-const perfHistoryCtx = perfHistoryCanvas.getContext('2d');
+const perfHistoryCanvas = IS_HERO ? null : document.getElementById('perf-history');
+const perfHistoryCtx = IS_HERO ? null : perfHistoryCanvas.getContext('2d');
 const PERF_HISTORY_WINDOW_MS = 10000;
+// Shared by drawPerfHistory's dashed reference line and its below-target red
+// dots, so both read against the same fps line.
+const PERF_HISTORY_TARGET_FPS = 45;
 const PERF_HISTORY_DPR = Math.max(1, window.devicePixelRatio || 1);
-perfHistoryCanvas.width = perfHistoryCanvas.clientWidth * PERF_HISTORY_DPR || perfHistoryCanvas.width;
-perfHistoryCanvas.height = perfHistoryCanvas.clientHeight * PERF_HISTORY_DPR || perfHistoryCanvas.height;
+if (!IS_HERO) {
+  perfHistoryCanvas.width = perfHistoryCanvas.clientWidth * PERF_HISTORY_DPR || perfHistoryCanvas.width;
+  perfHistoryCanvas.height = perfHistoryCanvas.clientHeight * PERF_HISTORY_DPR || perfHistoryCanvas.height;
+}
 let perfHistory = []; // { time, fps }[], oldest first
 
 function drawPerfHistory() {
@@ -5161,19 +5232,21 @@ function drawPerfHistory() {
 
   const now = perfHistory[perfHistory.length - 1].time;
   const windowStart = now - PERF_HISTORY_WINDOW_MS;
-  // Ceiling follows the session's peak (at least the 60fps target) so the
-  // chart stays meaningful on both capped-60 and high-refresh displays,
-  // while a fixed floor of 0 keeps drop severity visually comparable.
+  // Ceiling follows the session's peak (at least 60, independent of
+  // PERF_HISTORY_TARGET_FPS below) so the chart stays meaningful on both
+  // capped-60 and high-refresh displays, while a fixed floor of 0 keeps drop
+  // severity visually comparable.
   const ceiling = Math.max(60, perfMaxFps === -Infinity ? 60 : perfMaxFps);
   const x = (t) => ((t - windowStart) / PERF_HISTORY_WINDOW_MS) * w;
   const y = (fps) => h - (Math.min(fps, ceiling) / ceiling) * h;
 
-  // 60fps target reference line.
+  // Target reference line — shared with the below-target dot threshold
+  // further down, so both read against the same fps line.
   perfHistoryCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
   perfHistoryCtx.lineWidth = 1;
   perfHistoryCtx.setLineDash([2 * PERF_HISTORY_DPR, 2 * PERF_HISTORY_DPR]);
   perfHistoryCtx.beginPath();
-  const targetY = Math.round(y(60)) + 0.5;
+  const targetY = Math.round(y(PERF_HISTORY_TARGET_FPS)) + 0.5;
   perfHistoryCtx.moveTo(0, targetY);
   perfHistoryCtx.lineTo(w, targetY);
   perfHistoryCtx.stroke();
@@ -5202,11 +5275,11 @@ function drawPerfHistory() {
   perfHistoryCtx.strokeStyle = 'rgba(120, 220, 255, 0.9)';
   perfHistoryCtx.stroke();
 
-  // Mark every below-target sample with a dot (not just runs of them) so a
-  // single dropped frame is still visible in a sparkline this dense.
+  // Mark every sample below the target line above with a dot, so a single
+  // bad frame is still visible in a sparkline this dense.
   perfHistoryCtx.fillStyle = 'rgba(255, 90, 90, 0.9)';
   for (const point of perfHistory) {
-    if (point.fps >= 60) continue;
+    if (point.fps >= PERF_HISTORY_TARGET_FPS) continue;
     perfHistoryCtx.beginPath();
     perfHistoryCtx.arc(x(point.time), y(point.fps), 1.5 * PERF_HISTORY_DPR, 0, Math.PI * 2);
     perfHistoryCtx.fill();
@@ -5222,20 +5295,31 @@ let perfMaxFps = -Infinity;
 let perfMinMs = Infinity;
 let perfMaxMs = -Infinity;
 
-// Drives renderScale (see applyCanvasSize/resize above): steps
-// resolution down after a sustained run of over-budget display windows,
-// steps it back up after a longer sustained run of meeting-or-beating the
-// 60fps target (recovering more cautiously than it drops — a longer
-// sustained window, not a stricter frame-time margin — so it doesn't flap
-// between two resolutions right at the boundary). Recovery deliberately
-// checks against the plain target rather than requiring comfortable
-// headroom below it: a lower render scale is calibrated to land right
-// around 60fps by design, so it rarely runs meaningfully *faster* than
-// target — requiring that (as an earlier version of this logic did) meant
-// recovery almost never fired once scale had dropped. The first few
-// windows after load are ignored — first paint/shader compile is a
-// one-off cost, not a sign the hardware can't sustain 60fps once warmed up.
+// Drives renderScale (see applyCanvasSize/resize above): steps resolution
+// down after a sustained run of over-budget display windows, steps it back
+// up after a longer sustained run of meeting-or-beating the 60fps target
+// within RENDER_SCALE_RECOVER_MULT's small tolerance (recovering more
+// cautiously than it drops — a longer sustained window, not a stricter
+// frame-time margin — so it doesn't flap between two resolutions right at
+// the boundary). That tolerance matters: a vsync-capped 60Hz display can
+// never report a frame time measurably *faster* than the target, so a
+// strict "<" comparison here left a healthy 60fps session stuck in a dead
+// zone that never counted toward recovery once scale had already dropped
+// (see RENDER_SCALE_RECOVER_MULT's own comment). The first few windows
+// after load are ignored — first paint/shader compile is a one-off cost,
+// not a sign the hardware can't sustain 60fps once warmed up.
 const TARGET_FRAME_MS = 1000 / 60;
+// Recovery's "under budget" check allows frame time up to this multiple of
+// TARGET_FRAME_MS, not just strictly faster than it — a display vsync-capped
+// at 60Hz can never report avgFrameMs *below* ~16.667ms (scheduling overhead
+// usually pushes it a hair above, never below), so requiring strictly "<
+// TARGET_FRAME_MS" meant a perfectly healthy 60fps session could never
+// accumulate enough under-budget windows to recover once renderScale had
+// dropped — it would just sit in the dead zone between this check and the
+// 1.15x drop threshold below, resetting both counters forever. This margin
+// only needs to comfortably clear vsync/measurement jitter, not open up a
+// wide "good enough" band.
+const RENDER_SCALE_RECOVER_MULT = 1.05;
 const RENDER_SCALE_STEP = 0.1;
 const RENDER_SCALE_DOWN_WINDOWS = 2; // ~500ms over budget before dropping resolution
 const RENDER_SCALE_UP_WINDOWS = 8; // ~2s at/under target before restoring it
@@ -5251,7 +5335,7 @@ function updateDynamicRenderScale(avgFrameMs) {
   if (avgFrameMs > TARGET_FRAME_MS * 1.15) {
     overBudgetWindows++;
     underBudgetWindows = 0;
-  } else if (avgFrameMs < TARGET_FRAME_MS) {
+  } else if (avgFrameMs <= TARGET_FRAME_MS * RENDER_SCALE_RECOVER_MULT) {
     underBudgetWindows++;
     overBudgetWindows = 0;
   } else {
@@ -5288,15 +5372,17 @@ function recordAndDisplayFrameTiming(now) {
     perfMinMs = Math.min(perfMinMs, avgFrameMs);
     perfMaxMs = Math.max(perfMaxMs, avgFrameMs);
     updateDynamicRenderScale(avgFrameMs);
-    perfMonitorEl.textContent =
-      `${Math.round(renderScale * 100)}% res\n` +
-      `${avgFrameMs.toFixed(1)} ms (${perfMinMs.toFixed(1)}–${perfMaxMs.toFixed(1)})\n` +
-      `${fps.toFixed(0)} FPS (${perfMinFps.toFixed(0)}–${perfMaxFps.toFixed(0)})`;
+    if (!IS_HERO) {
+      perfMonitorEl.textContent =
+        `${Math.round(renderScale * 100)}% res\n` +
+        `${avgFrameMs.toFixed(1)} ms (${perfMinMs.toFixed(1)}–${perfMaxMs.toFixed(1)})\n` +
+        `${fps.toFixed(0)} FPS (${perfMinFps.toFixed(0)}–${perfMaxFps.toFixed(0)})`;
 
-    perfHistory.push({ time: now, fps });
-    const historyStart = now - PERF_HISTORY_WINDOW_MS;
-    while (perfHistory.length > 0 && perfHistory[0].time < historyStart) perfHistory.shift();
-    drawPerfHistory();
+      perfHistory.push({ time: now, fps });
+      const historyStart = now - PERF_HISTORY_WINDOW_MS;
+      while (perfHistory.length > 0 && perfHistory[0].time < historyStart) perfHistory.shift();
+      drawPerfHistory();
+    }
 
     perfLastDisplayUpdate = now;
     perfFrameCount = 0;
@@ -5433,3 +5519,28 @@ export const controls = {
   goToDefaultCameraView,
   setPanelsHidden,
 };
+
+// --- Hero trigger API --------------------------------------------------
+//
+// The hero build's only exposed surface: lets the FE team's homepage UI
+// buttons switch between the 3 baked Camera Targets, reusing the exact same
+// spring-eased goToCameraTarget/goToDefaultCameraView the tool's own "Go"
+// buttons call — see PRODUCT.md/the plan doc for the full trigger-API
+// contract. Auto-advance timing (switching targets on its own after the
+// intro) is intentionally not implemented yet — this ships manual-only, FE
+// button clicks only, until that follow-up pass lands.
+if (IS_HERO) {
+  window.heroScene = {
+    goToTarget: (index) => goToCameraTarget(index),
+    goToDefault: () => goToDefaultCameraView(),
+    getActiveTarget: () => cameraTargetActiveIndex,
+    onTargetChange: (callback) => {
+      const listener = (state) => callback(state.cameraTargetActiveIndex);
+      modelStateListeners.push(listener);
+      return () => {
+        const i = modelStateListeners.indexOf(listener);
+        if (i !== -1) modelStateListeners.splice(i, 1);
+      };
+    },
+  };
+}

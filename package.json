@@ -9,7 +9,9 @@
     "lint": "eslint .",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:hero": "vite build --config vite.hero.config.ts",
+    "preview:hero": "vite preview --config vite.hero.config.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

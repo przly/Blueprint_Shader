@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-hero/
 .DS_Store
 
 # Not referenced by index.html/main.js/src — unrelated prototype assets
