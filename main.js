@@ -1261,14 +1261,15 @@ const CUBE_PARALLAX_SMOOTHING = 0.1;
 let cubeParallaxTargetX = 0;
 let cubeParallaxTargetY = 0;
 
-// Touch has no hover state, so a single finger is left alone entirely —
-// never tracked, never fed into the tilt, never preventDefault'd — so it's
-// always free for native page scroll. Tilt only engages once a second
-// finger joins: two concurrent touches drive the tilt from their average
-// position, the same way a mouse cursor's position does. Keyed by
-// pointerId so releasing one finger of a two-finger gesture correctly
-// drops back to "just scrolling" instead of jumping using a stale point.
-const heroActiveTouches = new Map();
+// A touch starting over the title/cards (heroContentEl's own on-screen
+// bounds, read live since it reflows across breakpoints) is left alone
+// entirely — never tracked, so it's always free for native page scroll. A
+// touch starting on the clean canvas above that drives the tilt instead;
+// canvas.style.touchAction is flipped to 'none' for just that one touch (see
+// its pointerdown handler) so native scroll doesn't fight the drag, and back
+// to the CSS default ('pan-y') on release so the next touch starts fresh.
+const heroContentEl = document.querySelector('.hero-content');
+let heroTouchDragPointerId = null;
 let cubeParallaxX = 0;
 let cubeParallaxY = 0;
 // Whether a real cursor reading has ever come in — see
@@ -1823,31 +1824,21 @@ canvas.addEventListener('pointerdown', (event) => {
 if (IS_HERO) {
 canvas.addEventListener('pointerdown', (event) => {
   if (event.pointerType !== 'touch') return;
-  heroActiveTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  // heroContentEl is null only if this ever ran outside the hero build,
+  // which it can't (this whole block is IS_HERO-only) — no guard needed.
+  if (event.clientY >= heroContentEl.getBoundingClientRect().top) return; // over the title/cards — leave untouched for native scroll
+  heroTouchDragPointerId = event.pointerId;
+  canvas.style.touchAction = 'none';
 });
-} // end if (IS_HERO) — two-finger touch tracking (arm)
+} // end if (IS_HERO) — clean-canvas touch-drag tracking (arm)
 
 window.addEventListener('pointermove', (event) => {
   if (IS_HERO) {
-    // A lone finger is never in heroActiveTouches with a second entry
-    // alongside it, so it always hits the `size < 2` return below and never
-    // reaches updateParallaxTargetFromPointer — that's what leaves single-
-    // finger swipes entirely untouched for native scroll. Only once a
-    // second finger joins does the average of all active touch points start
-    // driving the tilt, the same way a mouse cursor's position does.
-    if (event.pointerType === 'touch') {
-      if (!heroActiveTouches.has(event.pointerId)) return;
-      heroActiveTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
-      if (heroActiveTouches.size < 2) return;
-      let sumX = 0;
-      let sumY = 0;
-      heroActiveTouches.forEach((pos) => {
-        sumX += pos.x;
-        sumY += pos.y;
-      });
-      updateParallaxTargetFromPointer({ clientX: sumX / heroActiveTouches.size, clientY: sumY / heroActiveTouches.size });
-      return;
-    }
+    // Only the one touch that started on the clean canvas (armed above)
+    // ever reaches updateParallaxTargetFromPointer — anything else,
+    // including a touch that started over the title, returns here and
+    // never drives the tilt, leaving it free for native scroll.
+    if (event.pointerType === 'touch' && event.pointerId !== heroTouchDragPointerId) return;
     updateParallaxTargetFromPointer(event);
     return;
   }
@@ -2000,12 +1991,12 @@ function advanceParallax() {
 //
 // Touch has no persistent hover, so unlike mouse (where this only fires once,
 // on first entering the window), every single touch contact re-fires
-// 'pointerenter' as a "fresh entry" — including on an ordinary single-finger
-// swipe. Left ungated, that call would run unconditionally and drive the
-// tilt off a single finger, defeating the point of requiring two — so it
-// defers to the same "at least two active touches" gate as pointermove above.
+// 'pointerenter' as a "fresh entry" — including a touch starting over the
+// title, which pointerdown above deliberately never arms. Left ungated,
+// that call would run unconditionally and drive the tilt regardless, so it
+// defers to the same tracked-touch gate as pointermove above.
 window.addEventListener('pointerenter', (event) => {
-  if (IS_HERO && event.pointerType === 'touch' && heroActiveTouches.size < 2) return;
+  if (IS_HERO && event.pointerType === 'touch' && event.pointerId !== heroTouchDragPointerId) return;
   updateParallaxTargetFromPointer(event);
 });
 
@@ -2029,12 +2020,14 @@ window.addEventListener('pointerup', () => {
 } // end if (!IS_HERO) — pointerup drag reset
 
 if (IS_HERO) {
-const endHeroTouch = (event) => {
-  if (event.pointerType === 'touch') heroActiveTouches.delete(event.pointerId);
+const endHeroTouchDrag = (event) => {
+  if (event.pointerType !== 'touch') return;
+  if (event.pointerId === heroTouchDragPointerId) heroTouchDragPointerId = null;
+  canvas.style.touchAction = ''; // fall back to the CSS default (pan-y) rather than hardcoding it here too
 };
-window.addEventListener('pointerup', endHeroTouch);
-window.addEventListener('pointercancel', endHeroTouch);
-} // end if (IS_HERO) — two-finger touch tracking (release)
+window.addEventListener('pointerup', endHeroTouchDrag);
+window.addEventListener('pointercancel', endHeroTouchDrag);
+} // end if (IS_HERO) — clean-canvas touch-drag tracking (release)
 
 // --- Custom model upload (cube mode's "Use custom model" option) -------
 //
