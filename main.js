@@ -1261,18 +1261,14 @@ const CUBE_PARALLAX_SMOOTHING = 0.1;
 let cubeParallaxTargetX = 0;
 let cubeParallaxTargetY = 0;
 
-// Touch has no hover state — pointermove only fires while a finger is down
-// and moving, which is indistinguishable from a scroll swipe. Gate touch
-// input behind a hold so a swipe never engages the tilt; only a finger held
-// still for HERO_TOUCH_PARALLAX_HOLD_MS is treated as "hovering". See
-// updateParallaxTargetFromPointer's own pointermove listener.
-const HERO_TOUCH_PARALLAX_HOLD_MS = 500;
-const HERO_TOUCH_PARALLAX_HOLD_DRIFT_MAX_PX = 6;
-let heroTouchHoldTimer = null;
-let heroTouchHoldActive = false;
-let heroTouchPointerId = null;
-let heroTouchDownPos = null;
-let heroTouchLastPos = null;
+// Touch has no hover state, so a single finger is left alone entirely —
+// never tracked, never fed into the tilt, never preventDefault'd — so it's
+// always free for native page scroll. Tilt only engages once a second
+// finger joins: two concurrent touches drive the tilt from their average
+// position, the same way a mouse cursor's position does. Keyed by
+// pointerId so releasing one finger of a two-finger gesture correctly
+// drops back to "just scrolling" instead of jumping using a stale point.
+const heroActiveTouches = new Map();
 let cubeParallaxX = 0;
 let cubeParallaxY = 0;
 // Whether a real cursor reading has ever come in — see
@@ -1827,40 +1823,30 @@ canvas.addEventListener('pointerdown', (event) => {
 if (IS_HERO) {
 canvas.addEventListener('pointerdown', (event) => {
   if (event.pointerType !== 'touch') return;
-  resetHeroTouchHold();
-  heroTouchPointerId = event.pointerId;
-  heroTouchDownPos = { x: event.clientX, y: event.clientY };
-  heroTouchLastPos = heroTouchDownPos;
-  heroTouchHoldTimer = setTimeout(() => {
-    heroTouchHoldTimer = null;
-    heroTouchHoldActive = true;
-    updateParallaxTargetFromPointer({ clientX: heroTouchLastPos.x, clientY: heroTouchLastPos.y });
-  }, HERO_TOUCH_PARALLAX_HOLD_MS);
+  heroActiveTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
 });
-} // end if (IS_HERO) — touch hold-to-tilt arm
+} // end if (IS_HERO) — two-finger touch tracking (arm)
 
 window.addEventListener('pointermove', (event) => {
   if (IS_HERO) {
-    // A pending (not-yet-held) touch never reaches updateParallaxTargetFromPointer
-    // below — that's the actual fix. See HERO_TOUCH_PARALLAX_HOLD_MS's own comment.
-    //
-    // Any touch pointermove whose id doesn't match the currently tracked one
-    // returns immediately, rather than falling through to the plain call
-    // below — that fallthrough is for mouse/pen only. This matters once a
-    // touch gets cancelled by the drift check just below: resetHeroTouchHold
-    // nulls out heroTouchPointerId, so without this early return every
-    // *subsequent* pointermove of that same still-in-progress swipe would
-    // stop matching heroTouchPointerId and fall straight through to an
-    // unconditional call — reintroducing the exact bug this hold-gate exists
-    // to prevent, just delayed by one drift-threshold's worth of movement.
+    // A lone finger is never in heroActiveTouches with a second entry
+    // alongside it, so it always hits the `size < 2` return below and never
+    // reaches updateParallaxTargetFromPointer — that's what leaves single-
+    // finger swipes entirely untouched for native scroll. Only once a
+    // second finger joins does the average of all active touch points start
+    // driving the tilt, the same way a mouse cursor's position does.
     if (event.pointerType === 'touch') {
-      if (event.pointerId !== heroTouchPointerId) return;
-      heroTouchLastPos = { x: event.clientX, y: event.clientY };
-      if (!heroTouchHoldActive) {
-        const drift = Math.hypot(event.clientX - heroTouchDownPos.x, event.clientY - heroTouchDownPos.y);
-        if (drift > HERO_TOUCH_PARALLAX_HOLD_DRIFT_MAX_PX) resetHeroTouchHold();
-        return;
-      }
+      if (!heroActiveTouches.has(event.pointerId)) return;
+      heroActiveTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (heroActiveTouches.size < 2) return;
+      let sumX = 0;
+      let sumY = 0;
+      heroActiveTouches.forEach((pos) => {
+        sumX += pos.x;
+        sumY += pos.y;
+      });
+      updateParallaxTargetFromPointer({ clientX: sumX / heroActiveTouches.size, clientY: sumY / heroActiveTouches.size });
+      return;
     }
     updateParallaxTargetFromPointer(event);
     return;
@@ -1952,15 +1938,6 @@ window.addEventListener('pointermove', (event) => {
 // straight there (read as an unexplained pop) or easing there at the
 // normal fast CUBE_PARALLAX_SMOOTHING rate (the original swoop this was
 // built to avoid) — every update after this first one still eases normally.
-function resetHeroTouchHold() {
-  clearTimeout(heroTouchHoldTimer);
-  heroTouchHoldTimer = null;
-  heroTouchHoldActive = false;
-  heroTouchPointerId = null;
-  heroTouchDownPos = null;
-  heroTouchLastPos = null;
-}
-
 function updateParallaxTargetFromPointer(event) {
   // editingDefaultView locks hover parallax the same way the others here
   // do — see setEditingDefaultView: while parking the free camera for the
@@ -2023,12 +2000,12 @@ function advanceParallax() {
 //
 // Touch has no persistent hover, so unlike mouse (where this only fires once,
 // on first entering the window), every single touch contact re-fires
-// 'pointerenter' as a "fresh entry" — including mid-swipe, since each finger
-// lift/re-touch counts as entering anew. Left ungated, that call would run
-// unconditionally and bypass the hold-gate in the pointerdown/pointermove
-// listeners above, so a touch's pending state must be respected here too.
+// 'pointerenter' as a "fresh entry" — including on an ordinary single-finger
+// swipe. Left ungated, that call would run unconditionally and drive the
+// tilt off a single finger, defeating the point of requiring two — so it
+// defers to the same "at least two active touches" gate as pointermove above.
 window.addEventListener('pointerenter', (event) => {
-  if (IS_HERO && event.pointerType === 'touch' && !heroTouchHoldActive) return;
+  if (IS_HERO && event.pointerType === 'touch' && heroActiveTouches.size < 2) return;
   updateParallaxTargetFromPointer(event);
 });
 
@@ -2052,12 +2029,12 @@ window.addEventListener('pointerup', () => {
 } // end if (!IS_HERO) — pointerup drag reset
 
 if (IS_HERO) {
-const endHeroTouchHold = (event) => {
-  if (event.pointerType === 'touch' && event.pointerId === heroTouchPointerId) resetHeroTouchHold();
+const endHeroTouch = (event) => {
+  if (event.pointerType === 'touch') heroActiveTouches.delete(event.pointerId);
 };
-window.addEventListener('pointerup', endHeroTouchHold);
-window.addEventListener('pointercancel', endHeroTouchHold);
-} // end if (IS_HERO) — touch hold-to-tilt release/cancel
+window.addEventListener('pointerup', endHeroTouch);
+window.addEventListener('pointercancel', endHeroTouch);
+} // end if (IS_HERO) — two-finger touch tracking (release)
 
 // --- Custom model upload (cube mode's "Use custom model" option) -------
 //

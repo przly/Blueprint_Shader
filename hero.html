@@ -9,14 +9,18 @@
 <style>
   html, body {
     margin: 0;
-    height: 100%;
     background: #000;
-    overflow: hidden;
   }
   canvas {
     display: block;
     width: 100vw;
     height: 100vh;
+    /* Explicitly keep native single-finger vertical panning (page scroll) —
+       everything else (pinch-zoom, horizontal pan) is left unlisted, which
+       disables the browser's own handling of it, freeing a second
+       simultaneous finger for main.js's own two-finger drag-to-tilt gesture
+       instead of fighting native pinch-zoom over it. */
+    touch-action: pan-y;
   }
 </style>
 </head>
