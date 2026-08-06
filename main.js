@@ -1843,7 +1843,18 @@ window.addEventListener('pointermove', (event) => {
   if (IS_HERO) {
     // A pending (not-yet-held) touch never reaches updateParallaxTargetFromPointer
     // below — that's the actual fix. See HERO_TOUCH_PARALLAX_HOLD_MS's own comment.
-    if (event.pointerType === 'touch' && event.pointerId === heroTouchPointerId) {
+    //
+    // Any touch pointermove whose id doesn't match the currently tracked one
+    // returns immediately, rather than falling through to the plain call
+    // below — that fallthrough is for mouse/pen only. This matters once a
+    // touch gets cancelled by the drift check just below: resetHeroTouchHold
+    // nulls out heroTouchPointerId, so without this early return every
+    // *subsequent* pointermove of that same still-in-progress swipe would
+    // stop matching heroTouchPointerId and fall straight through to an
+    // unconditional call — reintroducing the exact bug this hold-gate exists
+    // to prevent, just delayed by one drift-threshold's worth of movement.
+    if (event.pointerType === 'touch') {
+      if (event.pointerId !== heroTouchPointerId) return;
       heroTouchLastPos = { x: event.clientX, y: event.clientY };
       if (!heroTouchHoldActive) {
         const drift = Math.hypot(event.clientX - heroTouchDownPos.x, event.clientY - heroTouchDownPos.y);
