@@ -28,11 +28,18 @@
 .hero-content {
   position: absolute;
   left: 24px;
+  right: 24px;
   bottom: 24px;
   display: flex;
   flex-direction: column;
+  gap: 48px;
+}
+
+.hero-text {
+  display: flex;
+  flex-direction: column;
   gap: 15px;
-  max-width: min(735px, calc(100vw - 48px));
+  max-width: min(735px, 100%);
 }
 
 .hero-eyebrow {
@@ -76,4 +83,112 @@
 
 .hero-title p + p {
   margin-top: 0.14em;
+}
+
+/* Camera-target trigger cards (Figma: "Link Tiles" / "Hero Progress Bar",
+   node 2873:11286) — the design's own annotation: "Trigger cards with
+   timer, the lighter element in the background indicates how much time has
+   passed. When full, it should move to the next one." Wired up in
+   hero-cards.js against window.heroScene (see main.js). Unlike the rest of
+   .hero-overlay, these are real interactive controls, so pointer-events is
+   re-enabled here. */
+.hero-cards {
+  display: flex;
+  gap: 10px;
+  max-width: min(1097px, 100%);
+  pointer-events: auto;
+}
+
+.hero-card {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 359px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 4px 12px 4px 4px;
+  border: none;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  /* backdrop-filter blurring a live WebGL canvas is unreliable in some
+     browser/GPU combinations unless the filtered element gets its own,
+     unambiguous compositing layer — isolation forces a real stacking
+     context (rather than relying on position+z-index alone), and
+     translateZ(0) is the standard nudge onto the GPU compositor. Without
+     these, some engines silently skip the canvas when building the
+     backdrop snapshot instead of erroring, so this reads as "no blur"
+     rather than a visible failure. */
+  isolation: isolate;
+  transform: translateZ(0);
+  cursor: pointer;
+  text-align: left;
+  appearance: none;
+  font: inherit;
+}
+
+/* The "lighter element" the design annotation describes — grows from 0% to
+   100% width while its card is active, clipped by the card's own
+   overflow:hidden/border-radius above rather than needing to match rounding
+   on a partial-width element itself. Sits behind the icon/text (first in
+   DOM, painted first) via hero-cards.js setting its width on a plain CSS
+   transition — not a keyframe animation, since the duration needs to stay
+   driven from one JS constant (CARD_DURATION_MS) rather than being
+   duplicated into CSS. */
+.hero-card-progress {
+  position: absolute;
+  inset: 0;
+  width: 0%;
+  background: rgba(255, 255, 255, 0.2);
+  pointer-events: none;
+}
+
+.hero-card-icon {
+  position: relative;
+  flex-shrink: 0;
+  width: 113px;
+  height: 76px;
+  border-radius: 4px;
+  background: #fff;
+  opacity: 0.8;
+}
+
+.hero-card.is-active .hero-card-icon {
+  opacity: 1;
+}
+
+.hero-card-text {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-family: "Geist Mono Variable", monospace;
+  font-weight: 500;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: -0.24px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.hero-card.is-active .hero-card-text {
+  color: #fff;
+}
+
+.hero-card-number,
+.hero-card-label {
+  display: block;
+}
+
+@media (max-width: 720px) {
+  .hero-cards {
+    flex-wrap: wrap;
+  }
+  .hero-card {
+    flex: 1 1 45%;
+  }
 }
