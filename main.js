@@ -2508,6 +2508,30 @@ const CAMERA_TARGET_VERTICAL_SAFE_ZONE = 0.25;
 const CAMERA_TARGET_ZOOM_MIN = 0.01;
 const CAMERA_TARGET_ZOOM_MAX = 5;
 
+// Hero-only: below this viewport width, hero.css switches the title/cards
+// overlay to its wrapped mobile layout (see the @media query in hero.css —
+// keep both in sync), which covers noticeably more of the screen's bottom
+// half than the desktop bottom-left-corner layout does. heroVerticalBias
+// nudges camera-target framing upward (see getCurrentCameraOffset) so the
+// model's important detail clears the overlay instead of sitting behind
+// it. Desktop hero and the tool build (IS_HERO false, so this always stays
+// 0) are both unaffected — this never touches the manual pan sliders or
+// the baked default view, only the camera-target system's own centering.
+const HERO_MOBILE_BREAKPOINT_PX = 720;
+// Fraction of the vertical ortho frustum's half-height (cubeProjectionHalfY)
+// to shift framing upward by on mobile. A starting point, not a measured
+// value — tune directly against the actual overlay height on a real narrow
+// viewport, which isn't something that could be checked from here.
+const HERO_MOBILE_VERTICAL_BIAS_FRACTION = 0.28;
+let heroVerticalBias = 0;
+
+function updateHeroVerticalBias() {
+  if (!IS_HERO) return;
+  heroVerticalBias = window.innerWidth <= HERO_MOBILE_BREAKPOINT_PX
+    ? cubeProjectionHalfY * HERO_MOBILE_VERTICAL_BIAS_FRACTION
+    : 0;
+}
+
 function getModelState() {
   return {
     spaceHeld,
@@ -3595,7 +3619,9 @@ function projectObjectPointToView(p, rx, ry, s) {
 // (e.g. pointermove during arrow-drawing) happens to ask for the offset.
 function getCurrentCameraOffset(rx, ry, s) {
   const viewPoint = projectObjectPointToView(cameraTargetCurrent, rx, ry, s);
-  return [-viewPoint[0], -viewPoint[1]];
+  // heroVerticalBias (see its own comment) is 0 outside hero-on-mobile, so
+  // this is a no-op everywhere else — including the tool build.
+  return [-viewPoint[0], -viewPoint[1] + heroVerticalBias];
 }
 
 // The manual "Model X/Y position" pan, plus the Z axis Space-drag alone
@@ -5158,6 +5184,9 @@ function resize() {
   // uniformly to width and height, so the backing store's aspect always
   // matches this regardless of either one.
   updateCubeProjection(window.innerWidth / window.innerHeight);
+  // Depends on the cubeProjectionHalfY updateCubeProjection just set, so
+  // this has to run after it, not before.
+  updateHeroVerticalBias();
 }
 
 // A pixel counts as "mainly green" if that channel is dominant by a clear
