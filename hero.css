@@ -1,0 +1,79 @@
+/* Hero overlay (Figma: N-GEN Web Design, node 2873:11159) — plain CSS, no
+   Tailwind, so the hero bundle stays lean. Only the two font packages the
+   design needs get pulled in; nothing else from src/index.css. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/geist-mono";
+
+.hero-overlay {
+  position: fixed;
+  inset: 0;
+  /* Purely decorative text over the canvas — never intercepts hover-rotation
+     or (eventually) FE-added UI buttons layered above this. */
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* "This gradient should overlay the canvas" (design annotation) — fades the
+   canvas into the background color behind the title so light model geometry
+   never fights with the text sitting on top of it. */
+.hero-gradient {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 329px;
+  background: linear-gradient(to bottom, rgba(4, 28, 44, 0) 0%, #041c2c 100%);
+}
+
+.hero-content {
+  position: absolute;
+  left: 24px;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  max-width: min(735px, calc(100vw - 48px));
+}
+
+.hero-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.hero-eyebrow-dot {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+.hero-eyebrow-label {
+  margin: 0;
+  font-family: "Geist Mono Variable", monospace;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: -0.24px;
+  text-transform: uppercase;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.hero-title {
+  margin: 0;
+  font-family: "Inter Variable", sans-serif;
+  font-weight: 500;
+  font-size: clamp(32px, 6vw, 72px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: #fff;
+}
+
+.hero-title p {
+  margin: 0;
+  line-height: 1;
+}
+
+.hero-title p + p {
+  margin-top: 0.14em;
+}

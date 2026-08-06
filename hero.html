@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <title>Bluprint Models — Hero</title>
 <link rel="icon" type="image/png" href="/favicon.png" />
+<link rel="stylesheet" href="/hero.css" />
 <style>
   html, body {
     margin: 0;
@@ -20,6 +21,19 @@
 </head>
 <body>
   <canvas id="canvas"></canvas>
+  <div class="hero-overlay">
+    <div class="hero-gradient"></div>
+    <div class="hero-content">
+      <div class="hero-eyebrow">
+        <img class="hero-eyebrow-dot" src="/hero/eyebrow-dot.svg" alt="" />
+        <p class="hero-eyebrow-label">Next generation energy</p>
+      </div>
+      <div class="hero-title">
+        <p>Smarter energy.</p>
+        <p>From home to the grid.</p>
+      </div>
+    </div>
+  </div>
   <script type="module" src="/main.js"></script>
 </body>
 </html>
