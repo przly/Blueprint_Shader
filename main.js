@@ -1260,6 +1260,19 @@ const CUBE_PARALLAX_MAX_RAD = 0.2;
 const CUBE_PARALLAX_SMOOTHING = 0.1;
 let cubeParallaxTargetX = 0;
 let cubeParallaxTargetY = 0;
+
+// Touch has no hover state — pointermove only fires while a finger is down
+// and moving, which is indistinguishable from a scroll swipe. Gate touch
+// input behind a hold so a swipe never engages the tilt; only a finger held
+// still for HERO_TOUCH_PARALLAX_HOLD_MS is treated as "hovering". See
+// updateParallaxTargetFromPointer's own pointermove listener.
+const HERO_TOUCH_PARALLAX_HOLD_MS = 500;
+const HERO_TOUCH_PARALLAX_HOLD_DRIFT_MAX_PX = 6;
+let heroTouchHoldTimer = null;
+let heroTouchHoldActive = false;
+let heroTouchPointerId = null;
+let heroTouchDownPos = null;
+let heroTouchLastPos = null;
 let cubeParallaxX = 0;
 let cubeParallaxY = 0;
 // Whether a real cursor reading has ever come in — see
@@ -1811,8 +1824,33 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 } // end if (!IS_HERO) — pointerdown drag interactions
 
+if (IS_HERO) {
+canvas.addEventListener('pointerdown', (event) => {
+  if (event.pointerType !== 'touch') return;
+  resetHeroTouchHold();
+  heroTouchPointerId = event.pointerId;
+  heroTouchDownPos = { x: event.clientX, y: event.clientY };
+  heroTouchLastPos = heroTouchDownPos;
+  heroTouchHoldTimer = setTimeout(() => {
+    heroTouchHoldTimer = null;
+    heroTouchHoldActive = true;
+    updateParallaxTargetFromPointer({ clientX: heroTouchLastPos.x, clientY: heroTouchLastPos.y });
+  }, HERO_TOUCH_PARALLAX_HOLD_MS);
+});
+} // end if (IS_HERO) — touch hold-to-tilt arm
+
 window.addEventListener('pointermove', (event) => {
   if (IS_HERO) {
+    // A pending (not-yet-held) touch never reaches updateParallaxTargetFromPointer
+    // below — that's the actual fix. See HERO_TOUCH_PARALLAX_HOLD_MS's own comment.
+    if (event.pointerType === 'touch' && event.pointerId === heroTouchPointerId) {
+      heroTouchLastPos = { x: event.clientX, y: event.clientY };
+      if (!heroTouchHoldActive) {
+        const drift = Math.hypot(event.clientX - heroTouchDownPos.x, event.clientY - heroTouchDownPos.y);
+        if (drift > HERO_TOUCH_PARALLAX_HOLD_DRIFT_MAX_PX) resetHeroTouchHold();
+        return;
+      }
+    }
     updateParallaxTargetFromPointer(event);
     return;
   }
@@ -1903,6 +1941,15 @@ window.addEventListener('pointermove', (event) => {
 // straight there (read as an unexplained pop) or easing there at the
 // normal fast CUBE_PARALLAX_SMOOTHING rate (the original swoop this was
 // built to avoid) — every update after this first one still eases normally.
+function resetHeroTouchHold() {
+  clearTimeout(heroTouchHoldTimer);
+  heroTouchHoldTimer = null;
+  heroTouchHoldActive = false;
+  heroTouchPointerId = null;
+  heroTouchDownPos = null;
+  heroTouchLastPos = null;
+}
+
 function updateParallaxTargetFromPointer(event) {
   // editingDefaultView locks hover parallax the same way the others here
   // do — see setEditingDefaultView: while parking the free camera for the
@@ -1982,6 +2029,14 @@ window.addEventListener('pointerup', () => {
   updateCubeCursor();
 });
 } // end if (!IS_HERO) — pointerup drag reset
+
+if (IS_HERO) {
+const endHeroTouchHold = (event) => {
+  if (event.pointerType === 'touch' && event.pointerId === heroTouchPointerId) resetHeroTouchHold();
+};
+window.addEventListener('pointerup', endHeroTouchHold);
+window.addEventListener('pointercancel', endHeroTouchHold);
+} // end if (IS_HERO) — touch hold-to-tilt release/cancel
 
 // --- Custom model upload (cube mode's "Use custom model" option) -------
 //
