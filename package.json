@@ -12,6 +12,8 @@
     "preview": "vite preview",
     "build:hero": "vite build --config vite.hero.config.ts",
     "preview:hero": "vite preview --config vite.hero.config.ts",
+    "build:canvas": "vite build --config vite.canvas.config.ts",
+    "preview:canvas": "vite preview --config vite.canvas.config.ts",
     "build:all": "tsc -b && vite build && vite build --config vite.hero.config.ts --outDir dist --emptyOutDir false"
   },
   "dependencies": {
@@ -22,6 +24,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.27.0",
+    "mediabunny": "^1.52.3",
     "motion": "^12.43.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

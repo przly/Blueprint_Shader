@@ -140,7 +140,7 @@ export function Panel() {
       setVideoCountdown(null);
       return;
     }
-    setVideoCountdown(Math.round((state.videoExportDurationMs ?? 5000) / 1000));
+    setVideoCountdown(Math.round((state.videoExportDurationMs ?? 10000) / 1000));
     const id = window.setInterval(() => {
       setVideoCountdown((s) => (s === null ? null : Math.max(0, s - 1)));
     }, 1000);
@@ -358,11 +358,17 @@ export function Panel() {
                 state.videoRecording ? (
                   <span className="inline-flex items-center gap-1.5">
                     <span aria-hidden="true" className="t-record-dot size-1.5 shrink-0 rounded-full bg-destructive" />
-                    Recording 4K video… {videoCountdown ?? Math.round((state.videoExportDurationMs ?? 5000) / 1000)}s
+                    Recording video… {videoCountdown ?? Math.round((state.videoExportDurationMs ?? 10000) / 1000)}s
+                  </span>
+                ) : state.pngSequenceExporting ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span aria-hidden="true" className="t-record-dot size-1.5 shrink-0 rounded-full bg-destructive" />
+                    Exporting PNG sequence… {Math.round((state.pngSequenceProgress ?? 0) * 100)}%
                   </span>
                 ) : (
                   <>
                     Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Enter</Kbd> to record,{" "}
+                    <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⌘Enter</Kbd> for PNG sequence,{" "}
                     <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">V</Kbd> to exit
                   </>
                 )

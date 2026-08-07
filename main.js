@@ -1,3 +1,12 @@
+// Only used by captureVideo() (video-mode Enter, tool build only) to encode
+// frames into a real MP4 via WebCodecs instead of a real-time MediaRecorder
+// stream — see that function's own comment. Static top-level import so
+// Rollup can tree-shake it (and this whole dependency) out of the hero/
+// canvas builds once captureVideo's only call site, inside an
+// `if (!IS_HERO)` block, is stripped by Terser — verified via
+// `pnpm build:hero`/`build:canvas` after adding this.
+import { BufferTarget, CanvasSource, getFirstEncodableVideoCodec, Mp4OutputFormat, Output, Quality } from 'mediabunny';
+
 // --- Config ---------------------------------------------------------------
 
 // Capped at 2x: beyond that, extra device pixels cost real GPU/CPU time
@@ -1500,7 +1509,7 @@ let photoMode = false;
 
 function setPhotoMode(value) {
   value = !!value;
-  if (value === photoMode || videoRecording) return;
+  if (value === photoMode || videoRecording || pngSequenceExporting) return;
   photoMode = value;
   if (value) {
     resetCubeRotation();
@@ -1511,10 +1520,11 @@ function setPhotoMode(value) {
 
 // "Video mode": sibling to photo mode above, entered/left with the V key —
 // same orientation-lock/hover-freeze behavior (see updateParallaxTargetFromPointer),
-// but Enter starts a fixed-length 4K recording (see captureVideo) instead of
-// an instant still. Mutually exclusive with photo mode (each turns the
-// other off on entry) so Enter is never ambiguous about which capture it
-// triggers.
+// but Enter starts a fixed-length recording (see captureVideo), and
+// Cmd/Ctrl+Enter starts a frame-by-frame PNG sequence export instead (see
+// capturePngSequence), instead of an instant still. Mutually exclusive with
+// photo mode (each turns the other off on entry) so Enter is never ambiguous
+// about which capture it triggers.
 let videoMode = false;
 // True only for the duration of an in-progress captureVideo() recording —
 // kept separate from videoMode itself so the mode stays entered (for a
@@ -1522,10 +1532,21 @@ let videoMode = false;
 // press trying to switch modes mid-capture, is ignored rather than
 // corrupting the in-flight export.
 let videoRecording = false;
+// True only for the duration of an in-progress capturePngSequence() export —
+// a wholly separate flag from videoRecording (rather than reusing it)
+// despite the two exports being mutually exclusive in practice and treated
+// identically by renderLoop/renderCubeFrame, since the panel still needs to
+// tell them apart to show the right indicator text (see getModelState).
+let pngSequenceExporting = false;
+// 0..1, frames completed / total — read by getModelState so the panel can
+// show export progress the way videoRecording's countdown shows elapsed
+// time; unlike that countdown, this can't be derived from wall-clock time on
+// the panel side, since capturePngSequence isn't bound to it.
+let pngSequenceProgress = 0;
 
 function setVideoMode(value) {
   value = !!value;
-  if (value === videoMode || videoRecording) return;
+  if (value === videoMode || videoRecording || pngSequenceExporting) return;
   videoMode = value;
   if (value) {
     resetCubeRotation();
@@ -1751,15 +1772,29 @@ window.addEventListener('keydown', (event) => {
   setVideoMode(!videoMode);
 });
 
-// Enter starts a 5s recording while video mode is active and no capture is
-// already running — mirrors the photo-mode Enter handler above; a second
-// Enter mid-recording is a no-op via the videoRecording check.
+// Enter starts a recording (see VIDEO_EXPORT_DURATION_MS) while video mode
+// is active and no capture is already running — mirrors the photo-mode
+// Enter handler above; a second Enter mid-recording, or a plain Enter while
+// a PNG sequence export is running, is a no-op via the videoRecording/
+// pngSequenceExporting checks. Excludes Cmd/Ctrl+Enter (see the next
+// handler) so a single keypress can't fire both at once.
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'Enter' || !videoMode || videoRecording || event.repeat) return;
+  if (event.code !== 'Enter' || !videoMode || videoRecording || pngSequenceExporting || event.metaKey || event.ctrlKey || event.repeat) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   event.preventDefault();
   captureVideo();
+});
+
+// Cmd+Enter (Ctrl+Enter off Mac, same convention KeyZ's undo shortcut above
+// uses) starts a PNG-sequence export instead of a real-time recording — see
+// capturePngSequence's own comment for why you'd want this over plain Enter.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'Enter' || !(event.metaKey || event.ctrlKey) || !videoMode || videoRecording || pngSequenceExporting || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  capturePngSequence();
 });
 
 // 1/2/3 jump straight to Camera Target 1/2/3 (see goToCameraTarget), same
@@ -2035,6 +2070,38 @@ function advanceParallax() {
     cubeParallaxX += (cubeParallaxTargetX - cubeParallaxX) * CUBE_PARALLAX_SMOOTHING;
     cubeParallaxY += (cubeParallaxTargetY - cubeParallaxY) * CUBE_PARALLAX_SMOOTHING;
   }
+}
+
+// Simulated circling-cursor path driving cubeParallaxX/Y during a video or
+// PNG-sequence capture (see videoRecording/captureVideo and
+// pngSequenceExporting/capturePngSequence) — traces exactly one full loop
+// over the caller-supplied t (0..1), so a clip covering the full range lands
+// its last frame back on its first (sin/cos at t=1 loop back to their t=0
+// values) rather than leaving a visible pop if it's ever played back
+// looping. Reuses the same nx/ny -> parallaxTarget mapping
+// updateParallaxTargetFromPointer uses for real cursor input (see
+// CUBE_PARALLAX_MAX_RAD), just parameterized by progress through the loop
+// instead of pointer position, and written straight into cubeParallaxX/Y
+// rather than through advanceParallax's spring smoothing — a lagged
+// approximation of the path wouldn't necessarily land exactly back where it
+// started. Both captureVideo and capturePngSequence derive t from frame
+// index / total frame count (see their own comments on why neither is bound
+// to wall-clock time) — they just disagree on whether the last frame reaches
+// t=1 exactly, per their own comments on that.
+//
+// An ellipse, not a circle: VIDEO_TILT_VERTICAL_FACTOR scales pitch (up/down
+// tilt) down relative to yaw (left/right tilt, still the full
+// CUBE_PARALLAX_MAX_RAD), since a full-amplitude vertical swing read as more
+// motion than wanted here — tune this one constant to adjust how flat the
+// loop is.
+const VIDEO_TILT_VERTICAL_FACTOR = 0.5;
+
+function advanceVideoTilt(t) {
+  const angle = t * Math.PI * 2;
+  cubeParallaxTargetX = Math.sin(angle) * CUBE_PARALLAX_MAX_RAD * VIDEO_TILT_VERTICAL_FACTOR;
+  cubeParallaxTargetY = Math.cos(angle) * CUBE_PARALLAX_MAX_RAD;
+  cubeParallaxX = cubeParallaxTargetX;
+  cubeParallaxY = cubeParallaxTargetY;
 }
 
 // Fires without requiring movement whenever the cursor actually crosses
@@ -2647,6 +2714,8 @@ function getModelState() {
     videoMode,
     videoRecording,
     videoExportDurationMs: VIDEO_EXPORT_DURATION_MS,
+    pngSequenceExporting,
+    pngSequenceProgress,
     rotationDisabled,
     // Included so schedulePanSync/flushPanSync's notifyModelState() (fired
     // continuously while Space-dragging) keeps the "Model X/Y position"
@@ -4618,7 +4687,15 @@ function renderCubeFrame() {
   }
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  if (cubeRotResetStartTime !== null) {
+  if (videoRecording || pngSequenceExporting) {
+    // Deliberately does nothing: both captureVideo() and capturePngSequence()
+    // call advanceVideoTilt themselves, with their own frame-index-based t,
+    // immediately before calling renderCubeFrame() for each frame — and
+    // renderLoop pauses itself for the whole export either way (see its own
+    // check), so this branch only exists to make sure nothing here (ambient
+    // hover, a leftover rotation-reset tween) can clobber cubeParallaxX/Y in
+    // between frames.
+  } else if (cubeRotResetStartTime !== null) {
     // Fast ease-out cubic from the snapshot taken in tweenCubeRotationTo to
     // its target angle — cubeRotResetSuppressParallax additionally decays
     // the tilt itself back to zero over the same curve (overriding the
@@ -5239,12 +5316,19 @@ function applyCanvasSize() {
   canvas.height = Math.max(1, Math.round(canvasBaseHeight * renderScale));
 }
 
-// Photo mode export (see photoMode/capturePhoto): the larger axis of the
-// exported PNG, in pixels — the other axis follows from the current
-// viewport's own aspect ratio (window.innerWidth/innerHeight), so the photo
-// frames identically to whatever's on screen, just at a fixed high
+// The larger axis of an export, in pixels — the other axis follows from the
+// current viewport's own aspect ratio (window.innerWidth/innerHeight), so
+// every export frames identically to whatever's on screen, just at a fixed
 // resolution instead of whatever DPR/renderScale the live canvas happens to
-// be running at.
+// be running at. Shared by capturePhoto/captureVideo/capturePngSequence.
+function computeExportDimensions(maxDimension) {
+  const aspect = window.innerWidth / window.innerHeight;
+  return aspect >= 1
+    ? { width: maxDimension, height: Math.round(maxDimension / aspect) }
+    : { width: Math.round(maxDimension * aspect), height: maxDimension };
+}
+
+// Photo mode export (see photoMode/capturePhoto).
 const PHOTO_EXPORT_MAX_DIMENSION = 3840;
 
 // Temporarily renders one frame at PHOTO_EXPORT_MAX_DIMENSION resolution and
@@ -5261,9 +5345,9 @@ const PHOTO_EXPORT_MAX_DIMENSION = 3840;
 // gl was created without preserveDrawingBuffer, so this only works because
 // the resize-back below runs after that synchronous snapshot, not before.
 function capturePhoto() {
-  const aspect = window.innerWidth / window.innerHeight;
-  canvas.width = aspect >= 1 ? PHOTO_EXPORT_MAX_DIMENSION : Math.round(PHOTO_EXPORT_MAX_DIMENSION * aspect);
-  canvas.height = aspect >= 1 ? Math.round(PHOTO_EXPORT_MAX_DIMENSION / aspect) : PHOTO_EXPORT_MAX_DIMENSION;
+  const { width, height } = computeExportDimensions(PHOTO_EXPORT_MAX_DIMENSION);
+  canvas.width = width;
+  canvas.height = height;
   renderCubeFrame();
 
   canvas.toBlob((blob) => {
@@ -5283,94 +5367,266 @@ function capturePhoto() {
   renderCubeFrame();
 }
 
-// Video mode export (see videoMode/captureVideo): fixed clip length and
-// long-edge resolution for every capture. Kept as its own constants rather
-// than reusing PHOTO_EXPORT_MAX_DIMENSION so the two can be tuned
-// independently even though they currently match.
+// Video mode export (see videoMode/captureVideo): fixed clip length,
+// long-edge resolution, and frame rate for every capture. Kept as its own
+// constants rather than reusing PNG_SEQUENCE_MAX_DIMENSION (below) so the
+// two can be tuned independently even though they currently match — neither
+// export's *performance* depends on this resolution anymore (see
+// captureVideo's own comment), so this is just a quality choice.
 const VIDEO_EXPORT_MAX_DIMENSION = 3840; // UHD 4K, long edge
-const VIDEO_EXPORT_DURATION_MS = 5000;
-const VIDEO_EXPORT_FPS = 30;
-// ~40 Mbps — enough headroom for a clean 4K/30fps clip at this duration
-// without ballooning file size for what's meant to be a quick export.
-const VIDEO_EXPORT_BITS_PER_SECOND = 40_000_000;
+// The tilt loop (see advanceVideoTilt) always takes exactly this long, so
+// this is also what sets its angular speed — raising it both lengthens the
+// clip and slows the circling motion down, same lever for both. Shared by
+// capturePngSequence too, for the same loop-length/frame-count math, even
+// though neither export is actually bound to wall-clock time (see
+// captureVideo's own comment).
+const VIDEO_EXPORT_DURATION_MS = 10000;
+const VIDEO_EXPORT_FPS = 60;
+// ~64 Mbps — scaled up from the ~16 Mbps that was right for 1080p60 to match
+// 4K60's 4x pixel count, so per-frame quality doesn't come out softer just
+// because the frame is bigger.
+const VIDEO_EXPORT_BITS_PER_SECOND = 64_000_000;
 
-// True only while a captureVideo() recording is in flight. Checked by
-// updateDynamicRenderScale and resize() so neither can shrink/resize the
-// canvas mid-capture — either one firing during the 5s window would yank the
-// backing store out from under the in-progress MediaRecorder stream, same
-// risk capturePhoto avoids by resizing back immediately after its
-// synchronous toBlob() snapshot, just sustained over a whole clip instead of
-// one frame here.
+// True only while a captureVideo() or capturePngSequence() export is in
+// flight. Checked by resize() so a mid-export window resize can't shift
+// cubeProjectionHalfX/Y (and so the framing), or clobber the fixed
+// canvas.width/height either export forces for its duration.
 let videoExportInProgress = false;
 
-// In rough preference order: H.264-in-MP4 first since it's the format most
-// readily droppable straight into a deck/editor without transcoding,
-// falling back through VP9/VP8/plain WebM for browsers that don't expose an
-// MP4 recording target (MediaRecorder support is inconsistent across
-// engines, unlike canvas.toBlob's 'image/png' above which every target
-// supports).
-const VIDEO_EXPORT_MIME_CANDIDATES = [
-  'video/mp4;codecs=avc1',
-  'video/mp4',
-  'video/webm;codecs=vp9',
-  'video/webm;codecs=vp8',
-  'video/webm',
-];
-
-function pickVideoExportMimeType() {
-  return VIDEO_EXPORT_MIME_CANDIDATES.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) ?? '';
-}
-
-// Temporarily renders at VIDEO_EXPORT_MAX_DIMENSION resolution (same
-// aspect-preserving approach as capturePhoto) for VIDEO_EXPORT_DURATION_MS,
-// recording the live canvas via captureStream()/MediaRecorder so whatever's
-// actually animating on screen (flow pulses, the model's own rotation state
-// — ambient hover itself is locked out by videoMode, same as photoMode)
-// plays out in real time into the clip. Downloads the result and restores
-// the live backing-store size when the recording stops.
-function captureVideo() {
-  if (videoRecording) return;
-  const mimeType = pickVideoExportMimeType();
-  if (!mimeType || typeof canvas.captureStream !== 'function') return;
-
+// Encodes directly to a real MP4 via WebCodecs (through Mediabunny — see the
+// import at the top of this file) instead of MediaRecorder+captureStream.
+// The original real-time version of this function recorded a live
+// captureStream while the ambient render loop kept running — which meant
+// racing a hard ~16.7ms/frame deadline against however long rendering,
+// scaling, and hardware-encoding a frame actually took, and silently
+// repeating a stale frame (audible/visible stutter) whenever it lost that
+// race. Rendering itself is no longer the bottleneck that made it lose (see
+// git history — captureVideo used to blit a cheap live-res frame up to
+// export resolution for exactly that reason), but a *guarantee* of zero
+// dropped/duplicated frames can't come from a real-time pipeline at all, no
+// matter how fast each piece is — there's always some slow machine/frame
+// that blows the deadline.
+//
+// This version sidesteps the deadline entirely, the same way
+// capturePngSequence already does: step through frames one at a time with an
+// explicit, evenly-spaced timestamp (i / VIDEO_EXPORT_FPS seconds) instead of
+// a real-clock one, rendering each directly onto the live WebGL canvas at
+// full export resolution and handing it to Mediabunny's CanvasSource, which
+// wraps WebCodecs' VideoEncoder. Its default latencyMode ('quality', not
+// 'realtime') is documented to never drop a frame — encoding just takes as
+// long as it takes per frame, with no deadline riding on it. A slow machine
+// makes the export take longer in wall-clock time; it can no longer make the
+// output choppier.
+async function captureVideo() {
+  if (videoRecording || pngSequenceExporting) return;
+  // Claimed synchronously, before the async codec detection below — codec
+  // detection awaits a promise, and without this a rapid second Enter press
+  // during that gap would sail past the guard above (still false at that
+  // point) and start a second, concurrent export fighting this one over the
+  // same canvas.
   videoRecording = true;
+
+  const { width, height } = computeExportDimensions(VIDEO_EXPORT_MAX_DIMENSION);
+  // In preference order: H.264 first, since it's the format most readily
+  // droppable straight into a deck/editor without transcoding; VP9/AV1 as
+  // fallbacks for browsers that can't encode it. All three are valid inside
+  // Mp4OutputFormat.
+  const codec = await getFirstEncodableVideoCodec(['avc', 'vp9', 'av1'], { width, height });
+  if (!codec) {
+    videoRecording = false;
+    return;
+  }
+
+  canvas.width = width;
+  canvas.height = height;
   videoExportInProgress = true;
+  cubeRotResetStartTime = null; // hand cubeParallaxX/Y to this function's own advanceVideoTilt calls below
   notifyModelState(); // drives the panel's video-mode indicator into its "Recording…" text
 
-  const aspect = window.innerWidth / window.innerHeight;
-  canvas.width = aspect >= 1 ? VIDEO_EXPORT_MAX_DIMENSION : Math.round(VIDEO_EXPORT_MAX_DIMENSION * aspect);
-  canvas.height = aspect >= 1 ? Math.round(VIDEO_EXPORT_MAX_DIMENSION / aspect) : VIDEO_EXPORT_MAX_DIMENSION;
+  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
+  const videoSource = new CanvasSource(canvas, {
+    codec,
+    quality: new Quality({ bitrate: VIDEO_EXPORT_BITS_PER_SECOND }),
+  });
+  output.addVideoTrack(videoSource);
+  await output.start();
 
-  const stream = canvas.captureStream(VIDEO_EXPORT_FPS);
-  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: VIDEO_EXPORT_BITS_PER_SECOND });
-  const chunks = [];
-  recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) chunks.push(event.data);
-  };
-  recorder.onstop = () => {
-    stream.getTracks().forEach((track) => track.stop());
-    videoExportInProgress = false;
-    applyCanvasSize();
+  // Deliberately i < totalFrames, never reaching t=1 — that would duplicate
+  // t=0's frame, which is what a *player* looping this file back-to-back
+  // already does implicitly; an explicit duplicate would just show up as a
+  // held/stuttered frame at the seam. (capturePngSequence, exporting loose
+  // files rather than a file a player loops for you, deliberately makes the
+  // opposite choice — see its own comment.)
+  const totalFrames = Math.round((VIDEO_EXPORT_DURATION_MS / 1000) * VIDEO_EXPORT_FPS);
+  const frameDuration = 1 / VIDEO_EXPORT_FPS;
+  for (let i = 0; i < totalFrames; i++) {
+    advanceVideoTilt(i / totalFrames);
     renderCubeFrame();
+    await videoSource.add(i * frameDuration, frameDuration);
+  }
+  videoSource.close();
+  await output.finalize();
 
-    const blob = new Blob(chunks, { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `bluprint-model-${Date.now()}.${mimeType.startsWith('video/mp4') ? 'mp4' : 'webm'}`;
-    link.click();
-    URL.revokeObjectURL(url);
+  videoExportInProgress = false;
+  videoRecording = false;
+  // Same reasoning as capturePngSequence's own cleanup: ease back to the
+  // neutral framed angle now that advanceVideoTilt no longer owns
+  // cubeParallaxX/Y, so a retake starts clean.
+  resetCubeRotation();
+  applyCanvasSize();
+  renderCubeFrame();
 
-    videoRecording = false;
+  const url = URL.createObjectURL(new Blob([output.target.buffer], { type: 'video/mp4' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `bluprint-model-${Date.now()}.mp4`;
+  link.click();
+  URL.revokeObjectURL(url);
+
+  notifyModelState();
+}
+
+// --- PNG sequence export ----------------------------------------------
+//
+// Cmd/Ctrl+Enter while video mode is active (see the keydown handler above)
+// — an alternative to captureVideo() for manually assembling the clip
+// yourself (ffmpeg, an NLE, whatever) instead of getting a ready-made MP4.
+// Same frame-by-frame, non-real-time approach captureVideo now uses (see its
+// own comment) — renders, captures, and packs one frame at a time, awaiting
+// each PNG encode before starting the next — just producing loose files
+// instead of a muxed video.
+
+// Its own constant rather than reusing VIDEO_EXPORT_MAX_DIMENSION so the two
+// stay independently tunable even though they currently match at 4K — see
+// VIDEO_EXPORT_MAX_DIMENSION's own comment.
+const PNG_SEQUENCE_MAX_DIMENSION = 3840; // UHD 4K, long edge
+
+// CRC-32 (the zlib/PNG/ZIP polynomial) — the one piece of real "format" math
+// a ZIP entry needs; everything else below is just byte layout.
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+async function capturePngSequence() {
+  if (videoRecording || pngSequenceExporting) return;
+
+  const { width, height } = computeExportDimensions(PNG_SEQUENCE_MAX_DIMENSION);
+  canvas.width = width;
+  canvas.height = height;
+
+  pngSequenceExporting = true;
+  pngSequenceProgress = 0;
+  videoExportInProgress = true; // freezes resize(), same protection a captureVideo() recording gets
+  cubeRotResetStartTime = null; // hand cubeParallaxX/Y to this function's own advanceVideoTilt calls below
+  notifyModelState(); // drives the panel's video-mode indicator into its "Exporting…" text
+
+  const loopFrames = Math.round((VIDEO_EXPORT_DURATION_MS / 1000) * VIDEO_EXPORT_FPS);
+  // One extra frame beyond a full loop's worth (loopFrames), so the sequence
+  // explicitly closes on itself: frame 0's t=0 and frame loopFrames's t=1
+  // land on the exact same point on the circle (cos/sin are periodic), so
+  // the first and last files in the sequence share the same tilt position —
+  // useful for confirming the loop closes cleanly, or for tooling that
+  // expects an explicit closing frame rather than inferring the wrap.
+  const totalFrames = loopFrames + 1;
+  const parts = []; // local file header + name + data, per frame, in file order — fed straight into the final Blob
+  const centralDirectory = []; // { nameBytes, crc, size, offset } per frame, for the trailer written after the loop
+  let offset = 0;
+
+  for (let i = 0; i < totalFrames; i++) {
+    advanceVideoTilt(i / loopFrames);
+    renderCubeFrame();
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const nameBytes = new TextEncoder().encode(`frame-${String(i).padStart(4, '0')}.png`);
+    const crc = crc32(bytes);
+
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true); // local file header signature
+    local.setUint16(4, 20, true); // version needed to extract
+    local.setUint16(6, 0, true); // general purpose bit flag
+    local.setUint16(8, 0, true); // compression method: 0 = store
+    local.setUint16(10, 0, true); // last mod file time — not meaningful for a synthetic export, left zeroed
+    local.setUint16(12, 0, true); // last mod file date
+    local.setUint32(14, crc, true);
+    local.setUint32(18, bytes.length, true); // compressed size == uncompressed size, store method
+    local.setUint32(22, bytes.length, true);
+    local.setUint16(26, nameBytes.length, true);
+    local.setUint16(28, 0, true); // extra field length
+    parts.push(new Uint8Array(local.buffer), nameBytes, bytes);
+    centralDirectory.push({ nameBytes, crc, size: bytes.length, offset });
+    offset += 30 + nameBytes.length + bytes.length;
+
+    pngSequenceProgress = (i + 1) / totalFrames;
     notifyModelState();
-  };
+  }
 
-  recorder.start();
-  window.setTimeout(() => recorder.stop(), VIDEO_EXPORT_DURATION_MS);
+  // Central directory: one 46-byte record per frame, pointing back at that
+  // frame's local header offset above — standard ZIP trailer layout.
+  const centralDirStart = offset;
+  for (const entry of centralDirectory) {
+    const central = new DataView(new ArrayBuffer(46));
+    central.setUint32(0, 0x02014b50, true); // central file header signature
+    central.setUint16(4, 20, true); // version made by
+    central.setUint16(6, 20, true); // version needed to extract
+    central.setUint16(8, 0, true); // general purpose bit flag
+    central.setUint16(10, 0, true); // compression method
+    central.setUint16(12, 0, true); // last mod file time
+    central.setUint16(14, 0, true); // last mod file date
+    central.setUint32(16, entry.crc, true);
+    central.setUint32(20, entry.size, true);
+    central.setUint32(24, entry.size, true);
+    central.setUint16(28, entry.nameBytes.length, true);
+    central.setUint16(30, 0, true); // extra field length
+    central.setUint16(32, 0, true); // file comment length
+    central.setUint16(34, 0, true); // disk number start
+    central.setUint16(36, 0, true); // internal file attributes
+    central.setUint32(38, 0, true); // external file attributes
+    central.setUint32(42, entry.offset, true); // relative offset of local header
+    parts.push(new Uint8Array(central.buffer), entry.nameBytes);
+    offset += 46 + entry.nameBytes.length;
+  }
+
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); // end of central directory signature
+  end.setUint16(4, 0, true); // number of this disk
+  end.setUint16(6, 0, true); // disk where central directory starts
+  end.setUint16(8, centralDirectory.length, true); // central directory records on this disk
+  end.setUint16(10, centralDirectory.length, true); // total central directory records
+  end.setUint32(12, offset - centralDirStart, true); // size of central directory
+  end.setUint32(16, centralDirStart, true); // offset of start of central directory
+  end.setUint16(20, 0, true); // comment length
+  parts.push(new Uint8Array(end.buffer));
+
+  const url = URL.createObjectURL(new Blob(parts, { type: 'application/zip' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `bluprint-model-frames-${Date.now()}.zip`;
+  link.click();
+  URL.revokeObjectURL(url);
+
+  videoExportInProgress = false;
+  pngSequenceExporting = false;
+  // Same reasoning as captureVideo's onstop: ease back to the neutral framed
+  // angle now that advanceVideoTilt no longer owns cubeParallaxX/Y, so a
+  // retake starts clean.
+  resetCubeRotation();
+  applyCanvasSize();
+  renderCubeFrame();
+  notifyModelState();
 }
 
 function resize() {
-  if (videoExportInProgress) return; // don't fight the fixed export resolution captureVideo just set — see its own comment
+  // Set for the duration of both captureVideo() and capturePngSequence() —
+  // both render directly onto the live WebGL canvas at a fixed export
+  // resolution for their whole export. A real window resize mid-export would
+  // both change cubeProjectionHalfX/Y (and so the framing) partway through,
+  // and clobber that fixed canvas.width/height outright.
+  if (videoExportInProgress) return;
   // canvas.clientWidth/Height (the element's own actual CSS-rendered box),
   // not window.innerWidth/innerHeight — those two are usually the same, but
   // diverge on iOS Safari while the bottom URL bar auto-hides/shows during a
@@ -5566,7 +5822,12 @@ let overBudgetWindows = 0;
 let underBudgetWindows = 0;
 
 function updateDynamicRenderScale(avgFrameMs) {
-  if (videoExportInProgress) return; // don't fight the fixed export resolution captureVideo just set — see its own comment
+  // No explicit videoExportInProgress guard needed here: this is only ever
+  // reached via recordAndDisplayFrameTiming, which renderLoop stops calling
+  // entirely for the whole duration of a captureVideo()/capturePngSequence()
+  // export (see renderLoop's own check) — so by the time either export is
+  // forcing its own fixed canvas.width/height, this function simply isn't
+  // running at all to fight it.
   perfWindowCount++;
   if (perfWindowCount <= RENDER_SCALE_WARMUP_WINDOWS) return;
 
@@ -5629,6 +5890,14 @@ function recordAndDisplayFrameTiming(now) {
 }
 
 function renderLoop(now) {
+  if (videoRecording || pngSequenceExporting) {
+    // captureVideo()/capturePngSequence() own canvas.width/height and
+    // cubeParallaxX/Y exclusively for the whole export (see their own
+    // comments) — the ambient loop just idles rather than fighting either
+    // one, and picks back up on its own once the export flips this back off.
+    requestAnimationFrame(renderLoop);
+    return;
+  }
   renderCubeFrame();
   recordAndDisplayFrameTiming(now);
   requestAnimationFrame(renderLoop);
