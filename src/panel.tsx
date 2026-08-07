@@ -123,9 +123,29 @@ export function Panel() {
   const clearArrowsIconPress = useIconPressHandlers<XIconHandle>();
   const spaceIndicator = useTextSwap(!!state.spaceHeld, TEXT_SWAP_MS);
   const photoIndicator = useTextSwap(!!state.photoMode, TEXT_SWAP_MS);
+  const videoIndicator = useTextSwap(!!state.videoMode, TEXT_SWAP_MS);
+  const [videoCountdown, setVideoCountdown] = useState<number | null>(null);
   const flowDrawIndicator = useTextSwap(!!state.modelFlowDrawMode, TEXT_SWAP_MS);
 
   useEffect(() => controls.subscribe((patch: object) => setState((s) => ({ ...s, ...patch }))), []);
+
+  // Countdown shown in the video-mode pill while a capture is running — main.js
+  // only tells the panel *that* it's recording (state.videoRecording), not a
+  // live progress tick, so the countdown is ticked down here from the fixed
+  // clip length it does expose (state.videoExportDurationMs). Starts fresh
+  // every time a recording begins; clears the moment it ends, whether that's
+  // the countdown reaching 0 or main.js flipping videoRecording off first.
+  useEffect(() => {
+    if (!state.videoRecording) {
+      setVideoCountdown(null);
+      return;
+    }
+    setVideoCountdown(Math.round((state.videoExportDurationMs ?? 5000) / 1000));
+    const id = window.setInterval(() => {
+      setVideoCountdown((s) => (s === null ? null : Math.max(0, s - 1)));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [state.videoRecording, state.videoExportDurationMs]);
 
   useEffect(() => {
     localStorage.setItem(CONTROLS_HIDDEN_KEY, hidden ? "1" : "0");
@@ -311,6 +331,44 @@ export function Panel() {
               ) : (
                 <>
                   Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">P</Kbd> for photo mode
+                </>
+              )}
+            </span>
+          </div>
+
+          <div
+            className={cn(
+              "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
+              videoIndicator.displayed
+                ? "border-transparent bg-white text-black"
+                : "border-input bg-popover/80 text-foreground",
+              panelPhase === "open" && "is-open",
+              panelPhase === "closing" && "is-closing",
+            )}
+          >
+            <span
+              className={cn(
+                "t-text-swap",
+                videoIndicator.phase === "exit" && (state.videoMode ? "is-exit-up" : "is-exit-down"),
+                videoIndicator.phase === "enterStart" &&
+                  (state.videoMode ? "is-enter-from-bottom" : "is-enter-from-top"),
+              )}
+            >
+              {videoIndicator.displayed ? (
+                state.videoRecording ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span aria-hidden="true" className="t-record-dot size-1.5 shrink-0 rounded-full bg-destructive" />
+                    Recording 4K video… {videoCountdown ?? Math.round((state.videoExportDurationMs ?? 5000) / 1000)}s
+                  </span>
+                ) : (
+                  <>
+                    Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Enter</Kbd> to record,{" "}
+                    <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">V</Kbd> to exit
+                  </>
+                )
+              ) : (
+                <>
+                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">V</Kbd> for video mode
                 </>
               )}
             </span>

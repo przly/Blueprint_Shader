@@ -1268,7 +1268,18 @@ let cubeParallaxTargetY = 0;
 // canvas.style.touchAction is flipped to 'none' for just that one touch (see
 // its pointerdown handler) so native scroll doesn't fight the drag, and back
 // to the CSS default ('pan-y') on release so the next touch starts fresh.
-const heroContentEl = document.querySelector('.hero-content');
+//
+// '.hero-content' is this repo's own demo overlay (hero.html); the FE
+// handover build (canvas.html) ships no overlay markup of its own, since
+// the FE team's homepage already has its own hero UI. That page can point
+// this at its real overlay wrapper via
+// `<canvas data-hero-content-selector="#selector">`; left unset (or
+// unmatched), heroContentEl is null and the exclusion below is skipped
+// entirely — every touch on the canvas drives the tilt, so the FE side
+// should set this to whatever wraps their title/cards, the same way
+// hero.html's own .hero-content does, or their users won't be able to
+// touch-scroll past that text.
+const heroContentEl = document.querySelector(canvas.dataset.heroContentSelector || '.hero-content');
 let heroTouchDragPointerId = null;
 let cubeParallaxX = 0;
 let cubeParallaxY = 0;
@@ -1489,10 +1500,38 @@ let photoMode = false;
 
 function setPhotoMode(value) {
   value = !!value;
-  if (value === photoMode) return;
+  if (value === photoMode || videoRecording) return;
   photoMode = value;
-  if (value) resetCubeRotation();
+  if (value) {
+    resetCubeRotation();
+    if (videoMode) videoMode = false; // mutually exclusive with video mode, see setVideoMode
+  }
   notifyModelState(); // drives the panel's bottom-center photo-mode indicator, same as spaceHeld
+}
+
+// "Video mode": sibling to photo mode above, entered/left with the V key —
+// same orientation-lock/hover-freeze behavior (see updateParallaxTargetFromPointer),
+// but Enter starts a fixed-length 4K recording (see captureVideo) instead of
+// an instant still. Mutually exclusive with photo mode (each turns the
+// other off on entry) so Enter is never ambiguous about which capture it
+// triggers.
+let videoMode = false;
+// True only for the duration of an in-progress captureVideo() recording —
+// kept separate from videoMode itself so the mode stays entered (for a
+// retake) once a clip finishes, while a second Enter mid-recording, or a V/P
+// press trying to switch modes mid-capture, is ignored rather than
+// corrupting the in-flight export.
+let videoRecording = false;
+
+function setVideoMode(value) {
+  value = !!value;
+  if (value === videoMode || videoRecording) return;
+  videoMode = value;
+  if (value) {
+    resetCubeRotation();
+    if (photoMode) photoMode = false; // mutually exclusive with photo mode, see setPhotoMode
+  }
+  notifyModelState(); // drives the panel's bottom-center video-mode indicator, same as photoMode
 }
 
 // "Disable rotation" control: click-and-drag rotation is off by default so
@@ -1702,6 +1741,27 @@ window.addEventListener('keydown', (event) => {
   capturePhoto();
 });
 
+// V is the same kind of plain toggle as P above, for video mode (see
+// setVideoMode/videoMode's own comment).
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyV' || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  setVideoMode(!videoMode);
+});
+
+// Enter starts a 5s recording while video mode is active and no capture is
+// already running — mirrors the photo-mode Enter handler above; a second
+// Enter mid-recording is a no-op via the videoRecording check.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'Enter' || !videoMode || videoRecording || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  captureVideo();
+});
+
 // 1/2/3 jump straight to Camera Target 1/2/3 (see goToCameraTarget), same
 // shortcut as each target's own "Go" button in the panel. Ignored while
 // editingDefaultView is active — see setEditingDefaultView — since jumping
@@ -1824,9 +1884,11 @@ canvas.addEventListener('pointerdown', (event) => {
 if (IS_HERO) {
 canvas.addEventListener('pointerdown', (event) => {
   if (event.pointerType !== 'touch') return;
-  // heroContentEl is null only if this ever ran outside the hero build,
-  // which it can't (this whole block is IS_HERO-only) — no guard needed.
-  if (event.clientY >= heroContentEl.getBoundingClientRect().top) return; // over the title/cards — leave untouched for native scroll
+  // heroContentEl is null on the FE handover build (canvas.html) whenever
+  // its data-hero-content-selector isn't wired up to a real element yet —
+  // see heroContentEl's own comment. Nothing to exclude in that case, so
+  // every touch on the canvas arms the tilt drag.
+  if (heroContentEl && event.clientY >= heroContentEl.getBoundingClientRect().top) return; // over the title/cards — leave untouched for native scroll
   heroTouchDragPointerId = event.pointerId;
   canvas.style.touchAction = 'none';
 });
@@ -1934,10 +1996,10 @@ function updateParallaxTargetFromPointer(event) {
   // do — see setEditingDefaultView: while parking the free camera for the
   // baked-in default, ambient tilt drifting the view around while the user
   // is trying to pan/zoom precisely would fight the exact composition
-  // they're lining up. photoMode locks it too, so the orientation stays at
-  // the fixed default isometric angle setPhotoMode snapped to — see its own
-  // comment.
-  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld || editingDefaultView || photoMode) return;
+  // they're lining up. photoMode/videoMode lock it too, so the orientation
+  // stays at the fixed default isometric angle setPhotoMode/setVideoMode
+  // snapped to — see their own comments.
+  if (modelFlowDrawMode || modelFlowSelectMode || hoverMovementPaused || spaceHeld || rKeyHeld || zKeyHeld || editingDefaultView || photoMode || videoMode) return;
   const nx = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
   const ny = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
   cubeParallaxTargetY = nx * CUBE_PARALLAX_MAX_RAD;
@@ -2582,6 +2644,9 @@ function getModelState() {
   return {
     spaceHeld,
     photoMode,
+    videoMode,
+    videoRecording,
+    videoExportDurationMs: VIDEO_EXPORT_DURATION_MS,
     rotationDisabled,
     // Included so schedulePanSync/flushPanSync's notifyModelState() (fired
     // continuously while Space-dragging) keeps the "Model X/Y position"
@@ -5218,7 +5283,94 @@ function capturePhoto() {
   renderCubeFrame();
 }
 
+// Video mode export (see videoMode/captureVideo): fixed clip length and
+// long-edge resolution for every capture. Kept as its own constants rather
+// than reusing PHOTO_EXPORT_MAX_DIMENSION so the two can be tuned
+// independently even though they currently match.
+const VIDEO_EXPORT_MAX_DIMENSION = 3840; // UHD 4K, long edge
+const VIDEO_EXPORT_DURATION_MS = 5000;
+const VIDEO_EXPORT_FPS = 30;
+// ~40 Mbps — enough headroom for a clean 4K/30fps clip at this duration
+// without ballooning file size for what's meant to be a quick export.
+const VIDEO_EXPORT_BITS_PER_SECOND = 40_000_000;
+
+// True only while a captureVideo() recording is in flight. Checked by
+// updateDynamicRenderScale and resize() so neither can shrink/resize the
+// canvas mid-capture — either one firing during the 5s window would yank the
+// backing store out from under the in-progress MediaRecorder stream, same
+// risk capturePhoto avoids by resizing back immediately after its
+// synchronous toBlob() snapshot, just sustained over a whole clip instead of
+// one frame here.
+let videoExportInProgress = false;
+
+// In rough preference order: H.264-in-MP4 first since it's the format most
+// readily droppable straight into a deck/editor without transcoding,
+// falling back through VP9/VP8/plain WebM for browsers that don't expose an
+// MP4 recording target (MediaRecorder support is inconsistent across
+// engines, unlike canvas.toBlob's 'image/png' above which every target
+// supports).
+const VIDEO_EXPORT_MIME_CANDIDATES = [
+  'video/mp4;codecs=avc1',
+  'video/mp4',
+  'video/webm;codecs=vp9',
+  'video/webm;codecs=vp8',
+  'video/webm',
+];
+
+function pickVideoExportMimeType() {
+  return VIDEO_EXPORT_MIME_CANDIDATES.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) ?? '';
+}
+
+// Temporarily renders at VIDEO_EXPORT_MAX_DIMENSION resolution (same
+// aspect-preserving approach as capturePhoto) for VIDEO_EXPORT_DURATION_MS,
+// recording the live canvas via captureStream()/MediaRecorder so whatever's
+// actually animating on screen (flow pulses, the model's own rotation state
+// — ambient hover itself is locked out by videoMode, same as photoMode)
+// plays out in real time into the clip. Downloads the result and restores
+// the live backing-store size when the recording stops.
+function captureVideo() {
+  if (videoRecording) return;
+  const mimeType = pickVideoExportMimeType();
+  if (!mimeType || typeof canvas.captureStream !== 'function') return;
+
+  videoRecording = true;
+  videoExportInProgress = true;
+  notifyModelState(); // drives the panel's video-mode indicator into its "Recording…" text
+
+  const aspect = window.innerWidth / window.innerHeight;
+  canvas.width = aspect >= 1 ? VIDEO_EXPORT_MAX_DIMENSION : Math.round(VIDEO_EXPORT_MAX_DIMENSION * aspect);
+  canvas.height = aspect >= 1 ? Math.round(VIDEO_EXPORT_MAX_DIMENSION / aspect) : VIDEO_EXPORT_MAX_DIMENSION;
+
+  const stream = canvas.captureStream(VIDEO_EXPORT_FPS);
+  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: VIDEO_EXPORT_BITS_PER_SECOND });
+  const chunks = [];
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) chunks.push(event.data);
+  };
+  recorder.onstop = () => {
+    stream.getTracks().forEach((track) => track.stop());
+    videoExportInProgress = false;
+    applyCanvasSize();
+    renderCubeFrame();
+
+    const blob = new Blob(chunks, { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `bluprint-model-${Date.now()}.${mimeType.startsWith('video/mp4') ? 'mp4' : 'webm'}`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    videoRecording = false;
+    notifyModelState();
+  };
+
+  recorder.start();
+  window.setTimeout(() => recorder.stop(), VIDEO_EXPORT_DURATION_MS);
+}
+
 function resize() {
+  if (videoExportInProgress) return; // don't fight the fixed export resolution captureVideo just set — see its own comment
   // canvas.clientWidth/Height (the element's own actual CSS-rendered box),
   // not window.innerWidth/innerHeight — those two are usually the same, but
   // diverge on iOS Safari while the bottom URL bar auto-hides/shows during a
@@ -5414,6 +5566,7 @@ let overBudgetWindows = 0;
 let underBudgetWindows = 0;
 
 function updateDynamicRenderScale(avgFrameMs) {
+  if (videoExportInProgress) return; // don't fight the fixed export resolution captureVideo just set — see its own comment
   perfWindowCount++;
   if (perfWindowCount <= RENDER_SCALE_WARMUP_WINDOWS) return;
 

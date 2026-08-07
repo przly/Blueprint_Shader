@@ -438,6 +438,21 @@
     opacity             var(--modal-close-dur) var(--modal-ease);
 }
 
+/* Recording indicator dot (src/panel.tsx video-mode pill) — a soft opacity
+   pulse rather than a hard on/off blink, so it reads as "live" (Zoom/Slack-
+   style recording dot) without being visually jarring next to the pill's
+   own text. */
+:root {
+  --record-dot-blink-dur: 1200ms;
+}
+@keyframes record-dot-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+.t-record-dot {
+  animation: record-dot-blink var(--record-dot-blink-dur) ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .t-overlay-backdrop,
   .t-modal,
@@ -445,6 +460,10 @@
   .t-reveal,
   .t-fade-center {
     transition: none !important;
+  }
+  .t-record-dot {
+    animation: none;
+    opacity: 1;
   }
   /* Keep a quick opacity crossfade (it's what tells you the label actually
      changed) but drop the translateY slide and blur — movement and heavy
