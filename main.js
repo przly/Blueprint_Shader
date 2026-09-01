@@ -1753,13 +1753,25 @@ window.addEventListener('keydown', (event) => {
 // Enter captures the photo while photo mode is active — a no-op otherwise,
 // so it never fights the browser's/panel's own default Enter behavior (e.g.
 // submitting a focused form control, which the input/textarea/select guard
-// below also excludes explicitly).
+// below also excludes explicitly). Excludes Cmd/Ctrl+Enter (see the next
+// handler) so a single keypress can't fire both at once.
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'Enter' || !photoMode || event.repeat) return;
+  if (event.code !== 'Enter' || !photoMode || event.metaKey || event.ctrlKey || event.repeat) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   event.preventDefault();
   capturePhoto();
+});
+
+// Cmd+Enter (Ctrl+Enter off Mac, same convention video mode's PNG-sequence
+// shortcut and KeyZ's undo shortcut above use) captures the same photo at
+// double the resolution — see PHOTO_EXPORT_MAX_DIMENSION_2X's own comment.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'Enter' || !(event.metaKey || event.ctrlKey) || !photoMode || event.repeat) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  event.preventDefault();
+  capturePhoto(PHOTO_EXPORT_MAX_DIMENSION_2X);
 });
 
 // V is the same kind of plain toggle as P above, for video mode (see
@@ -5330,9 +5342,15 @@ function computeExportDimensions(maxDimension) {
 
 // Photo mode export (see photoMode/capturePhoto).
 const PHOTO_EXPORT_MAX_DIMENSION = 3840;
+// Cmd/Ctrl+Enter variant (see the keydown handler above) — same shot, just
+// rendered at double the long-edge resolution for when 4K isn't enough
+// (e.g. printing, or heavy cropping). Well within typical GPU renderbuffer
+// limits (usually 16384px), so no extra capping is needed here.
+const PHOTO_EXPORT_MAX_DIMENSION_2X = PHOTO_EXPORT_MAX_DIMENSION * 2;
 
-// Temporarily renders one frame at PHOTO_EXPORT_MAX_DIMENSION resolution and
-// downloads it as a PNG, then restores the live backing-store size. Resizing
+// Temporarily renders one frame at maxDimension resolution (long edge; see
+// PHOTO_EXPORT_MAX_DIMENSION/PHOTO_EXPORT_MAX_DIMENSION_2X) and downloads it
+// as a PNG, then restores the live backing-store size. Resizing
 // `canvas.width`/`height` (rather than adding a separate offscreen canvas)
 // keeps this on the exact same draw path — gl.viewport in renderCubeFrame
 // reads canvas.width/height directly — and since the target keeps the
@@ -5344,8 +5362,8 @@ const PHOTO_EXPORT_MAX_DIMENSION = 3840;
 // it's called (the actual PNG encode happens async, off that snapshot) —
 // gl was created without preserveDrawingBuffer, so this only works because
 // the resize-back below runs after that synchronous snapshot, not before.
-function capturePhoto() {
-  const { width, height } = computeExportDimensions(PHOTO_EXPORT_MAX_DIMENSION);
+function capturePhoto(maxDimension = PHOTO_EXPORT_MAX_DIMENSION) {
+  const { width, height } = computeExportDimensions(maxDimension);
   canvas.width = width;
   canvas.height = height;
   renderCubeFrame();

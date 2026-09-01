@@ -326,6 +326,7 @@ export function Panel() {
               {photoIndicator.displayed ? (
                 <>
                   Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Enter</Kbd> to capture,{" "}
+                  <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⌘Enter</Kbd> for 2x,{" "}
                   <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">P</Kbd> to exit
                 </>
               ) : (
