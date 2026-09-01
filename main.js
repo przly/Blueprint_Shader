@@ -4691,11 +4691,16 @@ function drawAxisGizmo(rx, ry) {
 
 function renderCubeFrame() {
   gl.viewport(0, 0, canvas.width, canvas.height);
+  // Clear alpha is 0 instead of the usual 1 while capturePhoto is mid-export
+  // (see capturingTransparentPhoto) — the PNG then carries a true alpha
+  // channel wherever no model geometry covers a pixel, rather than baking in
+  // the on-screen background color/theme.
+  const bgAlpha = capturingTransparentPhoto ? 0 : 1;
   if (blueprintEnabled) {
     const bg = BLUEPRINT_THEMES[shaderTheme].bg;
-    gl.clearColor(bg[0], bg[1], bg[2], 1);
+    gl.clearColor(bg[0], bg[1], bg[2], bgAlpha);
   } else {
-    gl.clearColor(0, 0, 0, 1);
+    gl.clearColor(0, 0, 0, bgAlpha);
   }
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
@@ -5348,6 +5353,13 @@ const PHOTO_EXPORT_MAX_DIMENSION = 3840;
 // limits (usually 16384px), so no extra capping is needed here.
 const PHOTO_EXPORT_MAX_DIMENSION_2X = PHOTO_EXPORT_MAX_DIMENSION * 2;
 
+// Gates the transparent clear in renderCubeFrame (see there) — true only for
+// the single export-resolution frame capturePhoto renders, never for the
+// live view or the restore-to-live-resolution frame right after, so the
+// canvas on screen keeps its normal opaque background and only the
+// downloaded PNG comes out with alpha.
+let capturingTransparentPhoto = false;
+
 // Temporarily renders one frame at maxDimension resolution (long edge; see
 // PHOTO_EXPORT_MAX_DIMENSION/PHOTO_EXPORT_MAX_DIMENSION_2X) and downloads it
 // as a PNG, then restores the live backing-store size. Resizing
@@ -5366,7 +5378,9 @@ function capturePhoto(maxDimension = PHOTO_EXPORT_MAX_DIMENSION) {
   const { width, height } = computeExportDimensions(maxDimension);
   canvas.width = width;
   canvas.height = height;
+  capturingTransparentPhoto = true;
   renderCubeFrame();
+  capturingTransparentPhoto = false;
 
   canvas.toBlob((blob) => {
     if (!blob) return;
