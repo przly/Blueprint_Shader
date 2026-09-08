@@ -208,6 +208,8 @@ export function Panel() {
   const overlayPhase = useRevealPhase(isDraggingFile, MODAL_CLOSE_MS);
   const panelPhase = useRevealPhase(!hidden, MODAL_CLOSE_MS);
   const cameraTargetsPhase = useRevealPhase((state.customModelObjectNames?.length ?? 0) > 0, MODAL_CLOSE_MS);
+  const photoOptionsPhase = useRevealPhase(!!state.photoMode, MODAL_CLOSE_MS);
+  const lineWidthSliderPhase = useRevealPhase(!!state.photoUniformLineWidth, MODAL_CLOSE_MS);
   const flowObjectsPhase = useRevealPhase((state.selectedFlowArrowObjects?.length ?? 0) > 0, MODAL_CLOSE_MS);
 
   return (
@@ -305,36 +307,101 @@ export function Panel() {
             </span>
           </button>
 
-          <div
-            className={cn(
-              "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
-              photoIndicator.displayed
-                ? "border-transparent bg-white text-black"
-                : "border-input bg-popover/80 text-foreground",
-              panelPhase === "open" && "is-open",
-              panelPhase === "closing" && "is-closing",
-            )}
-          >
-            <span
+          <div className="relative">
+            <div
               className={cn(
-                "t-text-swap",
-                photoIndicator.phase === "exit" && (state.photoMode ? "is-exit-up" : "is-exit-down"),
-                photoIndicator.phase === "enterStart" &&
-                  (state.photoMode ? "is-enter-from-bottom" : "is-enter-from-top"),
+                "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
+                photoIndicator.displayed
+                  ? "border-transparent bg-white text-black"
+                  : "border-input bg-popover/80 text-foreground",
+                panelPhase === "open" && "is-open",
+                panelPhase === "closing" && "is-closing",
               )}
             >
-              {photoIndicator.displayed ? (
-                <>
-                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Enter</Kbd> to capture,{" "}
-                  <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⌘Enter</Kbd> for 2x,{" "}
-                  <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">P</Kbd> to exit
-                </>
-              ) : (
-                <>
-                  Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">P</Kbd> for photo mode
-                </>
-              )}
-            </span>
+              <span
+                className={cn(
+                  "t-text-swap",
+                  photoIndicator.phase === "exit" && (state.photoMode ? "is-exit-up" : "is-exit-down"),
+                  photoIndicator.phase === "enterStart" &&
+                    (state.photoMode ? "is-enter-from-bottom" : "is-enter-from-top"),
+                )}
+              >
+                {photoIndicator.displayed ? (
+                  <>
+                    Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">⇧P</Kbd> to
+                    capture, <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">Esc</Kbd> to exit
+                  </>
+                ) : (
+                  <>
+                    Press <Kbd className="h-auto min-w-0 w-auto p-1 text-[10px] leading-none">P</Kbd> for photo mode
+                  </>
+                )}
+              </span>
+            </div>
+
+            {photoOptionsPhase !== "closed" && (
+              <div className="pointer-events-none absolute top-1/2 left-full ml-3 -translate-y-1/2">
+                <div
+                  className={cn(
+                    "t-fade-center pointer-events-auto flex w-72 flex-col gap-2 rounded-xl border border-input bg-popover/80 p-6 text-xs shadow-lg backdrop-blur-sm",
+                    photoOptionsPhase === "open" && "is-open",
+                    photoOptionsPhase === "closing" && "is-closing",
+                  )}
+                >
+                  <Label className="gap-2.5 text-xs">
+                    <Switch
+                      checked={!!state.photoExport2x}
+                      onCheckedChange={(checked: boolean) => {
+                        controls.setPhotoExport2x(checked);
+                        setState((s) => ({ ...s, photoExport2x: checked }));
+                      }}
+                    />
+                    @2x resolution
+                  </Label>
+                  <Label className="gap-2.5 text-xs">
+                    <Switch
+                      checked={!!state.photoUniformLineWidth}
+                      onCheckedChange={(checked: boolean) => {
+                        controls.setPhotoUniformLineWidth(checked);
+                        setState((s) => ({ ...s, photoUniformLineWidth: checked }));
+                      }}
+                    />
+                    Uniform line width
+                    <span className="rounded-full bg-info/15 px-1.5 py-0.5 font-semibold text-[10px] text-info leading-none">
+                      New
+                    </span>
+                  </Label>
+                  {lineWidthSliderPhase !== "closed" && (
+                    <div
+                      className={cn(
+                        "t-reveal",
+                        lineWidthSliderPhase === "open" && "is-open",
+                        lineWidthSliderPhase === "closing" && "is-closing",
+                      )}
+                    >
+                      <Field className="pt-1 pb-2">
+                        <Slider
+                          max={state.photoLineWidthHalfPxMax}
+                          min={state.photoLineWidthHalfPxMin}
+                          onValueChange={(value: number | readonly number[]) => {
+                            const halfWidthPx = value as number;
+                            controls.setPhotoLineWidthHalfPx(halfWidthPx);
+                            setState((s) => ({ ...s, photoLineWidthHalfPx: halfWidthPx }));
+                          }}
+                          step={0.1}
+                          value={state.photoLineWidthHalfPx}
+                        >
+                          <div className="mb-3 flex w-full items-center justify-between gap-1">
+                            <FieldLabel className="text-xs sm:text-xs">Line width</FieldLabel>
+                            <SliderValue className="text-xs text-muted-foreground" />
+                          </div>
+                        </Slider>
+                      </Field>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <div

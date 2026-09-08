@@ -1518,6 +1518,24 @@ function setPhotoMode(value) {
   notifyModelState(); // drives the panel's bottom-center photo-mode indicator, same as spaceHeld
 }
 
+// The panel's small photo-options card (shown only while photoMode is
+// active — see getModelState) drives both of these; Enter always captures
+// using whatever they're currently set to (see the photo-mode Enter handler
+// below), rather than Cmd/Ctrl+Enter or Shift+Cmd/Ctrl+Enter being separate
+// one-off variants — one capture trigger, state lives in the panel.
+let photoExport2x = true;
+let photoUniformLineWidth = true;
+
+function setPhotoExport2x(value) {
+  photoExport2x = !!value;
+  notifyModelState();
+}
+
+function setPhotoUniformLineWidth(value) {
+  photoUniformLineWidth = !!value;
+  notifyModelState();
+}
+
 // "Video mode": sibling to photo mode above, entered/left with the V key —
 // same orientation-lock/hover-freeze behavior (see updateParallaxTargetFromPointer),
 // but Enter starts a fixed-length recording (see captureVideo), and
@@ -1601,11 +1619,28 @@ updateCubeCursor();
 // held-R listeners that actually set it true are still gated.
 let rKeyHeld = false;
 
+// True while focus sits on a control that already handles its own
+// Enter/Space keyboard activation — form fields, and (since the React panel
+// added switches for the photo-mode options card) any button or
+// role="switch"/role="button" element, which base-ui's Switch renders as.
+// Every single-key/Enter shortcut below checks this first, so pressing
+// Enter/P/V/etc. while a panel switch or input has focus activates just
+// that control instead of also firing the app-wide shortcut — e.g. Enter
+// toggling the "Uniform line width" switch it's focused on *and* capturing
+// a photo in the same keypress.
+function focusIsOnInteractiveControl() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return true;
+  const role = el.getAttribute && el.getAttribute('role');
+  return role === 'switch' || role === 'button';
+}
+
 if (!IS_HERO) {
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'Space' || spaceHeld) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
   spaceHeld = true;
   introYawTweenActive = false; // manual bird's-eye rise takes over yaw too — see introYawTweenActive's own comment
@@ -1646,8 +1681,7 @@ window.addEventListener('blur', () => {
 // keyboard auto-repeat's duplicate keydown events while held.
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'KeyR') return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   // Shift+R is a one-shot "reset orientation to default" shortcut,
   // independent of the plain-R hold-to-rotate gesture below.
   if (event.shiftKey) {
@@ -1685,8 +1719,7 @@ window.addEventListener('blur', () => {
 // editing the default position (see editPanDragging's comment).
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'KeyZ' || zKeyHeld || event.metaKey || event.ctrlKey || editingDefaultView) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   zKeyHeld = true;
   if (!zDragging) updateCubeCursor();
 });
@@ -1707,8 +1740,7 @@ window.addEventListener('blur', () => {
 // firing (e.g. undoing an accidental text selection).
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'KeyZ' || !(event.metaKey || event.ctrlKey) || event.shiftKey) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
   undoLastModelFlowArrow();
 });
@@ -1722,8 +1754,7 @@ window.addEventListener('keydown', (event) => {
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'Delete' && event.code !== 'Backspace') return;
   if (selectedFlowArrowIndex === null) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
   deleteSelectedModelFlowArrow();
 });
@@ -1734,52 +1765,55 @@ window.addEventListener('keydown', (event) => {
 // dropping an in-progress arrow) and notifies the panel, same as its Switch.
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'KeyA' || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
   setModelFlowDraw(!modelFlowDrawMode);
 });
 
-// P is the same kind of plain toggle as A above, for photo mode (see
-// setPhotoMode/photoMode's own comment).
+// P enters photo mode (see setPhotoMode/photoMode's own comment) — no
+// longer a toggle: once photoMode is already on, plain P is a no-op rather
+// than exiting, since P and Shift+P (capture, just below) are one keystroke
+// apart and exiting on a mistyped Shift would be an easy way to lose the
+// framing mid-shoot. Esc is the only way out (see the handler below).
+// Excludes Shift so it doesn't also fire alongside Shift+P.
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyP' || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (event.code !== 'KeyP' || event.shiftKey || event.repeat || photoMode) return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
-  setPhotoMode(!photoMode);
+  setPhotoMode(true);
 });
 
-// Enter captures the photo while photo mode is active — a no-op otherwise,
-// so it never fights the browser's/panel's own default Enter behavior (e.g.
-// submitting a focused form control, which the input/textarea/select guard
-// below also excludes explicitly). Excludes Cmd/Ctrl+Enter (see the next
-// handler) so a single keypress can't fire both at once.
+// Escape exits photo mode — the only way out now that P only enters (see
+// the handler above). A no-op outside photo mode so it doesn't fight
+// Escape's other browser/panel uses (e.g. blurring a focused control) when
+// photo mode isn't active.
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'Enter' || !photoMode || event.metaKey || event.ctrlKey || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (event.code !== 'Escape' || !photoMode || event.repeat) return;
   event.preventDefault();
-  capturePhoto();
+  setPhotoMode(false);
 });
 
-// Cmd+Enter (Ctrl+Enter off Mac, same convention video mode's PNG-sequence
-// shortcut and KeyZ's undo shortcut above use) captures the same photo at
-// double the resolution — see PHOTO_EXPORT_MAX_DIMENSION_2X's own comment.
+// Shift+P captures the photo while photo mode is active — a no-op
+// otherwise, so it never fights the browser's/panel's own default keyboard
+// behavior. Resolution comes from the panel's current photoExport2x toggle
+// (see the small photo-options card shown while photoMode is active) rather
+// than a modifier-key variant — one capture trigger, state lives in the
+// panel instead of which key combo was pressed. The line-width behavior
+// isn't passed through here at all — renderCubeFrame reads
+// photoUniformLineWidth live, so the capture just gets whatever the preview
+// was already showing.
 window.addEventListener('keydown', (event) => {
-  if (event.code !== 'Enter' || !(event.metaKey || event.ctrlKey) || !photoMode || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (event.code !== 'KeyP' || !event.shiftKey || !photoMode || event.repeat) return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
-  capturePhoto(PHOTO_EXPORT_MAX_DIMENSION_2X);
+  capturePhoto(photoExport2x ? PHOTO_EXPORT_MAX_DIMENSION_2X : PHOTO_EXPORT_MAX_DIMENSION);
 });
 
 // V is the same kind of plain toggle as P above, for video mode (see
 // setVideoMode/videoMode's own comment).
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'KeyV' || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
   setVideoMode(!videoMode);
 });
@@ -1792,8 +1826,7 @@ window.addEventListener('keydown', (event) => {
 // handler) so a single keypress can't fire both at once.
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'Enter' || !videoMode || videoRecording || pngSequenceExporting || event.metaKey || event.ctrlKey || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
   captureVideo();
 });
@@ -1803,8 +1836,7 @@ window.addEventListener('keydown', (event) => {
 // capturePngSequence's own comment for why you'd want this over plain Enter.
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'Enter' || !(event.metaKey || event.ctrlKey) || !videoMode || videoRecording || pngSequenceExporting || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   event.preventDefault();
   capturePngSequence();
 });
@@ -1818,8 +1850,7 @@ const CAMERA_TARGET_DIGIT_KEYS = { Digit1: 0, Digit2: 1, Digit3: 2 };
 window.addEventListener('keydown', (event) => {
   const slotIndex = CAMERA_TARGET_DIGIT_KEYS[event.code];
   if (slotIndex === undefined || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   if (!cameraTargetSlots[slotIndex] || editingDefaultView) return; // nothing assigned to this slot yet
   event.preventDefault();
   goToCameraTarget(slotIndex);
@@ -1831,8 +1862,7 @@ window.addEventListener('keydown', (event) => {
 // mirrored here too so the key doesn't even preventDefault for nothing.
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'Digit0' || event.repeat) return;
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (focusIsOnInteractiveControl()) return;
   if (!defaultCameraView || editingDefaultView) return; // nothing saved yet
   event.preventDefault();
   goToDefaultCameraView();
@@ -2482,6 +2512,12 @@ const customModelFlowCoordBuffer = gl.createBuffer();
 const customModelFlowPathLenBuffer = gl.createBuffer();
 const customModelLineBuffer = gl.createBuffer();
 const customModelLineColorBuffer = gl.createBuffer();
+// Only populated while photo mode's "Uniform wireframe line width" switch
+// is on (see photoUniformLineWidth/buildLineRibbonNDC) — the ribbon geometry
+// that replaces the plain gl.LINES wireframe draw for as long as that's
+// active, live preview included.
+const customModelLineRibbonBuffer = gl.createBuffer();
+const customModelLineRibbonColorBuffer = gl.createBuffer();
 let customModelVertexCount = 0;
 let customModelLineVertexCount = 0;
 let customModelReady = false;
@@ -2723,6 +2759,8 @@ function getModelState() {
   return {
     spaceHeld,
     photoMode,
+    photoExport2x,
+    photoUniformLineWidth,
     videoMode,
     videoRecording,
     videoExportDurationMs: VIDEO_EXPORT_DURATION_MS,
@@ -3720,6 +3758,61 @@ function buildArrowRibbonNDC(pathsPoints, combined, canvasWidth, canvasHeight, h
     }
   }
   return new Float32Array(verts);
+}
+
+// Builds a constant-pixel-width ribbon (2 triangles per segment) for a
+// buildCreaseEdgeLines-style flat, disjoint segment list — same NDC-space
+// technique as buildArrowRibbonNDC just above, minus the polyline/arrowhead
+// handling this doesn't need, plus carrying each segment's own color through
+// (buildCreaseEdgeLines/buildLineColors give every segment a single flat
+// color across both its vertices, so one color per segment is enough; no
+// per-vertex interpolation to preserve). CPU-side rather than a
+// vertex-shader ribbon technique for simplicity — called every frame while
+// photo mode's "Uniform wireframe line width" switch is on (live preview,
+// not just the captured frame; see renderCubeFrame), so a model with a very
+// large crease-edge wireframe (hundreds of thousands of edges) will feel the
+// per-frame rebuild cost while the switch is on. If that ever shows up as a
+// real slowdown, the fix is moving this to the vertex shader (bake each
+// vertex's "other endpoint" + side into the geometry once at model load,
+// let the shader do the pixel-width offset) instead of rebuilding on the
+// CPU every frame — not attempted yet since it's a bigger change than this
+// preview feature needed to start.
+function buildLineRibbonNDC(positions, colors, combined, canvasWidth, canvasHeight, halfWidthPx) {
+  const halfW = canvasWidth / 2, halfH = canvasHeight / 2;
+  const segCount = positions.length / 6;
+  const outPositions = new Float32Array(segCount * 18);
+  const outColors = new Float32Array(segCount * 18);
+  for (let s = 0; s < segCount; s++) {
+    const o = s * 6;
+    const ax = positions[o], ay = positions[o + 1], az = positions[o + 2];
+    const bx = positions[o + 3], by = positions[o + 4], bz = positions[o + 5];
+    const a = [
+      combined[0] * ax + combined[4] * ay + combined[8] * az + combined[12],
+      combined[1] * ax + combined[5] * ay + combined[9] * az + combined[13],
+      combined[2] * ax + combined[6] * ay + combined[10] * az + combined[14],
+    ];
+    const b = [
+      combined[0] * bx + combined[4] * by + combined[8] * bz + combined[12],
+      combined[1] * bx + combined[5] * by + combined[9] * bz + combined[13],
+      combined[2] * bx + combined[6] * by + combined[10] * bz + combined[14],
+    ];
+    let dxPix = (b[0] - a[0]) * halfW, dyPix = (b[1] - a[1]) * halfH;
+    const lenPix = Math.hypot(dxPix, dyPix) || 1;
+    dxPix /= lenPix; dyPix /= lenPix;
+    const nx = (-dyPix * halfWidthPx) / halfW, ny = (dxPix * halfWidthPx) / halfH;
+    const po = s * 18;
+    outPositions.set([
+      a[0] - nx, a[1] - ny, a[2],  b[0] - nx, b[1] - ny, b[2],  a[0] + nx, a[1] + ny, a[2],
+      a[0] + nx, a[1] + ny, a[2],  b[0] - nx, b[1] - ny, b[2],  b[0] + nx, b[1] + ny, b[2],
+    ], po);
+    const cr = colors[o], cg = colors[o + 1], cb = colors[o + 2];
+    for (let k = 0; k < 6; k++) {
+      outColors[po + k * 3] = cr;
+      outColors[po + k * 3 + 1] = cg;
+      outColors[po + k * 3 + 2] = cb;
+    }
+  }
+  return { positions: outPositions, colors: outColors };
 }
 
 // Rotates a vec3 the same way mat4RotateX/mat4RotateY would (see those
@@ -5032,19 +5125,59 @@ function renderCubeFrame() {
     gl.disable(gl.POLYGON_OFFSET_FILL);
 
     gl.useProgram(lineProgram);
-    gl.uniformMatrix4fv(uLineModelView, false, modelView);
-    gl.uniformMatrix4fv(uLineProjection, false, cubeProjection);
     gl.uniform1f(uLineAlpha, 1.0);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineBuffer);
-    gl.enableVertexAttribArray(aLinePosition);
-    gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+    // Shared by the wireframe ribbon branch below, the arrow ribbons further
+    // down, and the pivot orb further still — projects object-space points
+    // straight to NDC/clip space on the CPU (see buildArrowRibbonNDC's
+    // comment for why: an orthographic projection composed with
+    // rotate/scale/translate always has clip.w=1, so this *is* the final
+    // NDC position, no perspective divide needed).
+    const combined = mat4Multiply(cubeProjection, modelView);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineColorBuffer);
-    gl.enableVertexAttribArray(aLineColor);
-    gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 0, 0);
+    // While photo mode is active and the panel's "Uniform wireframe line
+    // width" switch is on, draws the wireframe as a constant-pixel-width
+    // ribbon — live, not just for the captured frame — so toggling the
+    // switch or dragging the line-width slider previews exactly how the
+    // exported photo's line width will look. Scaled so it reads the same
+    // relative thickness at whatever resolution is currently rendering (see
+    // photoLineWidthHalfPx) — live view and export alike — instead of
+    // gl.LINES' ~1-device-pixel width that gets relatively thinner the
+    // higher the resolution goes. Every other case (switch off, or photo
+    // mode not active) falls through to the unchanged gl.LINES draw.
+    if (photoMode && photoUniformLineWidth && customModelLinePositionsCache && customModelLinePositionsCache.length > 0) {
+      const halfWidthPx = photoLineWidthHalfPx * (Math.max(canvas.width, canvas.height) / PHOTO_EXPORT_MAX_DIMENSION);
+      const lineColors = buildLineColors(customModelLineIsGreenCache, BLUEPRINT_THEMES[shaderTheme].line);
+      const ribbon = buildLineRibbonNDC(customModelLinePositionsCache, lineColors, combined, canvas.width, canvas.height, halfWidthPx);
 
-    gl.drawArrays(gl.LINES, 0, customModelLineVertexCount);
+      gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
+      gl.uniformMatrix4fv(uLineProjection, false, IDENTITY_MAT4);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineRibbonBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, ribbon.positions, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(aLinePosition);
+      gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineRibbonColorBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, ribbon.colors, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(aLineColor);
+      gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 0, 0);
+
+      gl.drawArrays(gl.TRIANGLES, 0, ribbon.positions.length / 3);
+    } else {
+      gl.uniformMatrix4fv(uLineModelView, false, modelView);
+      gl.uniformMatrix4fv(uLineProjection, false, cubeProjection);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineBuffer);
+      gl.enableVertexAttribArray(aLinePosition);
+      gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineColorBuffer);
+      gl.enableVertexAttribArray(aLineColor);
+      gl.vertexAttribPointer(aLineColor, 3, gl.FLOAT, false, 0, 0);
+
+      gl.drawArrays(gl.LINES, 0, customModelLineVertexCount);
+    }
 
     // Draw every finalized arrow, plus the in-progress drag (if any), as a
     // bold guide ribbon (with an arrowhead marking its direction) on top, so
@@ -5087,13 +5220,6 @@ function renderCubeFrame() {
           ...(modelFlowDrag.points.length >= 2 ? [modelFlowDrag.points] : []),
         ]
       : [];
-
-    // Shared by the arrow ribbon below and the pivot orb further down —
-    // projects object-space points straight to NDC/clip space on the CPU
-    // (see buildArrowRibbonNDC's comment for why: an orthographic
-    // projection composed with rotate/scale/translate always has clip.w=1,
-    // so this *is* the final NDC position, no perspective divide needed).
-    const combined = mat4Multiply(cubeProjection, modelView);
 
     if (unselectedPointLists.length > 0 || selectedPointList || dragPointLists.length > 0) {
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
@@ -5360,6 +5486,23 @@ const PHOTO_EXPORT_MAX_DIMENSION_2X = PHOTO_EXPORT_MAX_DIMENSION * 2;
 // downloaded PNG comes out with alpha.
 let capturingTransparentPhoto = false;
 
+// Half-width in device pixels at PHOTO_EXPORT_MAX_DIMENSION's long edge —
+// renderCubeFrame scales this by (actual export long edge / that reference)
+// so the line reads the same relative thickness regardless of which
+// maxDimension a given capture renders at, rather than a flat pixel count
+// that would look thinner the higher the export resolution goes (the exact
+// bug this whole ribbon path exists to avoid). User-adjustable via the
+// panel's line-width slider (setPhotoLineWidthHalfPx), shown only while
+// photoUniformLineWidth is on.
+const PHOTO_LINE_WIDTH_HALF_PX_MIN = 0.5;
+const PHOTO_LINE_WIDTH_HALF_PX_MAX = 5;
+let photoLineWidthHalfPx = restoreNumber('photoLineWidthHalfPx', 1.5);
+
+function setPhotoLineWidthHalfPx(value) {
+  photoLineWidthHalfPx = value;
+  persistNumber('photoLineWidthHalfPx', value);
+}
+
 // Temporarily renders one frame at maxDimension resolution (long edge; see
 // PHOTO_EXPORT_MAX_DIMENSION/PHOTO_EXPORT_MAX_DIMENSION_2X) and downloads it
 // as a PNG, then restores the live backing-store size. Resizing
@@ -5374,6 +5517,12 @@ let capturingTransparentPhoto = false;
 // it's called (the actual PNG encode happens async, off that snapshot) —
 // gl was created without preserveDrawingBuffer, so this only works because
 // the resize-back below runs after that synchronous snapshot, not before.
+//
+// The wireframe's line-width behavior (plain gl.LINES vs the constant-
+// pixel-width ribbon) isn't decided here — renderCubeFrame reads the panel's
+// live photoUniformLineWidth switch on every frame, capture included, so
+// whatever the live view was already previewing is exactly what gets
+// exported.
 function capturePhoto(maxDimension = PHOTO_EXPORT_MAX_DIMENSION) {
   const { width, height } = computeExportDimensions(maxDimension);
   canvas.width = width;
@@ -6003,6 +6152,9 @@ export const controls = {
       plusSize: plusSizePercent,
       plusSizeMin: PLUS_SIZE_MIN,
       plusSizeMax: PLUS_SIZE_MAX,
+      photoLineWidthHalfPx,
+      photoLineWidthHalfPxMin: PHOTO_LINE_WIDTH_HALF_PX_MIN,
+      photoLineWidthHalfPxMax: PHOTO_LINE_WIDTH_HALF_PX_MAX,
       hoverMovementPaused,
       rotationDisabled,
       showModelFlowPoints,
@@ -6031,6 +6183,9 @@ export const controls = {
   setLightElevation,
   setLightIntensityPercent,
   setBlueprintEnabled,
+  setPhotoExport2x,
+  setPhotoUniformLineWidth,
+  setPhotoLineWidthHalfPx,
   setShaderTheme,
   setLineFrequency,
   setDotFrequency,
