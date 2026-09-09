@@ -29,6 +29,19 @@ const IS_HERO = typeof __HERO__ !== 'undefined' && __HERO__;
 
 const canvas = document.getElementById('canvas');
 
+// Runtime flag (not a build-time one like IS_HERO — this is the same tool
+// bundle as the root page, just served from scroll.html, which sets
+// data-scroll="true" on the canvas element) for the "/scroll" route: the
+// full tool (panel, keyboard shortcuts, drag/pan/zoom, flow-arrow drawing,
+// model upload, perf-monitor/axis-gizmo — none of that is stripped), minus
+// photo/video mode (see the P/V keydown handlers below) and minus
+// loadBundledDefaultModel's opening camera move (bird's-eye drop, yaw
+// settle, push into Camera Target 1) — the model just appears already
+// sitting at its resting pose. Live hover-parallax tilt
+// (updateParallaxTargetFromPointer) is unaffected either way; it doesn't
+// route through the intro tweens or photo/video mode.
+const IS_SCROLL_ROUTE = canvas?.dataset.scroll === 'true';
+
 // The control panel (src/panel.tsx) is a React/coss-ui component tree that
 // owns the panel's own UI state (including show/hide + the H-key shortcut).
 // This module stays plain WebGL/canvas code; `controls` (bottom of file) is
@@ -309,7 +322,15 @@ const PLUS_THICKNESS_RATIO = 0.12;
 // each theme keeps its own independent light defaults/storage.
 const SHADER_THEME_STORAGE_KEY = 'iconMosaic.shaderTheme';
 const storedShaderTheme = localStorage.getItem(SHADER_THEME_STORAGE_KEY);
-let shaderTheme = storedShaderTheme === 'light' ? 'light' : 'dark';
+// Storage (SHADER_THEME_STORAGE_KEY) is shared across every route/build — an
+// explicit 'light' or 'dark' saved from any of them wins here regardless of
+// route. Only the fallback for "nothing saved yet" differs: the /scroll
+// route (IS_SCROLL_ROUTE) opens on the light theme by default, everywhere
+// else keeps opening on dark, same as before this route existed.
+let shaderTheme =
+  storedShaderTheme === 'light' || storedShaderTheme === 'dark'
+    ? storedShaderTheme
+    : IS_SCROLL_ROUTE ? 'light' : 'dark';
 
 // Directional light angle, as azimuth (rotation around the vertical Y axis)
 // and elevation (above/below the horizontal plane), both in degrees — see
@@ -1202,9 +1223,11 @@ const CUBE_BIRDSEYE_PITCH = Math.PI / 2;
 // loaded, reads as a deliberate top-down opening shot rather than already
 // sitting at its resting angle; loadBundledDefaultModel eases this into the
 // actual resting rotation once the model's ready (see its
-// tweenCubeRotationTo call, MODEL_LOAD_ROTATION_INTRO_MS).
-let cubeRotX = CUBE_BIRDSEYE_PITCH;
-let cubeRotY = CUBE_BIRDSEYE_YAW;
+// tweenCubeRotationTo call, MODEL_LOAD_ROTATION_INTRO_MS). The /scroll route
+// (IS_SCROLL_ROUTE) skips that whole opening shot, so it starts pinned
+// directly at the resting angle instead — nothing ever tweens away from it.
+let cubeRotX = IS_SCROLL_ROUTE ? CUBE_ISO_PITCH : CUBE_BIRDSEYE_PITCH;
+let cubeRotY = IS_SCROLL_ROUTE ? CUBE_ISO_YAW : CUBE_BIRDSEYE_YAW;
 let cubeDragging = false;
 let cubeLastPointer = null;
 
@@ -1770,6 +1793,11 @@ window.addEventListener('keydown', (event) => {
   setModelFlowDraw(!modelFlowDrawMode);
 });
 
+// The /scroll route (IS_SCROLL_ROUTE) drops photo/video mode entirely, same
+// as it drops the opening camera move (see the flag's own declaration) —
+// none of the P/Escape/Shift+P/V/Enter/Cmd+Enter handlers below are wired up
+// there, so those keys are plain no-ops on that route.
+if (!IS_SCROLL_ROUTE) {
 // P enters photo mode (see setPhotoMode/photoMode's own comment) — no
 // longer a toggle: once photoMode is already on, plain P is a no-op rather
 // than exiting, since P and Shift+P (capture, just below) are one keystroke
@@ -1840,6 +1868,7 @@ window.addEventListener('keydown', (event) => {
   event.preventDefault();
   capturePngSequence();
 });
+} // end if (!IS_SCROLL_ROUTE) — photo/video mode
 
 // 1/2/3 jump straight to Camera Target 1/2/3 (see goToCameraTarget), same
 // shortcut as each target's own "Go" button in the panel. Ignored while
@@ -1882,7 +1911,11 @@ function scheduleWheelZoomSync() {
     notifyModelState();
   });
 }
-if (!IS_HERO) {
+// IS_SCROLL_ROUTE also excludes this listener (on top of !IS_HERO) — that
+// route's whole point is a normal scrollable page around the canvas, so the
+// wheel is left to the browser's native scroll instead of being captured
+// (and preventDefault'd) for 3D zoom.
+if (!IS_HERO && !IS_SCROLL_ROUTE) {
 // Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
 // and out, reusing the exact same underlying scale as the "Model size"
 // slider (see applyCubeSizePercent) — so it zooms into the pivot crosshair
@@ -1904,7 +1937,14 @@ canvas.addEventListener(
   },
   { passive: false },
 );
-} // end if (!IS_HERO) — wheel zoom
+} // end if (!IS_HERO && !IS_SCROLL_ROUTE) — wheel zoom
+
+// The camera itself needs no 'scroll' listener for IS_SCROLL_ROUTE —
+// renderCubeFrame reads window.scrollY directly, once per rendered frame, to
+// continuously blend it between Camera Targets as the user scrolls (see its
+// own IS_SCROLL_ROUTE branch). Reading it there instead of via a listener
+// keeps the model's framing locked exactly to scroll position, with no
+// separate throttling/sync step of its own to lag behind it.
 
 if (!IS_HERO) {
 // The hero build has no rotate-drag/space-pan/Z-height-drag/edit-view-pan
@@ -3212,13 +3252,16 @@ async function loadBundledDefaultModel() {
     // On top of parseObj's usual extent normalization — 8x, independent of
     // the "Model size" slider, which still starts at its usual 100%.
     const parsed = parseObj(objText, materials, 8);
-    // The file's three top-level scene groups, one per Camera Target slot —
-    // jumping between them is how the user navigates the bundle's separate
-    // scenes rather than a single shared layout.
+    // One object group per Camera Target slot — jumping between them is how
+    // the user navigates the bundle's separate objects rather than a single
+    // shared layout. This model (a placeholder test .obj/.mtl swapped in
+    // from Downloads/Untitled.obj) has four groups ('Central', 'First',
+    // 'Big', 'Small'); only three get a slot, matching the panel's fixed
+    // 3-target UI — 'Big' is left unassigned.
     applyParsedModel(parsed, 'ngen_assets.obj', 'ngen_assets.mtl', [
-      '1-For_Home',
-      '2-For_Business',
-      '3-For_Investors',
+      'First',
+      'Small',
+      'Central',
     ]);
     // Always lands on BAKED_DEFAULT_CAMERA_VIEW rather than whichever Camera
     // Target the user had active last session — both that and
@@ -3239,6 +3282,19 @@ async function loadBundledDefaultModel() {
     // framed.
     defaultCameraView = BAKED_DEFAULT_CAMERA_VIEW;
     applyDefaultCameraViewPanZoom(defaultCameraView);
+    // The /scroll route (IS_SCROLL_ROUTE) snaps cameraTargetCurrent/
+    // cameraTargetZoomCurrent straight to Target 1's goal here, up front —
+    // renderCubeFrame's own IS_SCROLL_ROUTE branch only *eases* toward its
+    // scroll-derived goal each frame (see SCROLL_SCRUB_SMOOTHING there), so
+    // without this, cameraTargetCurrent's [0, 0, 0] module-load default would
+    // visibly ease in from the origin on first load instead of landing
+    // already at rest. With current pre-set equal to the goal it'll compute
+    // at scrollY 0 anyway, that easing has nothing to do on the first frame.
+    if (IS_SCROLL_ROUTE) {
+      const goal = computeCameraTargetGoal(0);
+      cameraTargetCurrent = goal.center;
+      cameraTargetZoomCurrent = goal.zoomGoal;
+    }
     // suppressParallax: false — keep ambient hover tilt live through the
     // whole drop instead of freezing it (see cubeRotResetSuppressParallax).
     // zoomInFactor 0.5: phase 1 starts ~50% zoomed in past the baked
@@ -3259,6 +3315,13 @@ async function loadBundledDefaultModel() {
     // the zoom (which ignores this delay, see cubeRotResetDelayMs) is
     // already underway.
     //
+    // The /scroll route (IS_SCROLL_ROUTE, see its own declaration) skips
+    // this whole section — cubeRotX/Y are already pinned to CUBE_ISO_PITCH/
+    // YAW (their resting angle) from module load, defaultCameraView's
+    // pan/zoom above is already instant, and there's no push into Camera
+    // Target 1: the model just sits at rest, with only live hover-parallax
+    // tilt on top.
+    if (!IS_SCROLL_ROUTE) {
     // Yaw itself is handed off entirely to startIntroYawTween below (see
     // its own comment) — passing this call's own current cubeRotY (just set
     // by startIntroYawTween, immediately above) as its yaw target makes this
@@ -3278,11 +3341,11 @@ async function loadBundledDefaultModel() {
     );
     // Intro phase 2: MODEL_LOAD_PHASE_OVERLAP_MS before the rotation tween
     // above (plus its trailing zoom-out) would otherwise fully finish
-    // settling, ease on into Camera Target 1 (the bundled bundle's
-    // '1-For_Home' scene) over its own fixed duration and easing curves
-    // (see startIntroCameraTargetTween) rather than the physically-
-    // simulated spring goToCameraTarget uses for a manual 1/2/3 press — so
-    // the intro's last beat reads as arriving somewhere specific, on a
+    // settling, ease on into Camera Target 1 (the bundled model's first
+    // object group, see applyParsedModel's own call above) over its own
+    // fixed duration and easing curves (see startIntroCameraTargetTween)
+    // rather than the physically-simulated spring goToCameraTarget uses for
+    // a manual 1/2/3 press — so the intro's last beat reads as arriving somewhere specific, on a
     // deliberately tuned timing, instead of just stopping at a generic
     // framing. Pan and zoom share the same EASE_IN_OUT_QUAD curve — the
     // in-out counterpart of phase 1's own zoom curve (EASE_OUT_QUAD, see its
@@ -3301,6 +3364,7 @@ async function loadBundledDefaultModel() {
       ),
       MODEL_LOAD_PHASE2_START_MS,
     );
+    } // end if (!IS_SCROLL_ROUTE) — opening camera move
     // Hero never restores a locally-drawn arrow from localStorage — every
     // visitor is effectively a fresh session, so it always plays the baked
     // default flow path. IS_HERO short-circuits before restoreModelFlowPath()
@@ -4782,6 +4846,16 @@ function drawAxisGizmo(rx, ry) {
   }
 }
 
+// Tracks the last Camera Target index the panel was told about via
+// notifyModelState — IS_SCROLL_ROUTE's own renderCubeFrame branch below sets
+// cameraTargetActiveIndex directly every frame (never through
+// goToCameraTarget, which is what calls notifyModelState for a manual 1/2/3
+// press), so without this the panel's own cameraTargetActiveIndex — and so
+// the bottom-left info card's per-target content — would never update while
+// scrolling. Notifying every frame regardless would work but re-render the
+// whole panel needlessly; this only fires when the index actually changes.
+let scrollLastNotifiedTargetIndex = null;
+
 function renderCubeFrame() {
   gl.viewport(0, 0, canvas.width, canvas.height);
   // Clear alpha is 0 instead of the usual 1 while capturePhoto is mid-export
@@ -4902,6 +4976,72 @@ function renderCubeFrame() {
       cameraTargetSpringLastTime = null;
     }
     cameraTargetAtRest = false; // a target is active (or just finished activating) — never the manual-pan "at rest" state while this branch runs
+  } else if (IS_SCROLL_ROUTE) {
+    // Continuous scroll-scrubbed camera: instead of springing toward one
+    // discrete Camera Target's goal (the else branch below, used by manual
+    // 1/2/3 presses etc. — never reached on this route since nothing here
+    // ever sets cameraTargetActiveIndex through goToCameraTarget), blend
+    // between the two targets straddling the current scroll position — see
+    // #scroll-track in scroll.html — driven by scroll position every
+    // rendered frame, however often that is; not tied to how often 'scroll'
+    // events happen to fire.
+    const numTargets = cameraTargetSlots.length;
+    const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+    const progress = maxScroll > 0 ? Math.max(0, Math.min(1, window.scrollY / maxScroll)) : 0;
+    // lowerIndex is clamped to numTargets - 2 (not just floored) so upperIndex
+    // (lowerIndex + 1) always stays a valid slot, including exactly at
+    // progress === 1.
+    const lowerIndex = Math.max(0, Math.min(numTargets - 2, Math.floor(progress * (numTargets - 1))));
+    const upperIndex = lowerIndex + 1;
+    const rawFrac = Math.max(0, Math.min(1, progress * (numTargets - 1) - lowerIndex));
+    // Hold zones: SCROLL_HOLD_FRACTION of each span, at both ends, pins the
+    // blend to whichever target it's nearest instead of moving right away —
+    // so scrolling into a target keeps you sitting on it for a beat before
+    // the next scrolling actually starts easing toward the next one. Reserves
+    // the remaining middle (1 - 2*SCROLL_HOLD_FRACTION) of the span for the
+    // actual transition. An interior target (between two spans) gets this
+    // hold from both its neighboring spans — the tail of the one before it
+    // and the head of the one after — so it reads as a longer pause there
+    // than at the first/last target, which only get it from their one span.
+    const SCROLL_HOLD_FRACTION = 0.25;
+    const frac = rawFrac <= SCROLL_HOLD_FRACTION
+      ? 0
+      : rawFrac >= 1 - SCROLL_HOLD_FRACTION
+        ? 1
+        : (rawFrac - SCROLL_HOLD_FRACTION) / (1 - 2 * SCROLL_HOLD_FRACTION);
+    const goalLower = computeCameraTargetGoal(lowerIndex);
+    const goalUpper = computeCameraTargetGoal(upperIndex);
+    const goalCenter = [0, 1, 2].map((i) => goalLower.center[i] + (goalUpper.center[i] - goalLower.center[i]) * frac);
+    const goalZoom = goalLower.zoomGoal + (goalUpper.zoomGoal - goalLower.zoomGoal) * frac;
+    // Eased toward the scroll-driven goal rather than snapped straight to it
+    // — same lightweight per-frame exponential smoothing advanceParallax
+    // uses for ambient hover tilt (see CUBE_PARALLAX_SMOOTHING), just
+    // applied to the scroll-derived goal instead of cursor position. Keeps
+    // the camera reading as continuously scroll-driven (not a discrete
+    // snap), while smoothing over the raw, sometimes-choppy per-notch/
+    // per-frame scrollY updates the browser itself delivers.
+    const SCROLL_SCRUB_SMOOTHING = 0.05;
+    cameraTargetCurrent = [0, 1, 2].map((i) => cameraTargetCurrent[i] + (goalCenter[i] - cameraTargetCurrent[i]) * SCROLL_SCRUB_SMOOTHING);
+    cameraTargetZoomCurrent += (goalZoom - cameraTargetZoomCurrent) * SCROLL_SCRUB_SMOOTHING;
+    cameraTargetVelocity = [0, 0, 0];
+    cameraTargetZoomVelocity = 0;
+    cameraTargetSpringLastTime = null;
+    // Whichever target the blend is currently nearer to (by frac) — for the
+    // 3D side any valid slot would do (see getObjectSpacePan's manual-pan
+    // suppression/the pivot-orb/floor-guide visuals, neither reads it by
+    // name off this route), but this is also what the panel's bottom-left
+    // info card keys its per-step content off of, so during the transition
+    // itself it switches at the halfway point rather than staying on the
+    // departing target the whole way across.
+    const nearestIndex = frac < 0.5 ? lowerIndex : upperIndex;
+    cameraTargetActiveIndex = nearestIndex;
+    cameraTargetAtRest = false;
+    // See scrollLastNotifiedTargetIndex's own comment — only notify the
+    // panel when this actually changes, not every frame.
+    if (nearestIndex !== scrollLastNotifiedTargetIndex) {
+      scrollLastNotifiedTargetIndex = nearestIndex;
+      notifyModelState();
+    }
   } else {
     const goal = activeTargetName ? computeCameraTargetGoal(cameraTargetActiveIndex) : { center: [0, 0, 0], zoomGoal: 1 };
     const goalCenter = goal.center;
@@ -6102,6 +6242,12 @@ loadBundledDefaultModel();
 export const controls = {
   getInitialState() {
     return {
+      // Fixed across the page's lifetime (see IS_SCROLL_ROUTE's own
+      // declaration) — read once here rather than threaded through
+      // getModelState/notifyModelState, since it never changes after mount.
+      // Panel.tsx uses it to hide the photo/video mode indicator pills
+      // entirely on the /scroll route, where P/V are wired up to nothing.
+      isScrollRoute: IS_SCROLL_ROUTE,
       pulseWidth: pulseWidthValue,
       flowPulseFrequency: flowPulseFrequencyValue,
       flowPulseFrequencyMin: FLOW_PULSE_FREQUENCY_MIN,

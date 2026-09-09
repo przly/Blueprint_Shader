@@ -2,17 +2,26 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Bluprint Models</title>
+<title>Bluprint Models — Scroll</title>
 <link rel="icon" type="image/png" href="/favicon.png" />
 <style>
   html, body {
     margin: 0;
-    height: 100%;
     background: #000;
-    overflow: hidden;
   }
-  canvas {
+  /* #scroll-track is the only thing giving the document real scroll height
+     (the canvas below is pinned via position: fixed, so it contributes none
+     on its own) — one screen-height per Camera Target slot, so scrolling
+     from top to bottom sweeps through all three at an even pace. See
+     main.js's IS_SCROLL_ROUTE scroll listener, which reads window.scrollY
+     against this same height to drive the camera. */
+  #scroll-track {
+    height: 300vh;
+  }
+  canvas#canvas {
     display: block;
+    position: fixed;
+    inset: 0;
     width: 100vw;
     height: 100vh;
   }
@@ -58,13 +67,27 @@
 </style>
 </head>
 <body>
-  <canvas id="canvas"></canvas>
+  <!--
+    Same tool as index.html (full control panel, keyboard shortcuts,
+    drag/pan/zoom, flow-arrow drawing, model upload, perf-monitor/axis-gizmo
+    — none of it stripped) via the same /main.js and /src/main.tsx. The only
+    difference is data-scroll="true" below: main.js reads that (as
+    IS_SCROLL_ROUTE) to drop photo/video mode (P/Escape/Shift+P/V/Enter/
+    Cmd+Enter are no-ops, and the panel hides those indicator pills), skip
+    loadBundledDefaultModel's opening camera move so the model appears
+    already sitting on Camera Target 1, and — instead of scroll-wheel zoom —
+    wires page scroll (see #scroll-track above) to smoothly step the camera
+    through Camera Targets 1/2/3 as the user scrolls down. Live
+    hover-parallax tilt is unaffected either way.
+  -->
+  <canvas id="canvas" data-scroll="true"></canvas>
   <div id="perf-monitor">
     <div id="perf-monitor-text"></div>
     <canvas height="32" id="perf-history" width="140"></canvas>
   </div>
   <canvas height="84" id="axis-gizmo" width="84"></canvas>
   <div id="react-controls-root"></div>
+  <div id="scroll-track"></div>
   <script type="module" src="/src/main.tsx"></script>
   <script type="module" src="/main.js"></script>
 </body>

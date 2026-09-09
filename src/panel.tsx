@@ -19,6 +19,30 @@ import { controls } from "../main.js";
 
 const CONTROLS_HIDDEN_KEY = "iconMosaic.controlsHidden";
 
+// Content for the bottom-left info card (Figma node 4992:24139), one entry
+// per Camera Target slot — swaps with state.cameraTargetActiveIndex so the
+// card tracks whichever target is currently framed (manual 1/2/3 press, or
+// the /scroll route easing through them on scroll). Placeholder copy for
+// now, same as the original single-step version this replaced — only the
+// step number/title/text change per target; the icon and layout stay fixed.
+const CARD_CONTENT = [
+  {
+    step: "Step 1 · Your Site",
+    title: "Every site makes and moves energy",
+    text: "Solar panels, a battery, inverter, and EV charger generate live data and available energy for the system to use.",
+  },
+  {
+    step: "Step 2 · Your Network",
+    title: "Every site connects to the grid",
+    text: "Real-time data flows between sites, batteries, and the grid, so power moves to wherever it's needed most.",
+  },
+  {
+    step: "Step 3 · Your Platform",
+    title: "Every site feeds one view",
+    text: "A single dashboard aggregates production, storage, and demand across every connected site.",
+  },
+];
+
 type RevealPhase = "closed" | "entering" | "open" | "closing";
 const MODAL_CLOSE_MS = 150; // keep in sync with --modal-close-dur in index.css
 
@@ -79,6 +103,39 @@ function useTextSwap<T>(value: T, exitMs: number): { displayed: T; phase: TextSw
   useEffect(() => {
     if (phase !== "enterStart") return;
     const id = requestAnimationFrame(() => setPhase("rest"));
+    return () => cancelAnimationFrame(id);
+  }, [phase]);
+
+  return { displayed, phase };
+}
+
+type TextsRevealPhase = "shown" | "hiding" | "enterStart";
+const TEXTS_REVEAL_HIDE_MS = 200; // keep in sync with .t-stagger.is-hiding's 200ms fade in index.css
+
+// Group text-block reveal (transitions.dev, 18-texts-reveal.md): unlike
+// useTextSwap above (one value swapping in place), this fades a whole block
+// of stacked lines out quietly together, swaps to the new value while
+// hidden, then plays the staggered blurred-rise entrance back in. Used by
+// the bottom-left info card's step/title/text, which all change together
+// whenever the active Camera Target does. Starts already "shown" (no
+// animate-in on first mount) — same convention as useTextSwap's "rest".
+function useTextsReveal<T>(value: T, hideMs: number): { displayed: T; phase: TextsRevealPhase } {
+  const [displayed, setDisplayed] = useState(value);
+  const [phase, setPhase] = useState<TextsRevealPhase>("shown");
+
+  useEffect(() => {
+    if (value === displayed) return;
+    setPhase("hiding");
+    const hideTimer = window.setTimeout(() => {
+      setDisplayed(value);
+      setPhase("enterStart");
+    }, hideMs);
+    return () => window.clearTimeout(hideTimer);
+  }, [value, displayed, hideMs]);
+
+  useEffect(() => {
+    if (phase !== "enterStart") return;
+    const id = requestAnimationFrame(() => setPhase("shown"));
     return () => cancelAnimationFrame(id);
   }, [phase]);
 
@@ -211,6 +268,11 @@ export function Panel() {
   const photoOptionsPhase = useRevealPhase(!!state.photoMode, MODAL_CLOSE_MS);
   const lineWidthSliderPhase = useRevealPhase(!!state.photoUniformLineWidth, MODAL_CLOSE_MS);
   const flowObjectsPhase = useRevealPhase((state.selectedFlowArrowObjects?.length ?? 0) > 0, MODAL_CLOSE_MS);
+  const cardContentReveal = useTextsReveal(
+    CARD_CONTENT[state.cameraTargetActiveIndex ?? 0] ?? CARD_CONTENT[0],
+    TEXTS_REVEAL_HIDE_MS,
+  );
+  const cardContent = cardContentReveal.displayed;
 
   return (
     <>
@@ -307,6 +369,7 @@ export function Panel() {
             </span>
           </button>
 
+          {!state.isScrollRoute && (
           <div className="relative">
             <div
               className={cn(
@@ -403,7 +466,9 @@ export function Panel() {
               </div>
             )}
           </div>
+          )}
 
+          {!state.isScrollRoute && (
           <div
             className={cn(
               "t-fade-center overflow-hidden rounded-full border px-3 py-1.5 font-medium text-xs shadow-lg backdrop-blur-sm transition-colors duration-[var(--text-swap-dur)]",
@@ -447,6 +512,7 @@ export function Panel() {
               )}
             </span>
           </div>
+          )}
 
           <div
             className={cn(
@@ -1231,6 +1297,55 @@ export function Panel() {
           </div>
         </div>
       )}
+
+      {/* Figma: N-GEN / Shuffle Icon Card - Big (node 4992:24139) — a static
+          info card. Unlike the panel chrome above, this is always visible
+          (not tied to panelPhase — H can't hide it) and sits below the
+          control panels on the z-axis (z-0, under their z-10) so a panel
+          overlapping it in the corner stacks on top. Bottom-left, 24px off
+          both edges per the design handoff. No project token matches these
+          NGEN brand colors yet (see BLUEPRINT_THEMES/BLUEPRINT_FILL_COLOR_GREEN
+          in main.js for the same palette on the 3D side), so they're literal
+          hex here rather than a token. */}
+      <div className="fixed bottom-6 left-6 z-0 flex w-[727px] max-w-[calc(100vw-3rem)] items-start gap-2 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-3 shadow-lg">
+        <div className="relative size-[200px] shrink-0 overflow-hidden rounded-[24px] bg-[#44d62c]">
+          {/* Downloads/Electrical Services Icon.svg, inlined as-is (46x47
+              viewBox, single fill path) — currentColor instead of its
+              original hardcoded #041C2C fill so it stays in sync with the
+              text-[#041c2c] set here, but the color is otherwise unchanged. */}
+          <svg
+            aria-hidden="true"
+            className="-translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2 size-[56px] text-[#041c2c]"
+            fill="none"
+            viewBox="0 0 46 47"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M3.55859 3.55827C3.05304 3.55827 2.62526 3.40271 2.27526 3.0916C1.96415 2.7416 1.80859 2.31382 1.80859 1.80827C1.80859 1.30271 1.96415 0.894377 2.27526 0.583266C2.62526 0.233267 3.05304 0.0582671 3.55859 0.0582671H7.05859C7.56415 0.0582671 7.97248 0.233267 8.28359 0.583266C8.63359 0.894377 8.80859 1.30271 8.80859 1.80827C8.80859 2.31382 8.63359 2.7416 8.28359 3.0916C7.97248 3.40271 7.56415 3.55827 7.05859 3.55827H3.55859ZM5.07526 36.8083L3.79193 43.2249H21.0586V36.8083H5.07526ZM7.23359 12.6583L9.68359 10.2083C10.0336 9.85827 10.4419 9.68327 10.9086 9.68327C11.3753 9.68327 11.7836 9.85827 12.1336 10.2083C12.4836 10.5583 12.6586 10.986 12.6586 11.4916C12.6586 11.9583 12.4836 12.3666 12.1336 12.7166L9.68359 15.1666C9.33359 15.5166 8.92526 15.6916 8.45859 15.6916C7.99193 15.6916 7.58359 15.5166 7.23359 15.1666C6.88359 14.8166 6.70859 14.4083 6.70859 13.9416C6.70859 13.436 6.88359 13.0083 7.23359 12.6583ZM5.77526 33.3083H21.0586V26.8916H7.05859L5.77526 33.3083ZM22.8086 10.5583C20.3586 10.5583 18.2003 9.78049 16.3336 8.22493C14.5058 6.66938 13.2808 4.72493 12.6586 2.3916C12.503 1.92493 12.5419 1.49715 12.7753 1.10826C13.0086 0.680487 13.3586 0.38882 13.8253 0.233264C14.2919 0.077709 14.7197 0.116598 15.1086 0.349933C15.5364 0.583265 15.828 0.933265 15.9836 1.39993C16.3725 3.03327 17.1892 4.39438 18.4336 5.48326C19.678 6.53327 21.1364 7.05827 22.8086 7.05827C24.4808 7.05827 25.9392 6.53327 27.1836 5.48326C28.428 4.39438 29.2447 3.03327 29.6336 1.39993C29.7892 0.933265 30.0614 0.583265 30.4503 0.349933C30.878 0.116598 31.3253 0.077709 31.7919 0.233264C32.2586 0.38882 32.6086 0.680487 32.8419 1.10826C33.0753 1.49715 33.1142 1.92493 32.9586 2.3916C32.3364 4.72493 31.0919 6.66938 29.2253 8.22493C27.3975 9.78049 25.2586 10.5583 22.8086 10.5583ZM21.0586 19.3083V15.8083C21.0586 15.3027 21.2142 14.8944 21.5253 14.5833C21.8753 14.2333 22.303 14.0583 22.8086 14.0583C23.3142 14.0583 23.7225 14.2333 24.0336 14.5833C24.3836 14.8944 24.5586 15.3027 24.5586 15.8083V19.3083C24.5586 19.8138 24.3836 20.2416 24.0336 20.5916C23.7225 20.9027 23.3142 21.0583 22.8086 21.0583C22.303 21.0583 21.8753 20.9027 21.5253 20.5916C21.2142 20.2416 21.0586 19.8138 21.0586 19.3083ZM24.5586 43.2249H41.8253L40.5419 36.8083H24.5586V43.2249ZM24.5586 33.3083H39.8419L38.5586 26.8916H24.5586V33.3083ZM35.9336 15.0499L33.4253 12.5999C33.0753 12.2499 32.9003 11.8416 32.9003 11.3749C32.9003 10.9083 33.0753 10.4999 33.4253 10.1499C33.7753 9.79993 34.1836 9.64438 34.6503 9.68327C35.1169 9.68327 35.5253 9.83882 35.8753 10.1499L38.3836 12.5999C38.7336 12.9499 38.9086 13.3583 38.9086 13.8249C38.9475 14.2916 38.7919 14.6999 38.4419 15.0499C38.0919 15.3999 37.6642 15.5749 37.1586 15.5749C36.6919 15.5749 36.2836 15.3999 35.9336 15.0499ZM42.0586 3.55827H38.5586C38.053 3.55827 37.6253 3.40271 37.2753 3.0916C36.9642 2.7416 36.8086 2.31382 36.8086 1.80827C36.8086 1.30271 36.9642 0.894377 37.2753 0.583266C37.6253 0.233267 38.053 0.0582671 38.5586 0.0582671H42.0586C42.5642 0.0582671 42.9725 0.233267 43.2836 0.583266C43.6336 0.894377 43.8086 1.30271 43.8086 1.80827C43.8086 2.31382 43.6336 2.7416 43.2836 3.0916C42.9725 3.40271 42.5642 3.55827 42.0586 3.55827ZM0.291927 42.5249L3.55859 26.1916C3.75304 25.3749 4.16137 24.7138 4.78359 24.2083C5.40582 23.6638 6.14471 23.3916 7.00026 23.3916H38.6169C39.4725 23.3916 40.2114 23.6638 40.8336 24.2083C41.4558 24.7138 41.8642 25.3749 42.0586 26.1916L45.3253 42.5249C45.5197 43.6138 45.2669 44.586 44.5669 45.4416C43.9058 46.2972 43.0114 46.7249 41.8836 46.7249H3.73359C2.60582 46.7249 1.69193 46.2972 0.991927 45.4416C0.330816 44.586 0.097483 43.6138 0.291927 42.5249Z"
+              fill="currentColor"
+            />
+          </svg>
+        </div>
+        <div
+          className={cn(
+            "t-stagger flex min-w-0 flex-1 flex-col items-start justify-between gap-4 self-stretch p-5",
+            cardContentReveal.phase === "shown" && "is-shown",
+            cardContentReveal.phase === "hiding" && "is-hiding",
+          )}
+        >
+          <p className="t-stagger-line t-stagger-line--1 font-mono font-medium text-[#7c868e] text-[12px] uppercase tracking-[-0.24px]">
+            {cardContent.step}
+          </p>
+          <div className="flex w-full flex-col items-start gap-1.5">
+            <p className="t-stagger-line t-stagger-line--2 text-[#041c2c] text-[24px] leading-[1.2] font-medium tracking-[-0.48px]">
+              {cardContent.title}
+            </p>
+            <p className="t-stagger-line t-stagger-line--3 text-[#7c868e] text-[14px] leading-[1.5] font-medium">
+              {cardContent.text}
+            </p>
+          </div>
+        </div>
+      </div>
     </>
   );
 }
