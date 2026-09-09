@@ -42,6 +42,27 @@ const canvas = document.getElementById('canvas');
 // route through the intro tweens or photo/video mode.
 const IS_SCROLL_ROUTE = canvas?.dataset.scroll === 'true';
 
+// #scroll-track (scroll.html) is the only thing giving the /scroll route's
+// document real scroll height — see its own CSS comment. Sized dynamically
+// (see updateScrollTrackHeight below) rather than a fixed value baked into
+// the CSS, specifically so however many Camera Targets end up assigned (up
+// to CAMERA_TARGET_SLOT_COUNT) each still gets a full viewport-height span
+// of scroll to travel through, instead of every span getting squeezed into
+// whatever a fixed track height happens to divide into.
+const scrollTrackEl = IS_SCROLL_ROUTE ? document.getElementById('scroll-track') : null;
+function updateScrollTrackHeight() {
+  if (!scrollTrackEl) return;
+  const numTargets = cameraTargetSlots.filter(Boolean).length;
+  // One viewport-height span per target (matches the /scroll route's own
+  // renderCubeFrame branch, which divides progress evenly across
+  // numTargets - 1 spans) plus the trailing viewport itself, so N targets
+  // read as N * 100vh of track — same 300vh a fixed 3-target build already
+  // used, just generalized. Math.max(1, ...) keeps a full viewport's worth
+  // of track (no scroll range, but no zero-height layout glitch either)
+  // before any targets are assigned yet.
+  scrollTrackEl.style.height = `${Math.max(1, numTargets) * 100}vh`;
+}
+
 // The control panel (src/panel.tsx) is a React/coss-ui component tree that
 // owns the panel's own UI state (including show/hide + the H-key shortcut).
 // This module stays plain WebGL/canvas code; `controls` (bottom of file) is
@@ -1876,12 +1897,17 @@ window.addEventListener('keydown', (event) => {
 });
 } // end if (!IS_SCROLL_ROUTE) — photo/video mode
 
-// 1/2/3 jump straight to Camera Target 1/2/3 (see goToCameraTarget), same
+// 1-7 jump straight to Camera Target 1-7 (see goToCameraTarget), same
 // shortcut as each target's own "Go" button in the panel. Ignored while
 // editingDefaultView is active — see setEditingDefaultView — since jumping
 // to a target would take over centering entirely, out from under an
-// in-progress pan/zoom edit.
-const CAMERA_TARGET_DIGIT_KEYS = { Digit1: 0, Digit2: 1, Digit3: 2 };
+// in-progress pan/zoom edit. Matches CAMERA_TARGET_SLOT_COUNT (7) — kept as
+// a literal object here (like before, when it only covered 3) rather than
+// generated from that constant, since CAMERA_TARGET_SLOT_COUNT isn't
+// declared until further down the file and this runs at module-eval time.
+const CAMERA_TARGET_DIGIT_KEYS = {
+  Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4, Digit6: 5, Digit7: 6,
+};
 window.addEventListener('keydown', (event) => {
   const slotIndex = CAMERA_TARGET_DIGIT_KEYS[event.code];
   if (slotIndex === undefined || event.repeat) return;
@@ -2574,15 +2600,26 @@ const modelStateListeners = [];
 // Camera targets: up to 3 named sub-objects from the loaded .obj (see
 // `objects` in parseObj's return value) that the "Go to Object N" panel
 // buttons ease the framing toward. cameraTargetSlots holds which object name
-// (or null) is assigned to each of the 3 slots; cameraTargetActiveIndex is
-// which slot is currently driving the camera, or null to fall back to the
-// manual pan sliders as before. cameraTargetCurrent is the spring-driven
-// position that chases whichever slot is active (renderCubeFrame, each
-// frame) — this is the "null object" the camera stays rigidly offset from:
-// rotation (drag + hover) and distance never change when it moves.
+// (or null for an unassigned/empty slot) is assigned to each of
+// CAMERA_TARGET_SLOT_COUNT slots; cameraTargetActiveIndex is which slot is
+// currently driving the camera, or null to fall back to the manual pan
+// sliders as before. cameraTargetCurrent is the spring-driven position that
+// chases whichever slot is active (renderCubeFrame, each frame) — this is
+// the "null object" the camera stays rigidly offset from: rotation (drag +
+// hover) and distance never change when it moves.
+//
+// A fixed max (rather than a slot list that just grows/shrinks with however
+// many the presenter has assigned) keeps the keyboard shortcuts (1-7, see
+// CAMERA_TARGET_DIGIT_KEYS) and the panel's slot rows static — the panel
+// always renders all 7, most just showing "— none —" until assigned. Empty
+// slots (cameraTargetSlots[i] === null) are skipped wherever targets are
+// stepped through in sequence — see IS_SCROLL_ROUTE's own renderCubeFrame
+// branch, which is the one place that iterates the slots as a sequence
+// rather than jumping to one by its own fixed index.
+const CAMERA_TARGET_SLOT_COUNT = 7;
 let customModelObjects = []; // [{name, center:[x,y,z], size:number, bounds:{minX,maxX,minY,maxY,minZ,maxZ}}], from parseObj
 /** @type {(string | null)[]} */
-let cameraTargetSlots = [null, null, null];
+let cameraTargetSlots = Array(CAMERA_TARGET_SLOT_COUNT).fill(null);
 let cameraTargetActiveIndex = null;
 let cameraTargetCurrent = [0, 0, 0];
 // Pending "phase 2" of loadBundledDefaultModel's intro (see
@@ -2860,6 +2897,7 @@ function setCameraTargetSlot(slotIndex, objectName) {
   if (cameraTargetActiveIndex === slotIndex && !objectName) {
     cameraTargetActiveIndex = null;
   }
+  updateScrollTrackHeight(); // no-op off the /scroll route; assigning/clearing a slot changes how many targets there are to scroll through
   notifyModelState();
 }
 
@@ -3060,7 +3098,7 @@ let greenTriObjectIndexCache = null; // one entry per green triangle, parallel t
 // buffers and flips customModelReady on so renderCubeFrame starts drawing
 // it. Shared by the file picker and drag-and-drop paths (see
 // loadModelFromFiles below).
-function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null, null, null]) {
+function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
   if (!parsed) {
     customModelReady = false;
     cubeModelStatus = `Couldn't find any faces in ${objName}`;
@@ -3095,9 +3133,16 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = [null
   // whatever the previous model's camera-target assignments pointed at —
   // defaultCameraTargets (only ever passed by loadBundledDefaultModel, since
   // it's the only caller that knows its model's object names up front) seeds
-  // fresh slots instead of leaving them empty.
+  // fresh slots instead of leaving them empty. Always padded/truncated to
+  // exactly CAMERA_TARGET_SLOT_COUNT regardless of how many names a caller
+  // actually passed (loadBundledDefaultModel currently seeds only 3 of the
+  // 7) — the rest just stay null (empty) until assigned by hand.
   customModelObjects = parsed.objects;
-  cameraTargetSlots = [...defaultCameraTargets];
+  cameraTargetSlots = Array.from(
+    { length: CAMERA_TARGET_SLOT_COUNT },
+    (_, i) => defaultCameraTargets[i] ?? null,
+  );
+  updateScrollTrackHeight(); // no-op off the /scroll route; a freshly loaded model may seed a different number of assigned slots than the last one
   cameraTargetActiveIndex = null;
   cameraTargetCurrent = [0, 0, 0];
   cameraTargetZoomCurrent = 1;
@@ -4991,15 +5036,37 @@ function renderCubeFrame() {
     // #scroll-track in scroll.html — driven by scroll position every
     // rendered frame, however often that is; not tied to how often 'scroll'
     // events happen to fire.
-    const numTargets = cameraTargetSlots.length;
+    //
+    // Only assigned slots count as stops — an empty one (cameraTargetSlots[i]
+    // === null) is skipped entirely rather than blended through, so the
+    // scroll range always divides evenly across however many of the up-to-
+    // CAMERA_TARGET_SLOT_COUNT slots are actually in use. activeSlots maps
+    // "position in the sequence" (0..numTargets-1) to "real slot index"
+    // (0..CAMERA_TARGET_SLOT_COUNT-1) — everything below works in sequence
+    // positions and only converts back to a real slot index right before
+    // calling computeCameraTargetGoal/setting cameraTargetActiveIndex.
+    const activeSlots = [];
+    for (let i = 0; i < cameraTargetSlots.length; i++) {
+      if (cameraTargetSlots[i]) activeSlots.push(i);
+    }
+    const numTargets = activeSlots.length;
+    // Nothing assigned: nothing to blend toward, so this frame just leaves
+    // cameraTargetCurrent/Zoom/ActiveIndex exactly as they already were
+    // (skips the rest of this branch entirely) rather than blending toward
+    // slot 0 the way treating an empty name as a valid stop would.
+    if (numTargets > 0) {
     const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
     const progress = maxScroll > 0 ? Math.max(0, Math.min(1, window.scrollY / maxScroll)) : 0;
-    // lowerIndex is clamped to numTargets - 2 (not just floored) so upperIndex
-    // (lowerIndex + 1) always stays a valid slot, including exactly at
-    // progress === 1.
-    const lowerIndex = Math.max(0, Math.min(numTargets - 2, Math.floor(progress * (numTargets - 1))));
-    const upperIndex = lowerIndex + 1;
-    const rawFrac = Math.max(0, Math.min(1, progress * (numTargets - 1) - lowerIndex));
+    // lowerPos is clamped to numTargets - 2 (not just floored) so upperPos
+    // (lowerPos + 1) always stays a valid sequence position, including
+    // exactly at progress === 1 — and, when numTargets is 1, both clamp down
+    // to position 0, so lowerIndex/upperIndex end up equal and frac becomes
+    // irrelevant: the single assigned target just sits still, no blend.
+    const lowerPos = Math.max(0, Math.min(numTargets - 2, Math.floor(progress * (numTargets - 1))));
+    const upperPos = Math.min(numTargets - 1, lowerPos + 1);
+    const lowerIndex = activeSlots[lowerPos];
+    const upperIndex = activeSlots[upperPos];
+    const rawFrac = Math.max(0, Math.min(1, progress * (numTargets - 1) - lowerPos));
     // Hold zones: SCROLL_HOLD_FRACTION of each span, at both ends, pins the
     // blend to whichever target it's nearest instead of moving right away —
     // so scrolling into a target keeps you sitting on it for a beat before
@@ -5047,6 +5114,7 @@ function renderCubeFrame() {
     if (nearestIndex !== scrollLastNotifiedTargetIndex) {
       scrollLastNotifiedTargetIndex = nearestIndex;
       notifyModelState();
+    }
     }
   } else {
     const goal = activeTargetName ? computeCameraTargetGoal(cameraTargetActiveIndex) : { center: [0, 0, 0], zoomGoal: 1 };

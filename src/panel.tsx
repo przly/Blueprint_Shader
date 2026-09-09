@@ -20,11 +20,18 @@ import { controls } from "../main.js";
 const CONTROLS_HIDDEN_KEY = "iconMosaic.controlsHidden";
 
 // Content for the bottom-left info card (Figma node 4992:24139), one entry
-// per Camera Target slot — swaps with state.cameraTargetActiveIndex so the
-// card tracks whichever target is currently framed (manual 1/2/3 press, or
-// the /scroll route easing through them on scroll). Placeholder copy for
-// now, same as the original single-step version this replaced — only the
-// step number/title/text change per target; the icon and layout stay fixed.
+// per *assigned* Camera Target slot — up to CAMERA_TARGET_SLOT_COUNT (7) in
+// main.js, but indexed here by position among whichever of those are
+// actually assigned, not by raw slot index, so the card always has exactly
+// as many steps as there are targets in use (assign 3, it's Step 1-3;
+// assign 5, it's Step 1-5 — see activeTargetPosition's own comment at its
+// call site for how a raw slot index gets translated to that). Swaps with
+// state.cameraTargetActiveIndex so the card tracks whichever target is
+// currently framed (manual 1-7 press, or the /scroll route easing through
+// them on scroll). Placeholder copy throughout — only the step number/
+// title/text change per target; the icon and layout stay fixed. Steps 4-7
+// are generic placeholders (no real content yet, unlike 1-3) since only 3
+// of the 7 slots are actually assigned on the current placeholder model.
 const CARD_CONTENT = [
   {
     step: "Step 1 · Your Site",
@@ -40,6 +47,26 @@ const CARD_CONTENT = [
     step: "Step 3 · Your Platform",
     title: "Every site feeds one view",
     text: "A single dashboard aggregates production, storage, and demand across every connected site.",
+  },
+  {
+    step: "Step 4",
+    title: "Placeholder step 4",
+    text: "Content for this step hasn't been written yet.",
+  },
+  {
+    step: "Step 5",
+    title: "Placeholder step 5",
+    text: "Content for this step hasn't been written yet.",
+  },
+  {
+    step: "Step 6",
+    title: "Placeholder step 6",
+    text: "Content for this step hasn't been written yet.",
+  },
+  {
+    step: "Step 7",
+    title: "Placeholder step 7",
+    text: "Content for this step hasn't been written yet.",
   },
 ];
 
@@ -296,7 +323,21 @@ export function Panel() {
   const photoOptionsPhase = useRevealPhase(!!state.photoMode, MODAL_CLOSE_MS);
   const lineWidthSliderPhase = useRevealPhase(!!state.photoUniformLineWidth, MODAL_CLOSE_MS);
   const flowObjectsPhase = useRevealPhase((state.selectedFlowArrowObjects?.length ?? 0) > 0, MODAL_CLOSE_MS);
-  const cardContentReveal = useTextsReveal(state.cameraTargetActiveIndex ?? 0, TEXTS_REVEAL_HIDE_MS);
+  // The card's step count should match however many Camera Target slots are
+  // actually assigned, not the raw 7-slot capacity — cameraTargetActiveIndex
+  // is a raw slot index (e.g. 5, if slots 0/2/5 are the only ones assigned),
+  // but the card should read "Step 3" there (the 3rd assigned target), not
+  // "Step 6". assignedSlotIndices is cameraTargetSlots (main.js's
+  // CAMERA_TARGET_SLOT_COUNT-length array of names/nulls) compacted down to
+  // just the assigned ones, in slot order; activeTargetPosition is where the
+  // active slot falls in that compacted list — the actual CARD_CONTENT
+  // index. -1 (nothing assigned yet, or somehow not found) falls back to 0.
+  const assignedSlotIndices = (state.cameraTargetSlots ?? []).reduce<number[]>((acc, name, i) => {
+    if (name) acc.push(i);
+    return acc;
+  }, []);
+  const activeTargetPosition = Math.max(0, assignedSlotIndices.indexOf(state.cameraTargetActiveIndex ?? -1));
+  const cardContentReveal = useTextsReveal(activeTargetPosition, TEXTS_REVEAL_HIDE_MS);
   const cardContent = CARD_CONTENT[cardContentReveal.displayedIndex] ?? CARD_CONTENT[0];
 
   return (
@@ -703,7 +744,12 @@ export function Panel() {
                 <Separator />
                 <h2 className="font-semibold text-base text-foreground">Camera Targets</h2>
                 <div className="flex flex-col gap-4">
-                  {[0, 1, 2].map((slotIndex) => (
+                  {/* Keep in sync with CAMERA_TARGET_SLOT_COUNT in main.js —
+                      all 7 slots always render (most just "— none —" until
+                      assigned) rather than growing/shrinking with however
+                      many are in use, so the keyboard shortcuts (1-7) and
+                      this list stay predictable. */}
+                  {[0, 1, 2, 3, 4, 5, 6].map((slotIndex) => (
                     <div className="flex flex-col gap-1.5" key={slotIndex}>
                       <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
                         Target {slotIndex + 1}
@@ -1331,16 +1377,35 @@ export function Panel() {
           both edges per the design handoff. No project token matches these
           NGEN brand colors yet (see BLUEPRINT_THEMES/BLUEPRINT_FILL_COLOR_GREEN
           in main.js for the same palette on the 3D side), so they're literal
-          hex here rather than a token. */}
-      <div className="fixed bottom-6 left-6 z-0 flex w-[727px] max-w-[calc(100vw-3rem)] items-start gap-2 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-3 shadow-lg">
-        <div className="relative size-[200px] shrink-0 overflow-hidden rounded-[24px] bg-[#44d62c]">
+          hex here rather than a token.
+
+          .t-stagger lives on this outer row (not just the text column) so
+          the icon can be a .t-stagger-line too — same directional
+          enter/exit as the text below, even though the icon itself doesn't
+          change yet (one SVG for every step for now; per-step icons are a
+          follow-up once real assets exist). The green tile itself
+          (bg-[#44d62c]) isn't a stagger line, so it stays put — only the
+          glyph inside it moves. */}
+      <div
+        className={cn(
+          "t-stagger fixed bottom-6 left-6 z-0 flex w-[727px] max-w-[calc(100vw-3rem)] items-start gap-2 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-3 shadow-lg",
+          cardContentReveal.phase === "shown" && "is-shown",
+          cardContentReveal.phase === "hiding" && "is-hiding",
+          cardContentReveal.phase === "enterStart" && "is-entering",
+        )}
+        data-direction={cardContentReveal.direction}
+      >
+        <div className="relative flex size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] bg-[#44d62c]">
           {/* Downloads/Electrical Services Icon.svg, inlined as-is (46x47
               viewBox, single fill path) — currentColor instead of its
               original hardcoded #041C2C fill so it stays in sync with the
-              text-[#041c2c] set here, but the color is otherwise unchanged. */}
+              text-[#041c2c] set here, but the color is otherwise unchanged.
+              Centered via the flex parent (not its own absolute+translate)
+              specifically so transform stays free for .t-stagger-line's own
+              translateY. */}
           <svg
             aria-hidden="true"
-            className="-translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2 size-[56px] text-[#041c2c]"
+            className="t-stagger-line t-stagger-line--1 size-[56px] text-[#041c2c]"
             fill="none"
             viewBox="0 0 46 47"
             xmlns="http://www.w3.org/2000/svg"
@@ -1351,23 +1416,15 @@ export function Panel() {
             />
           </svg>
         </div>
-        <div
-          className={cn(
-            "t-stagger flex min-w-0 flex-1 flex-col items-start justify-between gap-4 self-stretch p-5",
-            cardContentReveal.phase === "shown" && "is-shown",
-            cardContentReveal.phase === "hiding" && "is-hiding",
-            cardContentReveal.phase === "enterStart" && "is-entering",
-          )}
-          data-direction={cardContentReveal.direction}
-        >
-          <p className="t-stagger-line t-stagger-line--1 font-mono font-medium text-[#7c868e] text-[12px] uppercase tracking-[-0.24px]">
+        <div className="flex min-w-0 flex-1 flex-col items-start justify-between gap-4 self-stretch p-5">
+          <p className="t-stagger-line t-stagger-line--2 font-mono font-medium text-[#7c868e] text-[12px] uppercase tracking-[-0.24px]">
             {cardContent.step}
           </p>
           <div className="flex w-full flex-col items-start gap-1.5">
-            <p className="t-stagger-line t-stagger-line--2 text-[#041c2c] text-[24px] leading-[1.2] font-medium tracking-[-0.48px]">
+            <p className="t-stagger-line t-stagger-line--3 text-[#041c2c] text-[24px] leading-[1.2] font-medium tracking-[-0.48px]">
               {cardContent.title}
             </p>
-            <p className="t-stagger-line t-stagger-line--3 text-[#7c868e] text-[14px] leading-[1.5] font-medium">
+            <p className="t-stagger-line t-stagger-line--4 text-[#7c868e] text-[14px] leading-[1.5] font-medium">
               {cardContent.text}
             </p>
           </div>

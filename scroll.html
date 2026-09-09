@@ -11,10 +11,16 @@
   }
   /* #scroll-track is the only thing giving the document real scroll height
      (the canvas below is pinned via position: fixed, so it contributes none
-     on its own) — one screen-height per Camera Target slot, so scrolling
-     from top to bottom sweeps through all three at an even pace. See
-     main.js's IS_SCROLL_ROUTE scroll listener, which reads window.scrollY
-     against this same height to drive the camera. */
+     on its own) — one screen-height per assigned Camera Target slot, so
+     scrolling from top to bottom always sweeps through all of them at an
+     even pace regardless of how many (up to CAMERA_TARGET_SLOT_COUNT) are
+     actually in use. 300vh here is only the initial value for the brief
+     window before the bundled model finishes loading — main.js's own
+     updateScrollTrackHeight (called once the real target count is known,
+     and again on every assign/clear) overwrites this inline via
+     el.style.height, which wins over this rule once it runs. Also read by
+     the renderCubeFrame/scroll-listener logic that drives the camera off
+     window.scrollY. */
   #scroll-track {
     height: 300vh;
   }

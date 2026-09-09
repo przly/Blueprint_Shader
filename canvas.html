@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bluprint Models — Canvas (FE handover)</title>
+<link rel="icon" type="image/png" href="/favicon.png" />
+<style>
+  /* FE handover build — the clean 3D canvas only, no demo title/eyebrow/
+     cards markup (see hero.html for that reference version). The FE team's
+     homepage already has its own hero UI built; they own the layout this
+     canvas sits inside and should size/position it to fill that hero
+     section however their own CSS already does that — the rules below are
+     just enough for this file to preview correctly on its own. */
+  html, body {
+    margin: 0;
+    background: #000;
+    overflow-x: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100vh;
+    /* Keep native single-finger vertical panning (page scroll) — see
+       main.js's heroContentEl comment for how touch-drag tilt is scoped
+       around it. */
+    touch-action: pan-y;
+  }
+</style>
+</head>
+<body>
+  <!--
+    Integration notes for the FE team:
+
+    1. This <canvas id="canvas"> element plus /main.js (built via
+       `pnpm build:canvas`) is the entire deliverable — drop both into your
+       own hero section, sized to fill it (e.g. absolute/fixed inset:0
+       inside a `position: relative` container), with your own title/cards
+       UI layered on top the same way hero.html's .hero-overlay does
+       (pointer-events: none on decorative text, auto only on your real
+       controls).
+
+    2. If your overlay UI sits on top of the canvas, set
+       data-hero-content-selector on the canvas to point at its wrapper
+       (a CSS selector string), e.g.:
+         <canvas id="canvas" data-hero-content-selector="#hero-overlay">
+       Without this, every touch on the canvas arms the tilt-drag gesture,
+       including touches over your title/cards — so mobile users won't be
+       able to scroll the page from there.
+
+    3. Trigger camera moves from your own UI via window.heroScene (defined
+       once main.js has run):
+         window.heroScene.goToTarget(index)   // 0, 1, or 2 — the 3 baked targets
+         window.heroScene.goToDefault()
+         window.heroScene.getActiveTarget()   // currently active index, or null
+         window.heroScene.onTargetChange(cb)  // cb(index); returns an unsubscribe fn
+  -->
+  <canvas id="canvas"></canvas>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

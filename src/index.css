@@ -371,11 +371,14 @@
 }
 
 /* transitions.dev — texts reveal (18-texts-reveal.md), adapted, used by the
-   bottom-left info card's step/title/text block (src/panel.tsx): unlike
-   .t-text-swap above (one value swapping in place), this fades the whole
-   3-line group together when the active Camera Target changes, then
-   re-enters it staggered — headline first, supporting line a beat later —
-   once swapped to the new step's copy.
+   bottom-left info card (src/panel.tsx): unlike .t-text-swap above (one
+   value swapping in place), this fades the whole icon + step/title/text
+   group together when the active Camera Target changes, then re-enters it
+   staggered — icon first, then eyebrow, headline, supporting line, each a
+   beat later — once swapped to the new step's content. The icon itself
+   doesn't vary by step yet (same SVG for every step, per-step icons are a
+   later addition), but still plays the same directional move as the text so
+   the whole card reads as one unit.
    Departure from the reference snippet: the exit here travels in the same
    direction as the entrance (both read off data-direction, set in
    panel.tsx from whether the target index increased or decreased) rather
@@ -406,6 +409,7 @@
 }
 .t-stagger-line--2 { transition-delay: var(--stagger-stagger); }
 .t-stagger-line--3 { transition-delay: calc(var(--stagger-stagger) * 2); }
+.t-stagger-line--4 { transition-delay: calc(var(--stagger-stagger) * 3); }
 
 /* Pre-enter offset — where each line starts from before .is-shown below
    eases it to translateY(0). transition: none (same as .t-text-swap's own
