@@ -1370,14 +1370,15 @@ export function Panel() {
       )}
 
       {/* Figma: N-GEN / Shuffle Icon Card - Big (node 4992:24139) — a static
-          info card. Unlike the panel chrome above, this is always visible
-          (not tied to panelPhase — H can't hide it) and sits below the
-          control panels on the z-axis (z-0, under their z-10) so a panel
-          overlapping it in the corner stacks on top. Bottom-left, 24px off
-          both edges per the design handoff. No project token matches these
-          NGEN brand colors yet (see BLUEPRINT_THEMES/BLUEPRINT_FILL_COLOR_GREEN
-          in main.js for the same palette on the 3D side), so they're literal
-          hex here rather than a token.
+          info card, /scroll-only (see isScrollRoute below). Unlike the panel
+          chrome above, this is always visible on that route (not tied to
+          panelPhase — H can't hide it) and sits below the control panels on
+          the z-axis (z-0, under their z-10) so a panel overlapping it in the
+          corner stacks on top. Bottom-left, 24px off both edges per the
+          design handoff. No project token matches these NGEN brand colors
+          yet (see BLUEPRINT_THEMES/BLUEPRINT_FILL_COLOR_GREEN in main.js for
+          the same palette on the 3D side), so they're literal hex here
+          rather than a token.
 
           .t-stagger lives on this outer row (not just the text column) so
           the icon can be a .t-stagger-line too — same directional
@@ -1386,6 +1387,7 @@ export function Panel() {
           follow-up once real assets exist). The green tile itself
           (bg-[#44d62c]) isn't a stagger line, so it stays put — only the
           glyph inside it moves. */}
+      {state.isScrollRoute && (
       <div
         className={cn(
           "t-stagger fixed bottom-6 left-6 z-0 flex w-[727px] max-w-[calc(100vw-3rem)] items-start gap-2 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-3 shadow-lg",
@@ -1430,6 +1432,7 @@ export function Panel() {
           </div>
         </div>
       </div>
+      )}
     </>
   );
 }
