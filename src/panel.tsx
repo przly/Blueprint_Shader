@@ -110,28 +110,43 @@ function useTextSwap<T>(value: T, exitMs: number): { displayed: T; phase: TextSw
 }
 
 type TextsRevealPhase = "shown" | "hiding" | "enterStart";
-const TEXTS_REVEAL_HIDE_MS = 200; // keep in sync with .t-stagger.is-hiding's 200ms fade in index.css
+type TextsRevealDirection = "up" | "down";
+const TEXTS_REVEAL_HIDE_MS = 200; // keep in sync with .t-stagger.is-hiding's 200ms transition in index.css
 
-// Group text-block reveal (transitions.dev, 18-texts-reveal.md): unlike
-// useTextSwap above (one value swapping in place), this fades a whole block
-// of stacked lines out quietly together, swaps to the new value while
-// hidden, then plays the staggered blurred-rise entrance back in. Used by
+// Group text-block reveal (transitions.dev, 18-texts-reveal.md, adapted):
+// unlike useTextSwap above (one value swapping in place), this fades a whole
+// block of stacked lines out together, swaps to the new step's content while
+// hidden, then plays the staggered blurred-rise entrance back in — used by
 // the bottom-left info card's step/title/text, which all change together
-// whenever the active Camera Target does. Starts already "shown" (no
-// animate-in on first mount) — same convention as useTextSwap's "rest".
-function useTextsReveal<T>(value: T, hideMs: number): { displayed: T; phase: TextsRevealPhase } {
-  const [displayed, setDisplayed] = useState(value);
+// whenever the active Camera Target does. Takes the target *index* rather
+// than an opaque value (contrast useTextSwap) specifically so it can compare
+// old vs. new to derive `direction`: scrolling forward (index increasing)
+// travels one way, scrolling backward the other — see the CSS's
+// data-direction selectors for what that actually moves. This is a
+// deliberate departure from the reference snippet's own "quiet fade, no
+// Y-return" exit (which exists there specifically so *dismissing* something
+// doesn't read as a reversed reveal) — here the whole point is to tie the
+// motion's direction to the scroll gesture that caused it. Starts already
+// "shown" (no animate-in on first mount) — same convention as useTextSwap's
+// "rest".
+function useTextsReveal(
+  index: number,
+  hideMs: number,
+): { displayedIndex: number; phase: TextsRevealPhase; direction: TextsRevealDirection } {
+  const [displayedIndex, setDisplayedIndex] = useState(index);
   const [phase, setPhase] = useState<TextsRevealPhase>("shown");
+  const [direction, setDirection] = useState<TextsRevealDirection>("down");
 
   useEffect(() => {
-    if (value === displayed) return;
+    if (index === displayedIndex) return;
+    setDirection(index > displayedIndex ? "down" : "up");
     setPhase("hiding");
     const hideTimer = window.setTimeout(() => {
-      setDisplayed(value);
+      setDisplayedIndex(index);
       setPhase("enterStart");
     }, hideMs);
     return () => window.clearTimeout(hideTimer);
-  }, [value, displayed, hideMs]);
+  }, [index, displayedIndex, hideMs]);
 
   useEffect(() => {
     if (phase !== "enterStart") return;
@@ -139,7 +154,7 @@ function useTextsReveal<T>(value: T, hideMs: number): { displayed: T; phase: Tex
     return () => cancelAnimationFrame(id);
   }, [phase]);
 
-  return { displayed, phase };
+  return { displayedIndex, phase, direction };
 }
 
 interface IconAnimationHandle {
@@ -281,11 +296,8 @@ export function Panel() {
   const photoOptionsPhase = useRevealPhase(!!state.photoMode, MODAL_CLOSE_MS);
   const lineWidthSliderPhase = useRevealPhase(!!state.photoUniformLineWidth, MODAL_CLOSE_MS);
   const flowObjectsPhase = useRevealPhase((state.selectedFlowArrowObjects?.length ?? 0) > 0, MODAL_CLOSE_MS);
-  const cardContentReveal = useTextsReveal(
-    CARD_CONTENT[state.cameraTargetActiveIndex ?? 0] ?? CARD_CONTENT[0],
-    TEXTS_REVEAL_HIDE_MS,
-  );
-  const cardContent = cardContentReveal.displayed;
+  const cardContentReveal = useTextsReveal(state.cameraTargetActiveIndex ?? 0, TEXTS_REVEAL_HIDE_MS);
+  const cardContent = CARD_CONTENT[cardContentReveal.displayedIndex] ?? CARD_CONTENT[0];
 
   return (
     <>
@@ -1344,7 +1356,9 @@ export function Panel() {
             "t-stagger flex min-w-0 flex-1 flex-col items-start justify-between gap-4 self-stretch p-5",
             cardContentReveal.phase === "shown" && "is-shown",
             cardContentReveal.phase === "hiding" && "is-hiding",
+            cardContentReveal.phase === "enterStart" && "is-entering",
           )}
+          data-direction={cardContentReveal.direction}
         >
           <p className="t-stagger-line t-stagger-line--1 font-mono font-medium text-[#7c868e] text-[12px] uppercase tracking-[-0.24px]">
             {cardContent.step}
