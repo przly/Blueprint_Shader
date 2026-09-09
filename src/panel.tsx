@@ -162,7 +162,17 @@ function useIconPressHandlers<T extends IconAnimationHandle>() {
 }
 
 export function Panel() {
-  const [hidden, setHidden] = useState(() => localStorage.getItem(CONTROLS_HIDDEN_KEY) === "1");
+  // The /scroll route always starts with the control panel hidden — same
+  // "ignore the shared preference on load, not just fall back to it"
+  // treatment as IS_SCROLL_ROUTE's shaderTheme default in main.js, and for
+  // the same reason: CONTROLS_HIDDEN_KEY is shared storage across every
+  // route, so a "visible" preference saved elsewhere would otherwise leak in
+  // here too. The H key can still show it for the current session (see the
+  // persist effect below, which skips writing through to storage on this
+  // route so that toggle never leaks back out to other routes either).
+  const [hidden, setHidden] = useState(() =>
+    controls.getInitialState().isScrollRoute ? true : localStorage.getItem(CONTROLS_HIDDEN_KEY) === "1",
+  );
   const [state, setState] = useState(() => controls.getInitialState());
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -205,8 +215,11 @@ export function Panel() {
   }, [state.videoRecording, state.videoExportDurationMs]);
 
   useEffect(() => {
+    // Never persists on the /scroll route — see the forced-hidden default
+    // above for why.
+    if (state.isScrollRoute) return;
     localStorage.setItem(CONTROLS_HIDDEN_KEY, hidden ? "1" : "0");
-  }, [hidden]);
+  }, [hidden, state.isScrollRoute]);
 
   useEffect(() => {
     controls.setPanelsHidden(hidden);

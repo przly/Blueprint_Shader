@@ -322,15 +322,21 @@ const PLUS_THICKNESS_RATIO = 0.12;
 // each theme keeps its own independent light defaults/storage.
 const SHADER_THEME_STORAGE_KEY = 'iconMosaic.shaderTheme';
 const storedShaderTheme = localStorage.getItem(SHADER_THEME_STORAGE_KEY);
-// Storage (SHADER_THEME_STORAGE_KEY) is shared across every route/build — an
-// explicit 'light' or 'dark' saved from any of them wins here regardless of
-// route. Only the fallback for "nothing saved yet" differs: the /scroll
-// route (IS_SCROLL_ROUTE) opens on the light theme by default, everywhere
-// else keeps opening on dark, same as before this route existed.
-let shaderTheme =
-  storedShaderTheme === 'light' || storedShaderTheme === 'dark'
+// Storage (SHADER_THEME_STORAGE_KEY) is shared across every route/build, so
+// a 'dark' preference saved while using the root tool (or any other route)
+// would otherwise silently carry over here too. The /scroll route always
+// opens on the light theme regardless — deliberately ignoring storage on
+// load, not just falling back to light when nothing's been saved yet — since
+// it's meant to always start the same way. The panel's theme switch still
+// works live during the session (and still writes through to the same
+// shared storage other routes read), this only pins what *this* route boots
+// into. Every other route keeps its prior behavior: stored 'light'/'dark'
+// wins, dark otherwise.
+let shaderTheme = IS_SCROLL_ROUTE
+  ? 'light'
+  : storedShaderTheme === 'light' || storedShaderTheme === 'dark'
     ? storedShaderTheme
-    : IS_SCROLL_ROUTE ? 'light' : 'dark';
+    : 'dark';
 
 // Directional light angle, as azimuth (rotation around the vertical Y axis)
 // and elevation (above/below the horizontal plane), both in degrees — see
