@@ -2914,6 +2914,26 @@ function updateHeroVerticalBias() {
     : 0;
 }
 
+// /scroll-only, same idea as heroVerticalBias above but for the bottom step
+// card (src/panel.tsx) — below sm (640px, kept in sync with that card's own
+// Tailwind breakpoint) the card runs full-width along the bottom edge, so
+// framing nudges upward there to clear it. Expressed in actual screen
+// pixels (unlike heroVerticalBias's frustum-fraction) since that's the unit
+// the request behind this was made in; converted to cubeProjectionHalfY's
+// view-space units via the same "cubeProjectionHalfY * 2 view-units spans
+// window.innerHeight px" relationship the ortho projection itself is built
+// on (see updateCubeProjection).
+const SCROLL_MOBILE_BREAKPOINT_PX = 640;
+const SCROLL_MOBILE_VERTICAL_BIAS_PX = 120;
+let scrollMobileVerticalBias = 0;
+
+function updateScrollMobileVerticalBias() {
+  if (!IS_SCROLL_ROUTE) return;
+  scrollMobileVerticalBias = window.innerWidth <= SCROLL_MOBILE_BREAKPOINT_PX
+    ? cubeProjectionHalfY * (2 * SCROLL_MOBILE_VERTICAL_BIAS_PX) / window.innerHeight
+    : 0;
+}
+
 function getModelState() {
   return {
     spaceHeld,
@@ -4130,9 +4150,12 @@ function projectObjectPointToView(p, rx, ry, s) {
 // (e.g. pointermove during arrow-drawing) happens to ask for the offset.
 function getCurrentCameraOffset(rx, ry, s) {
   const viewPoint = projectObjectPointToView(cameraTargetCurrent, rx, ry, s);
-  // heroVerticalBias (see its own comment) is 0 outside hero-on-mobile, so
-  // this is a no-op everywhere else — including the tool build.
-  return [-viewPoint[0], -viewPoint[1] + heroVerticalBias];
+  // heroVerticalBias/scrollMobileVerticalBias (see their own comments) are
+  // each 0 outside their one route-and-viewport-width combination — a
+  // no-op everywhere else, including the tool build — and mutually
+  // exclusive (IS_HERO and IS_SCROLL_ROUTE never both true), so summing
+  // them is safe.
+  return [-viewPoint[0], -viewPoint[1] + heroVerticalBias + scrollMobileVerticalBias];
 }
 
 // The manual "Model X/Y position" pan, plus the Z axis Space-drag alone
@@ -6214,6 +6237,7 @@ function resize() {
   // Depends on the cubeProjectionHalfY updateCubeProjection just set, so
   // this has to run after it, not before.
   updateHeroVerticalBias();
+  updateScrollMobileVerticalBias();
 }
 
 // A pixel counts as "mainly green" if that channel is dominant by a clear
