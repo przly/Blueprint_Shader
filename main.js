@@ -2327,6 +2327,7 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
   let activeColor = [1, 1, 1]; // no usemtl seen yet (or an unrecognized name) == plain white
   let activeIsGreen = false;
   let activeFillPattern = 0;
+  let activeIsTarget = false; // see isTargetMaterial — true while a "Target"-material face is active
 
   // Per-object (raw, pre-transform) bounding boxes, tracked purely so camera
   // targets (see cameraTargetSlots below) can later be assigned to a named
@@ -2376,6 +2377,7 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
       activeColor = materials[materialName] || [1, 1, 1];
       activeIsGreen = isGreenDominant(activeColor[0] * 255, activeColor[1] * 255, activeColor[2] * 255);
       activeFillPattern = materialFillPatternId(materialName);
+      activeIsTarget = isTargetMaterial(materialName);
     } else if (trimmed[0] === 'f' && trimmed[1] === ' ') {
       const faceVerts = trimmed.split(/\s+/).slice(1).map((part) => {
         const [vStr, , vnStr] = part.split('/'); // v[/vt][/vn]
@@ -2401,15 +2403,21 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
           nx /= len; ny /= len; nz /= len;
           n = [[nx, ny, nz], [nx, ny, nz], [nx, ny, nz]];
         }
-        outTriIsGreen.push(activeIsGreen);
+        if (!activeIsTarget) outTriIsGreen.push(activeIsGreen);
         for (let k = 0; k < 3; k++) {
-          outPositions.push(p[k][0], p[k][1], p[k][2]);
-          outNormals.push(n[k][0], n[k][1], n[k][2]);
-          outColors.push(activeColor[0], activeColor[1], activeColor[2]);
-          outIsGreen.push(activeIsGreen ? 1 : 0);
-          outObjectName.push(activeObjectName || 'Object 1');
-          outFillPattern.push(activeFillPattern);
-          outTriVertIdx.push(tri[k].vIdx);
+          // Target-material faces still contribute to their object's
+          // bounding box (touchObjectBounds below) so the cube can drive
+          // Camera Target / /scroll sizing, but are otherwise skipped here —
+          // see isTargetMaterial.
+          if (!activeIsTarget) {
+            outPositions.push(p[k][0], p[k][1], p[k][2]);
+            outNormals.push(n[k][0], n[k][1], n[k][2]);
+            outColors.push(activeColor[0], activeColor[1], activeColor[2]);
+            outIsGreen.push(activeIsGreen ? 1 : 0);
+            outObjectName.push(activeObjectName || 'Object 1');
+            outFillPattern.push(activeFillPattern);
+            outTriVertIdx.push(tri[k].vIdx);
+          }
           touchObjectBounds(p[k][0], p[k][1], p[k][2]);
         }
       }
@@ -6077,6 +6085,18 @@ function materialFillPatternId(name) {
   if (trimmed === 'dot' || trimmed === 'dots') return 2;
   if (trimmed === 'plus' || trimmed === 'cross') return 3;
   return 0;
+}
+
+// Faces using a material named "Target" (case-insensitive, tolerant of
+// Blender's ".001"-style de-dupe suffixes — same convention as
+// materialFillPatternId above) are modeling-only placeholders: a cube dropped
+// into the scene purely so its object bounding box (see the `objects` array
+// built in parseObj, which feeds the Camera Target / /scroll sizing) can be
+// positioned and scaled by hand, without needing to actually show up on
+// screen. parseObj skips pushing render/wireframe data for these faces while
+// still recording their object's bounds.
+function isTargetMaterial(name) {
+  return name.trim().toLowerCase().replace(/\.\d{3}$/, '') === 'target';
 }
 
 // FPS/frame-time overlay (top-center, see #perf-monitor in index.html).
