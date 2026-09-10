@@ -870,6 +870,16 @@ export function Panel() {
                   />
                   Show target bounding boxes
                 </Label>
+                <Label className="gap-2.5 text-xs">
+                  <Switch
+                    checked={!!state.showTargetMaterials}
+                    onCheckedChange={(checked: boolean) => {
+                      controls.setShowTargetMaterials(checked);
+                      setState((s) => ({ ...s, showTargetMaterials: checked }));
+                    }}
+                  />
+                  Show target materials
+                </Label>
               </div>
               </div>
             )}

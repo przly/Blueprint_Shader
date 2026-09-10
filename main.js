@@ -2324,6 +2324,9 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
   const outFillPattern = []; // one entry per emitted vertex — 0/1/2/3 fill-pattern id (see materialFillPatternId)
   const outTriVertIdx = []; // one entry per emitted vertex, the original `v` index it came from — used only for crease-edge detection below
   const outTriIsGreen = []; // one entry per emitted triangle — feeds the wireframe's green-edge coloring
+  const outTargetPositions = []; // Target-material triangles, kept separately (see isTargetMaterial) purely to feed the "Show target materials" purple overlay — never mixed into outPositions/the opaque draw
+  const outTargetTriVertIdx = []; // same convention as outTriVertIdx, but for Target-material triangles — feeds that overlay's own crease-edge wireframe
+  const outTargetTriIsGreen = []; // one entry per Target-material triangle; always false (green-fill flag is meaningless for placeholder cubes) but buildCreaseEdgeLines requires the argument
   let activeColor = [1, 1, 1]; // no usemtl seen yet (or an unrecognized name) == plain white
   let activeIsGreen = false;
   let activeFillPattern = 0;
@@ -2404,6 +2407,7 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
           n = [[nx, ny, nz], [nx, ny, nz], [nx, ny, nz]];
         }
         if (!activeIsTarget) outTriIsGreen.push(activeIsGreen);
+        else outTargetTriIsGreen.push(false);
         for (let k = 0; k < 3; k++) {
           // Target-material faces still contribute to their object's
           // bounding box (touchObjectBounds below) so the cube can drive
@@ -2417,6 +2421,9 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
             outObjectName.push(activeObjectName || 'Object 1');
             outFillPattern.push(activeFillPattern);
             outTriVertIdx.push(tri[k].vIdx);
+          } else {
+            outTargetPositions.push(p[k][0], p[k][1], p[k][2]);
+            outTargetTriVertIdx.push(tri[k].vIdx);
           }
           touchObjectBounds(p[k][0], p[k][1], p[k][2]);
         }
@@ -2440,6 +2447,11 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
       const nx = outNormals[i], nz = outNormals[i + 2];
       outNormals[i] = nx * cosY + nz * sinY;
       outNormals[i + 2] = -nx * sinY + nz * cosY;
+    }
+    for (let i = 0; i < outTargetPositions.length; i += 3) {
+      const x = outTargetPositions[i], z = outTargetPositions[i + 2];
+      outTargetPositions[i] = x * cosY + z * sinY;
+      outTargetPositions[i + 2] = -x * sinY + z * cosY;
     }
   }
 
@@ -2475,6 +2487,11 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
     outPositions[i] = (outPositions[i] - cx) * scale;
     outPositions[i + 1] = (outPositions[i + 1] - cy) * scale;
     outPositions[i + 2] = (outPositions[i + 2] - cz) * scale;
+  }
+  for (let i = 0; i < outTargetPositions.length; i += 3) {
+    outTargetPositions[i] = (outTargetPositions[i] - cx) * scale;
+    outTargetPositions[i + 1] = (outTargetPositions[i + 1] - cy) * scale;
+    outTargetPositions[i + 2] = (outTargetPositions[i + 2] - cz) * scale;
   }
 
   // Per-object camera-target centroids (see cameraTargetSlots), in the same
@@ -2558,6 +2575,13 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
     dedupedTransformed[i * 3 + 2] = (z - cz) * scale;
   }
   const lineData = buildCreaseEdgeLines(dedupedTransformed, new Uint32Array(outTriVertIdx), outTriIsGreen);
+  // Target-material overlay's own wireframe (see showTargetMaterials) — same
+  // crease/boundary-edge treatment as the main model's blueprint wireframe
+  // above, just against outTargetTriVertIdx instead of outTriVertIdx; only
+  // .positions is used (drawn in a fixed purple, not lineData's
+  // theme-dependent color), so the isGreen/colors half of the result is
+  // thrown away rather than threaded through applyParsedModel.
+  const targetLineData = buildCreaseEdgeLines(dedupedTransformed, new Uint32Array(outTargetTriVertIdx), outTargetTriIsGreen);
 
   return {
     positions: new Float32Array(outPositions),
@@ -2566,6 +2590,8 @@ function parseObj(text, materials, baseScaleMultiplier = 1) {
     isGreen: new Float32Array(outIsGreen),
     objectIndex: new Float32Array(outObjectIndex),
     fillPattern: new Float32Array(outFillPattern),
+    targetPositions: new Float32Array(outTargetPositions),
+    targetLinePositions: targetLineData.positions,
     linePositions: lineData.positions,
     lineColors: lineData.colors,
     lineIsGreen: lineData.isGreen,
@@ -2588,6 +2614,14 @@ const customModelNormalBuffer = gl.createBuffer();
 const customModelColorBuffer = gl.createBuffer();
 const customModelIsGreenBuffer = gl.createBuffer();
 const customModelFillPatternBuffer = gl.createBuffer();
+// Target-material triangles (see isTargetMaterial/outTargetPositions in
+// parseObj) — fed to the "Show target materials" purple overlay
+// (showTargetMaterials) via the line program, same as the camera-target
+// box fill below, rather than the opaque cubeProgram draw.
+const customModelTargetFillBuffer = gl.createBuffer();
+let customModelTargetVertexCount = 0;
+const customModelTargetLineBuffer = gl.createBuffer();
+let customModelTargetLineVertexCount = 0;
 const customModelFlowCoordBuffer = gl.createBuffer();
 const customModelFlowPathLenBuffer = gl.createBuffer();
 const customModelLineBuffer = gl.createBuffer();
@@ -2741,6 +2775,12 @@ function setEditingDefaultView(enabled) {
 // driving the camera, so it's useful purely for checking which objects are
 // wired up as targets.
 let showCameraTargetBoxes = false;
+// Master visibility switch for the purple, 50%-opacity overlay that reveals
+// Target-material faces (see isTargetMaterial) — those are otherwise
+// excluded from the opaque draw entirely (parseObj), so this is the only
+// way to see where a "Target" cube actually sits/how it's sized without
+// re-opening the source file in Blender.
+let showTargetMaterials = false;
 // Mirrors the React panel's own "controls hidden" state (H key / hamburger
 // button, see src/panel.tsx's `hidden` state) — main.js has no DOM
 // dependency on the panel and can't read that state directly, so panel.tsx
@@ -2870,6 +2910,7 @@ function getModelState() {
     cameraTargetSlots,
     cameraTargetActiveIndex,
     showCameraTargetBoxes,
+    showTargetMaterials,
     hasDefaultCameraView: !!defaultCameraView,
     editingDefaultView,
     modelFlowArrowCount: modelFlowPaths.length,
@@ -3085,6 +3126,11 @@ function setShowCameraTargetBoxes(enabled) {
   notifyModelState();
 }
 
+function setShowTargetMaterials(enabled) {
+  showTargetMaterials = !!enabled;
+  notifyModelState();
+}
+
 function notifyModelState() {
   const state = getModelState();
   modelStateListeners.forEach((listener) => listener(state));
@@ -3124,6 +3170,13 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelFillPatternBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, parsed.fillPattern, gl.STATIC_DRAW);
   customModelVertexCount = parsed.positions.length / 3;
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelTargetFillBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, parsed.targetPositions, gl.STATIC_DRAW);
+  customModelTargetVertexCount = parsed.targetPositions.length / 3;
+  gl.bindBuffer(gl.ARRAY_BUFFER, customModelTargetLineBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, parsed.targetLinePositions, gl.STATIC_DRAW);
+  customModelTargetLineVertexCount = parsed.targetLinePositions.length / 3;
 
   gl.bindBuffer(gl.ARRAY_BUFFER, customModelLineBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, parsed.linePositions, gl.STATIC_DRAW);
@@ -3707,6 +3760,15 @@ const CAMERA_TARGET_BOX_FILL_OPACITY = 0.1;
 const CAMERA_TARGET_BOX_EDGE_OPACITY = 0.45;
 const cameraTargetBoxFillBuffer = gl.createBuffer();
 const cameraTargetBoxEdgeBuffer = gl.createBuffer();
+
+// "Show target materials" overlay (see showTargetMaterials/isTargetMaterial):
+// reveals the actual Target-material faces themselves — normally excluded
+// from the opaque draw entirely (parseObj) — as a translucent purple fill,
+// drawn through the same lineProgram/uLineAlpha path as the camera-target
+// box above rather than the opaque cubeProgram (which has no alpha uniform).
+const TARGET_MATERIAL_COLOR = [0.65, 0.25, 0.85]; // purple
+const TARGET_MATERIAL_OPACITY = 0.5;
+const TARGET_MATERIAL_EDGE_OPACITY = 0.9; // stronger than the fill so the wireframe reads clearly on top of it
 
 // Builds the 6-face (12-triangle) fill geometry and 12-edge line geometry
 // for one object's axis-aligned bounds (see parseObj's per-object `bounds`).
@@ -5343,6 +5405,38 @@ function renderCubeFrame() {
     }
   }
 
+  // Target-material overlay (see showTargetMaterials/TARGET_MATERIAL_COLOR
+  // above) — same real-3D/depth-tested/no-depth-write treatment as the
+  // camera-target box fill just above: a translucent purple fill pass, then
+  // its crease-edge wireframe (customModelTargetLineBuffer, built the same
+  // way as the model's own blueprint wireframe — see targetLineData in
+  // parseObj) drawn at higher opacity on top so the cube's actual shape
+  // stays legible through the fill.
+  if (showTargetMaterials && customModelReady && customModelTargetVertexCount > 0) {
+    gl.useProgram(lineProgram);
+    gl.uniformMatrix4fv(uLineModelView, false, modelView);
+    gl.uniformMatrix4fv(uLineProjection, false, cubeProjection);
+    gl.enableVertexAttribArray(aLinePosition);
+    gl.disableVertexAttribArray(aLineColor);
+    gl.vertexAttrib3f(aLineColor, TARGET_MATERIAL_COLOR[0], TARGET_MATERIAL_COLOR[1], TARGET_MATERIAL_COLOR[2]);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthMask(false);
+    gl.bindBuffer(gl.ARRAY_BUFFER, customModelTargetFillBuffer);
+    gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+    gl.uniform1f(uLineAlpha, TARGET_MATERIAL_OPACITY);
+    gl.drawArrays(gl.TRIANGLES, 0, customModelTargetVertexCount);
+    if (customModelTargetLineVertexCount > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, customModelTargetLineBuffer);
+      gl.vertexAttribPointer(aLinePosition, 3, gl.FLOAT, false, 0, 0);
+      gl.uniform1f(uLineAlpha, TARGET_MATERIAL_EDGE_OPACITY);
+      gl.drawArrays(gl.LINES, 0, customModelTargetLineVertexCount);
+    }
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+    gl.uniform1f(uLineAlpha, 1.0);
+  }
+
   if (blueprintEnabled) {
     gl.disable(gl.POLYGON_OFFSET_FILL);
 
@@ -6449,6 +6543,7 @@ export const controls = {
   goToCameraTarget,
   resetCameraTarget,
   setShowCameraTargetBoxes,
+  setShowTargetMaterials,
   setEditingDefaultView,
   goToDefaultCameraView,
   setPanelsHidden,
