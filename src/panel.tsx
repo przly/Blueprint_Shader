@@ -166,16 +166,24 @@ const TEXTS_REVEAL_HIDE_MS = 300; // keep in sync with .t-stagger.is-hiding's --
 // doesn't read as a reversed reveal) — here the whole point is to tie the
 // motion's direction to the scroll gesture that caused it.
 //
-// `revealed` gates the very first entrance (contrast useTextSwap, which has
-// no such thing and always starts at rest): while false, phase sits at
-// "hidden" — same pre-enter offset/opacity/blur as "enterStart" (see the
-// CSS's is-entering selectors, which "hidden" maps to as well), just without
-// the auto-advance-to-"shown" rAF that "enterStart" gets, so it holds there
-// indefinitely instead of immediately playing. The moment `revealed` flips
-// true, it's treated exactly like an index change — enterStart, then shown a
-// frame later — so the bottom-left info card's first appearance plays the
-// same staggered blurred-rise entrance a later step change does, timed to
-// whatever caller-chosen moment `revealed` flips at, not simply on mount.
+// `revealed` gates the very first entrance, reversibly (contrast
+// useTextSwap, which has no such thing and always starts at rest): while
+// false, phase sits at "hidden" — same pre-enter offset/opacity/blur as
+// "enterStart" (see the CSS's is-entering selectors, which "hidden" maps to
+// as well), just without the auto-advance-to-"shown" rAF that "enterStart"
+// gets, so it holds there indefinitely instead of immediately playing. The
+// moment `revealed` flips true, it's treated exactly like an index change —
+// direction "down" (rises up from below, see the CSS's data-direction
+// selectors), enterStart, then shown a frame later — so the bottom-left
+// info card's first appearance plays the same staggered blurred-rise
+// entrance a later step change does, timed to whatever caller-chosen moment
+// `revealed` flips at, not simply on mount. If `revealed` later flips back
+// to false (the card's own scroll-scrubbed intro reversing because the user
+// scrolled back up past it), the second effect below plays that same motion
+// in reverse — direction "up" (sinks back down, fading and re-blurring) —
+// and settles at "hidden" again rather than continuing on to any particular
+// index's entrance, ready to replay the entrance if `revealed` flips true
+// once more.
 function useTextsReveal(
   index: number,
   hideMs: number,
@@ -184,11 +192,45 @@ function useTextsReveal(
   const [displayedIndex, setDisplayedIndex] = useState(index);
   const [phase, setPhase] = useState<TextsRevealPhase>(() => (revealed ? "shown" : "hidden"));
   const [direction, setDirection] = useState<TextsRevealDirection>("down");
+  // Read (not depended on) by the exit effect below so its own
+  // setPhase("hiding") doesn't retrigger it — with `phase` itself as a
+  // dependency there, that self-retrigger's cleanup would cancel the
+  // hideTimer it had just set, before the early-return guard skips
+  // scheduling a replacement, leaving phase stuck at "hiding" forever (and
+  // the entrance effect's "hidden" guard never satisfied again). The
+  // entrance effect below has no such timer/cleanup to cancel, so it stays
+  // safely keyed off `phase` directly — needed so it can also fire when
+  // `phase` settles to "hidden" *after* `revealed` already flipped back to
+  // true (rapid scroll-down-up-down near the boundary), not only at the
+  // instant `revealed` itself changes.
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
 
   useEffect(() => {
     if (phase !== "hidden" || !revealed) return;
+    setDirection("down");
     setPhase("enterStart");
   }, [phase, revealed]);
+
+  useEffect(() => {
+    if (revealed || phaseRef.current === "hidden" || phaseRef.current === "hiding") return;
+    setDirection("up");
+    setPhase("hiding");
+    let settledNaturally = false;
+    const hideTimer = window.setTimeout(() => {
+      settledNaturally = true;
+      setPhase("hidden");
+    }, hideMs);
+    // If `revealed` flips true again before this fires (rapid scroll back
+    // down mid-exit), cleanup cancels the timer — but phase is still
+    // "hiding" at that point, and nothing else would ever move it off that
+    // (the entrance effect above only fires from "hidden"). Snap straight
+    // back to "shown" here instead of leaving it stuck.
+    return () => {
+      window.clearTimeout(hideTimer);
+      if (!settledNaturally) setPhase("shown");
+    };
+  }, [revealed, hideMs]);
 
   useEffect(() => {
     if (index === displayedIndex) return;
@@ -366,12 +408,13 @@ export function Panel() {
     return acc;
   }, []);
   const activeTargetPosition = Math.max(0, assignedSlotIndices.indexOf(state.cameraTargetActiveIndex ?? -1));
-  // Flips true once (see the card's own physical-entrance effect below,
-  // which sets this the moment scroll first moves off 0) so the card's
-  // first appearance plays the same staggered content entrance a later step
-  // change does, starting alongside the card's own scroll-driven fade/rise
-  // rather than only after it finishes — instead of just sitting there
-  // already fully visible underneath the card's own fade-in.
+  // Tracks whether scroll is past the very top of the intro span (see the
+  // card's own physical-entrance effect below, which flips this the moment
+  // scroll crosses off/back to exactly 0) so the card's content plays the
+  // same staggered blurred-rise entrance a later step change does — and,
+  // reversibly, the same motion backward if the user scrolls back up past
+  // it — starting alongside the card's own scroll-driven fade/rise rather
+  // than only after it finishes.
   const [cardContentRevealed, setCardContentRevealed] = useState(false);
   const cardContentReveal = useTextsReveal(activeTargetPosition, TEXTS_REVEAL_HIDE_MS, cardContentRevealed);
   const cardContent = CARD_CONTENT[cardContentReveal.displayedIndex] ?? CARD_CONTENT[0];
@@ -403,15 +446,19 @@ export function Panel() {
     const card = introCardRef.current;
     if (!card) return;
     let raf = 0;
-    // Fires the content stagger-entrance (see cardContentRevealed above)
-    // exactly once, the moment scroll first moves off 0 — so it starts
+    // Toggles the content stagger-entrance/exit (see cardContentRevealed
+    // above) the moment scroll crosses off/back to exactly 0 — entering
     // alongside the card's own physical reveal instead of only after that
-    // finishes, and the two read as one concurrent motion rather than a
-    // sequence. Guarded so it only ever calls setState once — every scroll
-    // tick after that (this effect keeps handling scroll for the rest of
-    // the page) just keeps re-writing the settled style directly, cheaply,
-    // without routing back through React.
-    let contentRevealFired = false;
+    // finishes, so the two read as one concurrent motion, and reversing
+    // (playing the same motion backward, see useTextsReveal's own second
+    // effect) if the user scrolls back up past the intro span, same as the
+    // card's own physical entrance already does. Tracked in a local var
+    // rather than read back off React state so this only ever calls
+    // setState on an actual flip — every other scroll tick (this effect
+    // keeps handling scroll for the rest of the page) just keeps
+    // re-writing the settled style directly, cheaply, without routing back
+    // through React.
+    let contentRevealedLocal = false;
     const update = () => {
       raf = 0;
       const introFraction =
@@ -423,9 +470,10 @@ export function Panel() {
       card.style.transform = `translateY(${(1 - eased) * CARD_INTRO_OFFSET_PX}px)`;
       card.style.opacity = String(eased);
       card.style.filter = `blur(${(1 - eased) * CARD_INTRO_BLUR_PX}px)`;
-      if (!contentRevealFired && introProgress > 0) {
-        contentRevealFired = true;
-        setCardContentRevealed(true);
+      const shouldBeRevealed = introProgress > 0;
+      if (shouldBeRevealed !== contentRevealedLocal) {
+        contentRevealedLocal = shouldBeRevealed;
+        setCardContentRevealed(shouldBeRevealed);
       }
     };
     const onScroll = () => {
