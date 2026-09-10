@@ -323,6 +323,9 @@ export function Panel() {
   const photoOptionsPhase = useRevealPhase(!!state.photoMode, MODAL_CLOSE_MS);
   const lineWidthSliderPhase = useRevealPhase(!!state.photoUniformLineWidth, MODAL_CLOSE_MS);
   const flowObjectsPhase = useRevealPhase((state.selectedFlowArrowObjects?.length ?? 0) > 0, MODAL_CLOSE_MS);
+  const sortedCustomModelObjectNames = [...(state.customModelObjectNames ?? [])].sort((a, b) =>
+    a.localeCompare(b),
+  );
   // The card's step count should match however many Camera Target slots are
   // actually assigned, not the raw 7-slot capacity — cameraTargetActiveIndex
   // is a raw slot index (e.g. 5, if slots 0/2/5 are the only ones assigned),
@@ -770,7 +773,7 @@ export function Panel() {
                           value={state.cameraTargetSlots?.[slotIndex] ?? ""}
                         >
                           <option value="">— none —</option>
-                          {(state.customModelObjectNames ?? []).map((name: string) => (
+                          {sortedCustomModelObjectNames.map((name: string) => (
                             <option key={name} value={name}>
                               {name}
                             </option>
