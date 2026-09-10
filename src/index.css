@@ -390,10 +390,10 @@
    bottom; "up" (index decreased) is the mirror: drops in from above and
    exits downward. */
 :root {
-  --stagger-dur: 500ms;
-  --stagger-exit-dur: 200ms;
+  --stagger-dur: 750ms;
+  --stagger-exit-dur: 300ms;
   --stagger-distance: 12px;
-  --stagger-stagger: 40ms;
+  --stagger-stagger: 60ms;
   --stagger-blur: 3px;
   --stagger-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }

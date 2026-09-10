@@ -50,6 +50,26 @@ const IS_SCROLL_ROUTE = canvas?.dataset.scroll === 'true';
 // of scroll to travel through, instead of every span getting squeezed into
 // whatever a fixed track height happens to divide into.
 const scrollTrackEl = IS_SCROLL_ROUTE ? document.getElementById('scroll-track') : null;
+// The scroll track's leading intro span (see updateScrollTrackHeight and
+// renderCubeFrame's own introFraction below) — how many viewport-heights of
+// scroll the bottom-left info card's entrance (src/panel.tsx) gets before
+// the camera starts blending toward Target 1. Half a viewport rather than a
+// full one: the card's rise/fade/blur-in is a quick, small-distance move
+// (see CARD_INTRO_OFFSET_PX in panel.tsx), not a full scene transition, so a
+// whole 100vh of scroll to play it out read as too slow. Kept in sync with
+// panel.tsx's own copy of this constant (see its card entrance effect) —
+// both need to agree on how much of the track is intro vs. target-to-target
+// scroll.
+const SCROLL_INTRO_SPAN_VH_UNITS = 0.5;
+// How far out Target 1's own framing starts zoomed at scrollY 0 — the
+// camera opens at (1 - this) of Target 1's normal "frame to fit" zoom, then
+// zooms in the remaining 10% over the intro span alongside the bottom-left
+// info card's entrance (see panel.tsx's own copy of this constant, and
+// renderCubeFrame's introZoomMultiplier below), landing exactly at Target
+// 1's normal framing right as the card finishes sliding in. Position/center
+// never moves during the intro span (see blendProgress below) — only this
+// zoom does.
+const SCROLL_INTRO_ZOOM_OUT_FRACTION = 0.2;
 function updateScrollTrackHeight() {
   if (!scrollTrackEl) return;
   const numTargets = cameraTargetSlots.filter(Boolean).length;
@@ -58,9 +78,17 @@ function updateScrollTrackHeight() {
   // numTargets - 1 spans) plus the trailing viewport itself, so N targets
   // read as N * 100vh of track — same 300vh a fixed 3-target build already
   // used, just generalized. Math.max(1, ...) keeps a full viewport's worth
-  // of track (no scroll range, but no zero-height layout glitch either)
-  // before any targets are assigned yet.
-  scrollTrackEl.style.height = `${Math.max(1, numTargets) * 100}vh`;
+  // of target track (no scroll range, but no zero-height layout glitch
+  // either) before any targets are assigned yet.
+  //
+  // Plus SCROLL_INTRO_SPAN_VH_UNITS more *leading* span on top of that:
+  // reserved for the intro, during which renderCubeFrame's own
+  // IS_SCROLL_ROUTE branch holds the camera completely still on Target 1
+  // (see its introFraction) instead of blending anywhere — that span exists
+  // purely so there's scroll room for the bottom-left info card
+  // (src/panel.tsx) to slide in from below the viewport before the model
+  // starts moving at all.
+  scrollTrackEl.style.height = `${(Math.max(1, numTargets) + SCROLL_INTRO_SPAN_VH_UNITS) * 100}vh`;
 }
 
 // The control panel (src/panel.tsx) is a React/coss-ui component tree that
@@ -225,7 +253,7 @@ function setFlowPulseFrequency(value) {
 // The loaded model's size, as a percentage multiplier on top of CUBE_SCALE
 // (see renderCubeFrame) — 100 (the default) = CUBE_SCALE unchanged, up to
 // 1000 = 10x that.
-const CUBE_SIZE_MIN = 10;
+const CUBE_SIZE_MIN = 1;
 const CUBE_SIZE_MAX = 1000;
 let cubeSizePercent = restoreNumber('cubeSize', 100);
 let cubeSizeScale = cubeSizePercent / 100;
@@ -2860,7 +2888,7 @@ const CAMERA_TARGET_SPRING_REST_EPSILON = 0.01;
 // continuously as it's rotated, unlike a fixed reference-size heuristic.
 const CAMERA_TARGET_VERTICAL_SAFE_ZONE = 0.25;
 const CAMERA_TARGET_ZOOM_MIN = 0.01;
-const CAMERA_TARGET_ZOOM_MAX = 5;
+const CAMERA_TARGET_ZOOM_MAX = 50;
 
 // Hero-only: below this viewport width, hero.css switches the title/cards
 // overlay to its wrapped mobile layout (see the @media query in hero.css —
@@ -3203,6 +3231,20 @@ function applyParsedModel(parsed, objName, mtlName, defaultCameraTargets = []) {
     { length: CAMERA_TARGET_SLOT_COUNT },
     (_, i) => defaultCameraTargets[i] ?? null,
   );
+  // Auto-assign objects named "Target_N" (case-insensitive) straight to
+  // Camera Target slot N-1, so a Blender export using that naming
+  // convention needs no manual dropdown assignment. Overrides
+  // defaultCameraTargets for the same slot — the model's own naming is a
+  // more explicit signal than a generic bundled-model seed.
+  const TARGET_NAME_RE = /^target_(\d+)$/i;
+  for (const obj of parsed.objects) {
+    const match = TARGET_NAME_RE.exec(obj.name);
+    if (!match) continue;
+    const slotIndex = Number(match[1]) - 1;
+    if (slotIndex >= 0 && slotIndex < CAMERA_TARGET_SLOT_COUNT) {
+      cameraTargetSlots[slotIndex] = obj.name;
+    }
+  }
   updateScrollTrackHeight(); // no-op off the /scroll route; a freshly loaded model may seed a different number of assigned slots than the last one
   cameraTargetActiveIndex = null;
   cameraTargetCurrent = [0, 0, 0];
@@ -3357,24 +3399,19 @@ const MODEL_LOAD_YAW_START_OFFSET_DEG = -30;
 async function loadBundledDefaultModel() {
   try {
     const [objText, mtlText] = await Promise.all([
-      fetch('/models/ngen_assets.obj').then((r) => r.text()),
-      fetch('/models/ngen_assets.mtl').then((r) => r.text()),
+      fetch('/models/sg_connect_scroll_explainer.obj').then((r) => r.text()),
+      fetch('/models/sg_connect_scroll_explainer.mtl').then((r) => r.text()),
     ]);
     const materials = parseMtl(mtlText);
     // On top of parseObj's usual extent normalization — 8x, independent of
     // the "Model size" slider, which still starts at its usual 100%.
     const parsed = parseObj(objText, materials, 8);
-    // One object group per Camera Target slot — jumping between them is how
-    // the user navigates the bundle's separate objects rather than a single
-    // shared layout. This model (a placeholder test .obj/.mtl swapped in
-    // from Downloads/Untitled.obj) has four groups ('Central', 'First',
-    // 'Big', 'Small'); only three get a slot, matching the panel's fixed
-    // 3-target UI — 'Big' is left unassigned.
-    applyParsedModel(parsed, 'ngen_assets.obj', 'ngen_assets.mtl', [
-      'First',
-      'Small',
-      'Central',
-    ]);
+    // No defaultCameraTargets array needed here — this model already names
+    // its own marker objects Target_1/Target_2/Target_3/Target_4 (each on
+    // the invisible "Target" material, see isTargetMaterial), so
+    // applyParsedModel's own Target_N auto-assignment (see its TARGET_NAME_RE)
+    // wires slots 1-4 up on its own.
+    applyParsedModel(parsed, 'sg_connect_scroll_explainer.obj', 'sg_connect_scroll_explainer.mtl');
     // Always lands on BAKED_DEFAULT_CAMERA_VIEW rather than whichever Camera
     // Target the user had active last session — both that and
     // defaultCameraView's own in-session edits are deliberately session-only
@@ -3405,7 +3442,11 @@ async function loadBundledDefaultModel() {
     if (IS_SCROLL_ROUTE) {
       const goal = computeCameraTargetGoal(0);
       cameraTargetCurrent = goal.center;
-      cameraTargetZoomCurrent = goal.zoomGoal;
+      // Starts at (1 - SCROLL_INTRO_ZOOM_OUT_FRACTION) of Target 1's own
+      // zoom — matches renderCubeFrame's introZoomMultiplier at progress 0
+      // exactly, so there's no jump once scroll starts driving that same
+      // multiplier back up to 1.
+      cameraTargetZoomCurrent = goal.zoomGoal * (1 - SCROLL_INTRO_ZOOM_OUT_FRACTION);
     }
     // suppressParallax: false — keep ambient hover tilt live through the
     // whole drop instead of freezing it (see cubeRotResetSuppressParallax).
@@ -5127,16 +5168,29 @@ function renderCubeFrame() {
     if (numTargets > 0) {
     const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
     const progress = maxScroll > 0 ? Math.max(0, Math.min(1, window.scrollY / maxScroll)) : 0;
+    // The track reserves one leading SCROLL_INTRO_SPAN_VH_UNITS-tall span,
+    // ahead of Target 1's own span, for the intro (see
+    // updateScrollTrackHeight) — introFraction is that span's share of the
+    // whole track. blendProgress remaps the remaining post-intro range back
+    // to the plain "0..1 across the N targets" progress the
+    // lowerPos/upperPos/frac math below was written against, clamped to 0
+    // for the entire intro span so lowerPos/frac stay pinned at Target 1's
+    // own goal (no blend at all) until scroll actually passes it — the
+    // camera holds still while panel.tsx's own copy of this same split
+    // instead slides the bottom-left info card in from below.
+    const introFraction = SCROLL_INTRO_SPAN_VH_UNITS / (numTargets + SCROLL_INTRO_SPAN_VH_UNITS);
+    const blendProgress = Math.max(0, Math.min(1, (progress - introFraction) / (1 - introFraction)));
     // lowerPos is clamped to numTargets - 2 (not just floored) so upperPos
     // (lowerPos + 1) always stays a valid sequence position, including
-    // exactly at progress === 1 — and, when numTargets is 1, both clamp down
-    // to position 0, so lowerIndex/upperIndex end up equal and frac becomes
-    // irrelevant: the single assigned target just sits still, no blend.
-    const lowerPos = Math.max(0, Math.min(numTargets - 2, Math.floor(progress * (numTargets - 1))));
+    // exactly at blendProgress === 1 — and, when numTargets is 1, both clamp
+    // down to position 0, so lowerIndex/upperIndex end up equal and frac
+    // becomes irrelevant: the single assigned target just sits still, no
+    // blend.
+    const lowerPos = Math.max(0, Math.min(numTargets - 2, Math.floor(blendProgress * (numTargets - 1))));
     const upperPos = Math.min(numTargets - 1, lowerPos + 1);
     const lowerIndex = activeSlots[lowerPos];
     const upperIndex = activeSlots[upperPos];
-    const rawFrac = Math.max(0, Math.min(1, progress * (numTargets - 1) - lowerPos));
+    const rawFrac = Math.max(0, Math.min(1, blendProgress * (numTargets - 1) - lowerPos));
     // Hold zones: SCROLL_HOLD_FRACTION of each span, at both ends, pins the
     // blend to whichever target it's nearest instead of moving right away —
     // so scrolling into a target keeps you sitting on it for a beat before
@@ -5152,10 +5206,22 @@ function renderCubeFrame() {
       : rawFrac >= 1 - SCROLL_HOLD_FRACTION
         ? 1
         : (rawFrac - SCROLL_HOLD_FRACTION) / (1 - 2 * SCROLL_HOLD_FRACTION);
+    // introProgress: 0 at scrollY 0, easing up to exactly 1 by the end of
+    // the intro span (progress === introFraction), in lockstep with
+    // panel.tsx's own copy of this same introProgress/eased pair driving the
+    // info card's entrance — then pinned at 1 for the rest of the scroll.
+    const introProgress = Math.max(0, Math.min(1, progress / introFraction));
+    const introEased = 1 - (1 - introProgress) ** 3; // ease-out cubic, matches panel.tsx's card entrance
     const goalLower = computeCameraTargetGoal(lowerIndex);
     const goalUpper = computeCameraTargetGoal(upperIndex);
     const goalCenter = [0, 1, 2].map((i) => goalLower.center[i] + (goalUpper.center[i] - goalLower.center[i]) * frac);
-    const goalZoom = goalLower.zoomGoal + (goalUpper.zoomGoal - goalLower.zoomGoal) * frac;
+    // 1 - SCROLL_INTRO_ZOOM_OUT_FRACTION at scrollY 0, easing up to exactly 1
+    // by the end of the intro span, then pinned at 1 for the rest of the
+    // scroll, so it never touches the ordinary target-to-target zoom blend
+    // above. Applied only to zoom, not goalCenter, so position never moves
+    // during the intro span, only the initial pull-in.
+    const introZoomMultiplier = 1 - SCROLL_INTRO_ZOOM_OUT_FRACTION * (1 - introEased);
+    const goalZoom = (goalLower.zoomGoal + (goalUpper.zoomGoal - goalLower.zoomGoal) * frac) * introZoomMultiplier;
     // Eased toward the scroll-driven goal rather than snapped straight to it
     // — same lightweight per-frame exponential smoothing advanceParallax
     // uses for ambient hover tilt (see CUBE_PARALLAX_SMOOTHING), just

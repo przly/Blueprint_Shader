@@ -1,5 +1,5 @@
 import { ArrowLeftRight } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowBigRightDashIcon, type ArrowBigRightDashIconHandle } from "@/components/ui/arrow-big-right-dash";
 import { Button } from "@/components/ui/button";
 import { DeleteIcon, type DeleteIconHandle } from "@/components/ui/delete";
@@ -32,26 +32,37 @@ const CONTROLS_HIDDEN_KEY = "iconMosaic.controlsHidden";
 // title/text change per target; the icon and layout stay fixed. Steps 4-7
 // are generic placeholders (no real content yet, unlike 1-3) since only 3
 // of the 7 slots are actually assigned on the current placeholder model.
+// One real icon per assigned target so far (1.svg-4.svg, 56x56 viewBox,
+// single fill path each) — steps 5-7 are still content placeholders (see
+// CARD_CONTENT below) with no icon of their own yet, so they cycle back
+// through these four rather than introducing a second, icon-less path.
+const CARD_ICON_PATHS = [
+  "M43.4583 35.0002C42.9528 35.0002 42.525 34.8446 42.175 34.5335C41.8639 34.1835 41.7083 33.7557 41.7083 33.2502C41.7083 32.7446 41.8639 32.3363 42.175 32.0252C42.525 31.6752 42.9528 31.5002 43.4583 31.5002H47.25C47.7556 31.5002 48.1639 31.6752 48.475 32.0252C48.825 32.3363 49 32.7446 49 33.2502C49 33.7168 48.825 34.1252 48.475 34.4752C48.1639 34.8252 47.7556 35.0002 47.25 35.0002H43.4583ZM43.4583 44.3335C42.9528 44.3335 42.525 44.1779 42.175 43.8668C41.8639 43.5168 41.7083 43.0891 41.7083 42.5835C41.7083 42.0779 41.8639 41.6696 42.175 41.3585C42.525 41.0085 42.9528 40.8335 43.4583 40.8335H47.25C47.7556 40.8335 48.1639 41.0085 48.475 41.3585C48.825 41.6696 49 42.0779 49 42.5835C49 43.0502 48.825 43.4585 48.475 43.8085C48.1639 44.1585 47.7556 44.3335 47.25 44.3335H43.4583ZM32.6667 46.6668C31.5389 46.6668 30.5667 46.2196 29.75 45.3252C28.9722 44.3918 28.5833 43.2835 28.5833 42.0002H24.7917C24.2861 42.0002 23.8583 41.8446 23.5083 41.5335C23.1972 41.1835 23.0417 40.7557 23.0417 40.2502V35.5835C23.0417 35.0779 23.1972 34.6696 23.5083 34.3585C23.8583 34.0085 24.2861 33.8335 24.7917 33.8335H28.5833C28.5833 32.5502 28.9722 31.4613 29.75 30.5668C30.5667 29.6335 31.5389 29.1668 32.6667 29.1668H38.2083C38.7139 29.1668 39.1222 29.3418 39.4333 29.6918C39.7833 30.0029 39.9583 30.4113 39.9583 30.9168V44.9168C39.9583 45.4224 39.7833 45.8502 39.4333 46.2002C39.1222 46.5113 38.7139 46.6668 38.2083 46.6668H32.6667ZM16.0417 39.6668C13.4361 39.6668 11.2778 38.8307 9.56667 37.1585C7.85556 35.4474 7 33.2696 7 30.6252C7 27.9807 7.85556 25.8224 9.56667 24.1502C11.2778 22.4391 13.4361 21.5835 16.0417 21.5835H19.8333C21.1167 21.5835 22.1667 21.1752 22.9833 20.3585C23.8 19.5418 24.2083 18.4918 24.2083 17.2085C24.2083 15.9252 23.8 14.8752 22.9833 14.0585C22.1667 13.2418 21.1167 12.8335 19.8333 12.8335H11.0833C10.6167 12.8335 10.2083 12.6585 9.85833 12.3085C9.50833 11.9585 9.33333 11.5502 9.33333 11.0835C9.33333 10.5779 9.50833 10.1696 9.85833 9.85849C10.2083 9.5085 10.6167 9.3335 11.0833 9.3335H19.8333C22.0889 9.3335 23.9556 10.0918 25.4333 11.6085C26.95 13.0863 27.7083 14.9529 27.7083 17.2085C27.7083 19.4641 26.95 21.3502 25.4333 22.8668C23.9556 24.3446 22.0889 25.0835 19.8333 25.0835H16.0417C14.4083 25.0835 13.0667 25.5891 12.0167 26.6002C11.0056 27.6113 10.5 28.9529 10.5 30.6252C10.5 32.2974 11.0056 33.6391 12.0167 34.6502C13.0667 35.6613 14.4083 36.1668 16.0417 36.1668H19.5417C20.0472 36.1668 20.4556 36.3418 20.7667 36.6918C21.1167 37.0029 21.2917 37.4113 21.2917 37.9168C21.2917 38.4224 21.1167 38.8502 20.7667 39.2002C20.4556 39.5113 20.0472 39.6668 19.5417 39.6668H16.0417Z",
+  "M14 53.6668C13.0278 53.6668 12.1917 53.3363 11.4917 52.6752C10.8306 51.9752 10.5 51.1391 10.5 50.1668V5.8335C10.5 4.90016 10.85 4.08349 11.55 3.3835C12.25 2.6835 13.0667 2.3335 14 2.3335H39.55C40.5222 2.3335 41.3389 2.6835 42 3.3835C42.7 4.04461 43.05 4.86127 43.05 5.8335V14.5835C43.75 14.7002 44.3333 15.0307 44.8 15.5752C45.2667 16.1196 45.5 16.7418 45.5 17.4418V21.7585C45.5 22.4974 45.2667 23.1391 44.8 23.6835C44.3333 24.2279 43.75 24.5585 43.05 24.6752V50.1668C43.05 51.1391 42.7 51.9752 42 52.6752C41.3389 53.3363 40.5222 53.6668 39.55 53.6668H14ZM14 50.1668H39.55V5.8335H14V50.1668ZM14 50.1668V5.8335V50.1668ZM25.0833 35.8752C25.1222 36.1085 25.2 36.3029 25.3167 36.4585C25.4722 36.5752 25.6667 36.6335 25.9 36.6335H27.65C27.8833 36.6335 28.0583 36.5752 28.175 36.4585C28.3306 36.3029 28.4278 36.1085 28.4667 35.8752L28.7 33.9502C29.1667 33.8335 29.5944 33.6585 29.9833 33.4252C30.3722 33.1918 30.7028 32.9196 30.975 32.6085L32.6083 33.3668C32.8028 33.4446 32.9972 33.4641 33.1917 33.4252C33.425 33.3863 33.6 33.2696 33.7167 33.0752L34.5917 31.7335C34.7083 31.5391 34.7472 31.3446 34.7083 31.1502C34.6694 30.9168 34.5528 30.7224 34.3583 30.5668L32.9 29.4585C33.0944 29.0307 33.1917 28.5057 33.1917 27.8835C33.1917 27.2613 33.0944 26.7363 32.9 26.3085L34.3583 25.2002C34.5528 25.0446 34.6694 24.8696 34.7083 24.6752C34.7472 24.4418 34.7083 24.2279 34.5917 24.0335L33.7167 22.6918C33.6 22.4974 33.425 22.3807 33.1917 22.3418C32.9972 22.3029 32.8028 22.3224 32.6083 22.4002L30.975 23.1585C30.7028 22.8474 30.3917 22.5752 30.0417 22.3418C29.6917 22.1085 29.2444 21.9335 28.7 21.8168L28.4667 19.8918C28.4278 19.6585 28.3306 19.4835 28.175 19.3668C28.0583 19.2113 27.8833 19.1335 27.65 19.1335H25.9C25.6667 19.1335 25.4722 19.2113 25.3167 19.3668C25.2 19.4835 25.1222 19.6585 25.0833 19.8918L24.85 21.8168C24.3056 21.9335 23.8583 22.1085 23.5083 22.3418C23.1583 22.5752 22.8472 22.8474 22.575 23.1585L20.9417 22.4002C20.7472 22.3224 20.5333 22.3029 20.3 22.3418C20.1056 22.3807 19.95 22.4974 19.8333 22.6918L18.9583 24.0335C18.8417 24.2279 18.8028 24.4418 18.8417 24.6752C18.8806 24.8696 18.9972 25.0446 19.1917 25.2002L20.65 26.3085C20.4556 26.7363 20.3583 27.2613 20.3583 27.8835C20.3583 28.5057 20.4556 29.0307 20.65 29.4585L19.1917 30.5668C18.9972 30.7224 18.8806 30.9168 18.8417 31.1502C18.8028 31.3446 18.8417 31.5391 18.9583 31.7335L19.8333 33.0752C19.95 33.2696 20.1056 33.3863 20.3 33.4252C20.5333 33.4641 20.7472 33.4446 20.9417 33.3668L22.575 32.6085C22.8472 32.9196 23.1778 33.1918 23.5667 33.4252C23.9556 33.6585 24.3833 33.8335 24.85 33.9502L25.0833 35.8752ZM26.775 31.7335C25.6861 31.7335 24.7722 31.3641 24.0333 30.6252C23.2944 29.8863 22.925 28.9724 22.925 27.8835C22.925 26.7946 23.2944 25.8807 24.0333 25.1418C24.7722 24.4029 25.6861 24.0335 26.775 24.0335C27.8639 24.0335 28.7778 24.4029 29.5167 25.1418C30.2556 25.8807 30.625 26.7946 30.625 27.8835C30.625 28.9724 30.2556 29.8863 29.5167 30.6252C28.7778 31.3641 27.8639 31.7335 26.775 31.7335Z",
+  "M8.03125 42C6.59236 42 5.34792 41.4944 4.29792 40.4833C3.28681 39.4333 2.78125 38.1889 2.78125 36.75V19.25C2.78125 17.7722 3.28681 16.5278 4.29792 15.5167C5.34792 14.5056 6.59236 14 8.03125 14H39.4729C39.9785 14 40.3868 14.175 40.6979 14.525C41.0479 14.8361 41.2229 15.2444 41.2229 15.75C41.2229 16.2556 41.0479 16.6833 40.6979 17.0333C40.3868 17.3444 39.9785 17.5 39.4729 17.5H8.03125C7.52569 17.5 7.09792 17.675 6.74792 18.025C6.43681 18.3361 6.28125 18.7444 6.28125 19.25V36.75C6.28125 37.2556 6.43681 37.6833 6.74792 38.0333C7.09792 38.3444 7.52569 38.5 8.03125 38.5H35.9729C36.4785 38.5 36.8868 38.675 37.1979 39.025C37.5479 39.3361 37.7229 39.7444 37.7229 40.25C37.7229 40.7556 37.5479 41.1833 37.1979 41.5333C36.8868 41.8444 36.4785 42 35.9729 42H8.03125ZM8.03125 35V21C8.03125 20.4944 8.18681 20.0861 8.49792 19.775C8.84792 19.425 9.27569 19.25 9.78125 19.25H36.2063C36.9451 19.25 37.4701 19.5806 37.7813 20.2417C38.0924 20.9028 38.0146 21.525 37.5479 22.1083L26.8729 35.4083C26.5618 35.8361 26.1535 36.1667 25.6479 36.4C25.1813 36.6333 24.6757 36.75 24.1313 36.75H9.78125C9.27569 36.75 8.84792 36.5944 8.49792 36.2833C8.18681 35.9333 8.03125 35.5056 8.03125 35ZM42.3896 40.3083C42.234 40.5028 42.059 40.5611 41.8646 40.4833C41.6701 40.3667 41.5924 40.1917 41.6313 39.9583L43.3229 30.3333H37.2563C36.8674 30.3333 36.5951 30.1778 36.4396 29.8667C36.284 29.5556 36.3229 29.2444 36.5563 28.9333L47.1729 15.6917C47.3285 15.4972 47.5035 15.4583 47.6979 15.575C47.8924 15.6528 47.9701 15.8083 47.9313 16.0417L46.2396 25.6667H52.3063C52.6951 25.6667 52.9674 25.8222 53.1229 26.1333C53.2785 26.4444 53.2396 26.7556 53.0063 27.0667L42.3896 40.3083Z",
+  "M21 49.6417V45.4417C16.8778 44.0028 13.5139 41.4945 10.9083 37.9167C8.30278 34.3001 7 30.1973 7 25.6084C7 22.6917 7.54444 19.9695 8.63333 17.4417C9.76111 14.8751 11.2583 12.6584 13.125 10.7917C15.0306 8.88618 17.2472 7.38895 19.775 6.30007C22.3417 5.17229 25.0639 4.6084 27.9417 4.6084C30.8194 4.6084 33.5417 5.17229 36.1083 6.30007C38.675 7.38895 40.9111 8.88618 42.8167 10.7917C44.7222 12.6584 46.2194 14.8751 47.3083 17.4417C48.4361 19.9695 49 22.6917 49 25.6084C49 30.1973 47.6778 34.2806 45.0333 37.8584C42.4278 41.3973 39.0833 43.9056 35 45.3834V49.6417C35 50.1473 34.825 50.5751 34.475 50.9251C34.1639 51.2362 33.7556 51.3917 33.25 51.3917C32.7444 51.3917 32.3167 51.2362 31.9667 50.9251C31.6556 50.5751 31.5 50.1473 31.5 49.6417V46.3167C30.9167 46.3945 30.3333 46.4723 29.75 46.5501C29.1667 46.589 28.5639 46.6084 27.9417 46.6084C27.3583 46.6084 26.775 46.589 26.1917 46.5501C25.6083 46.4723 25.0444 46.3945 24.5 46.3167V49.6417C24.5 50.1473 24.325 50.5751 23.975 50.9251C23.6639 51.2362 23.2556 51.3917 22.75 51.3917C22.2444 51.3917 21.8167 51.2362 21.4667 50.9251C21.1556 50.5751 21 50.1473 21 49.6417ZM28 43.2251C32.8611 43.2251 36.9833 41.5334 40.3667 38.1501C43.7889 34.7278 45.5 30.5862 45.5 25.7251C45.5 20.864 43.7889 16.7417 40.3667 13.3584C36.9833 9.93618 32.8611 8.22507 28 8.22507C23.1389 8.22507 18.9972 9.93618 15.575 13.3584C12.1917 16.7417 10.5 20.864 10.5 25.7251C10.5 30.5862 12.1917 34.7278 15.575 38.1501C18.9972 41.5334 23.1389 43.2251 28 43.2251ZM20.4167 20.4751H35.5833C36.0889 20.4751 36.4972 20.3195 36.8083 20.0084C37.1583 19.6584 37.3333 19.2306 37.3333 18.7251C37.3333 18.2195 37.1583 17.8112 36.8083 17.5001C36.4972 17.1501 36.0889 16.9751 35.5833 16.9751H20.4167C19.9111 16.9751 19.4833 17.1501 19.1333 17.5001C18.8222 17.8112 18.6667 18.2195 18.6667 18.7251C18.6667 19.2306 18.8222 19.6584 19.1333 20.0084C19.4833 20.3195 19.9111 20.4751 20.4167 20.4751ZM26.4833 33.3084L24.5 35.2917C24.1111 35.6806 23.9167 36.1278 23.9167 36.6334C23.9167 37.139 24.1111 37.5862 24.5 37.9751C24.8889 38.364 25.3361 38.5584 25.8417 38.5584C26.3472 38.5584 26.7944 38.364 27.1833 37.9751L31.2083 33.9501C31.5583 33.6001 31.7333 33.1917 31.7333 32.7251C31.7333 32.2584 31.5583 31.8501 31.2083 31.5001L29.5167 29.8084L31.5 27.8251C31.8889 27.4362 32.0833 26.989 32.0833 26.4834C32.0833 25.9778 31.8889 25.5306 31.5 25.1417C31.1111 24.7528 30.6639 24.5584 30.1583 24.5584C29.6528 24.5584 29.2056 24.7528 28.8167 25.1417L24.7917 29.1667C24.4417 29.5167 24.2667 29.9251 24.2667 30.3917C24.2667 30.8584 24.4417 31.2667 24.7917 31.6167L26.4833 33.3084Z",
+];
+
 const CARD_CONTENT = [
   {
-    step: "Step 1 · Your Site",
-    title: "Every site makes and moves energy",
-    text: "Solar panels, a battery, inverter, and EV charger generate live data and available energy for the system to use.",
+    step: "Step 1 · At Your Site",
+    title: "Solar PV · Battery · Inverter · EV charger",
+    text: "Solar produces, the battery stores, the inverter connects, and smart loads use energy. SG Connect coordinates them.",
   },
   {
-    step: "Step 2 · Your Network",
-    title: "Every site connects to the grid",
-    text: "Real-time data flows between sites, batteries, and the grid, so power moves to wherever it's needed most.",
+    step: "Step 2 · App Control",
+    title: "SG Connect App for overview and control",
+    text: "The app shows production, consumption and battery status in real time. The system sends control commands from a plan refreshed every 15 minutes.",
   },
   {
-    step: "Step 3 · Your Platform",
-    title: "Every site feeds one view",
-    text: "A single dashboard aggregates production, storage, and demand across every connected site.",
+    step: "Step 3 · Plan In Action",
+    title: "Surplus is stored, not wasted",
+    text: "The battery charges from solar or cheaper grid energy, then supports the site when demand rises.",
   },
   {
-    step: "Step 4",
-    title: "Placeholder step 4",
-    text: "Content for this step hasn't been written yet.",
+    step: "Step 4 · The Boundary",
+    title: "The meter is the site boundary",
+    text: "Energy can move in or out. SG Connect reduces unnecessary import, lowers peaks and exports only when it makes sense.",
   },
   {
     step: "Step 5",
@@ -68,7 +79,7 @@ const CARD_CONTENT = [
     title: "Placeholder step 7",
     text: "Content for this step hasn't been written yet.",
   },
-];
+].map((content, i) => ({ ...content, iconPath: CARD_ICON_PATHS[i % CARD_ICON_PATHS.length] }));
 
 type RevealPhase = "closed" | "entering" | "open" | "closing";
 const MODAL_CLOSE_MS = 150; // keep in sync with --modal-close-dur in index.css
@@ -138,7 +149,7 @@ function useTextSwap<T>(value: T, exitMs: number): { displayed: T; phase: TextSw
 
 type TextsRevealPhase = "shown" | "hiding" | "enterStart";
 type TextsRevealDirection = "up" | "down";
-const TEXTS_REVEAL_HIDE_MS = 200; // keep in sync with .t-stagger.is-hiding's 200ms transition in index.css
+const TEXTS_REVEAL_HIDE_MS = 300; // keep in sync with .t-stagger.is-hiding's --stagger-exit-dur in index.css
 
 // Group text-block reveal (transitions.dev, 18-texts-reveal.md, adapted):
 // unlike useTextSwap above (one value swapping in place), this fades a whole
@@ -343,8 +354,74 @@ export function Panel() {
   const cardContentReveal = useTextsReveal(activeTargetPosition, TEXTS_REVEAL_HIDE_MS);
   const cardContent = CARD_CONTENT[cardContentReveal.displayedIndex] ?? CARD_CONTENT[0];
 
+  // Card's own physical entrance: starts 32px below its resting position,
+  // fully transparent and slightly blurred, then rises/fades/sharpens into
+  // place across the scroll track's leading "intro" span — during which
+  // main.js's own renderCubeFrame (IS_SCROLL_ROUTE branch) deliberately
+  // holds the camera still on Target 1 instead of blending anywhere, see
+  // its introFraction and updateScrollTrackHeight's matching "+ 1" span.
+  // numTargetsRef tracks assignedSlotIndices.length across renders without
+  // re-subscribing the scroll listener below (kept in a ref, not read
+  // directly in the effect, since the effect intentionally mounts once for
+  // the route's lifetime). Driven by direct ref.style writes rather than
+  // React state so this reads as continuously scroll-scrubbed, not a
+  // discrete step transition — same reasoning as main.js's own
+  // SCROLL_SCRUB_SMOOTHING/goal math never touching React either, just for
+  // the DOM instead of WebGL.
+  const CARD_INTRO_OFFSET_PX = 64;
+  const CARD_INTRO_BLUR_PX = 4;
+  // Kept in sync with main.js's own SCROLL_INTRO_SPAN_VH_UNITS — both need
+  // to agree on how much of the track is intro vs. target-to-target scroll.
+  const SCROLL_INTRO_SPAN_VH_UNITS = 0.5;
+  const introCardRef = useRef<HTMLDivElement>(null);
+  const numTargetsRef = useRef(assignedSlotIndices.length);
+  numTargetsRef.current = assignedSlotIndices.length;
+  useLayoutEffect(() => {
+    if (!state.isScrollRoute) return;
+    const card = introCardRef.current;
+    if (!card) return;
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const introFraction =
+        SCROLL_INTRO_SPAN_VH_UNITS / (Math.max(1, numTargetsRef.current) + SCROLL_INTRO_SPAN_VH_UNITS);
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      const progress = maxScroll > 0 ? Math.max(0, Math.min(1, window.scrollY / maxScroll)) : 0;
+      const introProgress = Math.max(0, Math.min(1, progress / introFraction));
+      const eased = 1 - (1 - introProgress) ** 3; // ease-out cubic
+      card.style.transform = `translateY(${(1 - eased) * CARD_INTRO_OFFSET_PX}px)`;
+      card.style.opacity = String(eased);
+      card.style.filter = `blur(${(1 - eased) * CARD_INTRO_BLUR_PX}px)`;
+    };
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [state.isScrollRoute]);
+
   return (
     <>
+      {/* /scroll-only wash behind the top-left title and bottom-left info
+          card, so their dark text stays legible over whatever's rendered on
+          the 3D canvas underneath. Sits above the canvas purely by DOM
+          order (the canvas is a plain position:fixed element that comes
+          before #react-controls-root in scroll.html, and this fragment is
+          this component's very first child, so among the z-0-level
+          elements here it's the first to paint — everything else in this
+          tree, including the z-0 title/card below, stacks on top of it) —
+          no explicit z-index needed, and using one here would only risk
+          out-ranking the z-0 elements it's meant to sit under. */}
+      {state.isScrollRoute && (
+        <div className="pointer-events-none fixed inset-y-0 left-0 w-1/2 bg-gradient-to-r from-white to-transparent" />
+      )}
       {overlayPhase !== "closed" && (
         <div
           className={cn(
@@ -1394,41 +1471,50 @@ export function Panel() {
           rather than a token.
 
           .t-stagger lives on this outer row (not just the text column) so
-          the icon can be a .t-stagger-line too — same directional
-          enter/exit as the text below, even though the icon itself doesn't
-          change yet (one SVG for every step for now; per-step icons are a
-          follow-up once real assets exist). The green tile itself
-          (bg-[#44d62c]) isn't a stagger line, so it stays put — only the
-          glyph inside it moves. */}
+          the icon can be a .t-stagger-line too — same directional enter/exit
+          as the text below it. The tile itself isn't a stagger line, so it
+          stays put — only the glyph inside it moves. Its own fill crossfades
+          white <-> #44d62c off cardContentReveal.phase instead of sitting
+          green all the time: white for as long as the copy is mid-transition
+          ("hiding"/"enterStart"), green once it settles back to "shown" —
+          same signal the copy's own exit/enter already uses, just read
+          directly rather than threaded through main.js/notifyModelState. */}
       {state.isScrollRoute && (
       <div
+        ref={introCardRef}
         className={cn(
           "t-stagger fixed bottom-6 left-6 z-0 flex w-[727px] max-w-[calc(100vw-3rem)] items-start gap-2 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-3 shadow-lg",
           cardContentReveal.phase === "shown" && "is-shown",
           cardContentReveal.phase === "hiding" && "is-hiding",
           cardContentReveal.phase === "enterStart" && "is-entering",
         )}
+        style={{ transform: "translateY(64px)", opacity: 0, filter: "blur(4px)" }}
         data-direction={cardContentReveal.direction}
       >
-        <div className="relative flex size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] bg-[#44d62c]">
-          {/* Downloads/Electrical Services Icon.svg, inlined as-is (46x47
-              viewBox, single fill path) — currentColor instead of its
+        <div
+          className={cn(
+            "relative flex size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] transition-colors duration-300",
+            cardContentReveal.phase === "shown" ? "bg-[#44d62c]" : "bg-white",
+          )}
+        >
+          {/* Per-step icon (see CARD_ICON_PATHS, sourced from 1.svg-4.svg —
+              56x56 viewBox, single fill path each, matching this SVG's own
+              size/viewBox exactly) — currentColor instead of each one's
               original hardcoded #041C2C fill so it stays in sync with the
-              text-[#041c2c] set here, but the color is otherwise unchanged.
-              Centered via the flex parent (not its own absolute+translate)
-              specifically so transform stays free for .t-stagger-line's own
-              translateY. */}
+              text-[#041c2c] set here. Centered via the flex parent (not its
+              own absolute+translate) specifically so transform stays free
+              for .t-stagger-line's own translateY. Keyed by displayedIndex
+              so swapping icons is part of the same exit/enter cycle as the
+              text next to it, not a mid-transition snap. */}
           <svg
+            key={cardContentReveal.displayedIndex}
             aria-hidden="true"
             className="t-stagger-line t-stagger-line--1 size-[56px] text-[#041c2c]"
             fill="none"
-            viewBox="0 0 46 47"
+            viewBox="0 0 56 56"
             xmlns="http://www.w3.org/2000/svg"
           >
-            <path
-              d="M3.55859 3.55827C3.05304 3.55827 2.62526 3.40271 2.27526 3.0916C1.96415 2.7416 1.80859 2.31382 1.80859 1.80827C1.80859 1.30271 1.96415 0.894377 2.27526 0.583266C2.62526 0.233267 3.05304 0.0582671 3.55859 0.0582671H7.05859C7.56415 0.0582671 7.97248 0.233267 8.28359 0.583266C8.63359 0.894377 8.80859 1.30271 8.80859 1.80827C8.80859 2.31382 8.63359 2.7416 8.28359 3.0916C7.97248 3.40271 7.56415 3.55827 7.05859 3.55827H3.55859ZM5.07526 36.8083L3.79193 43.2249H21.0586V36.8083H5.07526ZM7.23359 12.6583L9.68359 10.2083C10.0336 9.85827 10.4419 9.68327 10.9086 9.68327C11.3753 9.68327 11.7836 9.85827 12.1336 10.2083C12.4836 10.5583 12.6586 10.986 12.6586 11.4916C12.6586 11.9583 12.4836 12.3666 12.1336 12.7166L9.68359 15.1666C9.33359 15.5166 8.92526 15.6916 8.45859 15.6916C7.99193 15.6916 7.58359 15.5166 7.23359 15.1666C6.88359 14.8166 6.70859 14.4083 6.70859 13.9416C6.70859 13.436 6.88359 13.0083 7.23359 12.6583ZM5.77526 33.3083H21.0586V26.8916H7.05859L5.77526 33.3083ZM22.8086 10.5583C20.3586 10.5583 18.2003 9.78049 16.3336 8.22493C14.5058 6.66938 13.2808 4.72493 12.6586 2.3916C12.503 1.92493 12.5419 1.49715 12.7753 1.10826C13.0086 0.680487 13.3586 0.38882 13.8253 0.233264C14.2919 0.077709 14.7197 0.116598 15.1086 0.349933C15.5364 0.583265 15.828 0.933265 15.9836 1.39993C16.3725 3.03327 17.1892 4.39438 18.4336 5.48326C19.678 6.53327 21.1364 7.05827 22.8086 7.05827C24.4808 7.05827 25.9392 6.53327 27.1836 5.48326C28.428 4.39438 29.2447 3.03327 29.6336 1.39993C29.7892 0.933265 30.0614 0.583265 30.4503 0.349933C30.878 0.116598 31.3253 0.077709 31.7919 0.233264C32.2586 0.38882 32.6086 0.680487 32.8419 1.10826C33.0753 1.49715 33.1142 1.92493 32.9586 2.3916C32.3364 4.72493 31.0919 6.66938 29.2253 8.22493C27.3975 9.78049 25.2586 10.5583 22.8086 10.5583ZM21.0586 19.3083V15.8083C21.0586 15.3027 21.2142 14.8944 21.5253 14.5833C21.8753 14.2333 22.303 14.0583 22.8086 14.0583C23.3142 14.0583 23.7225 14.2333 24.0336 14.5833C24.3836 14.8944 24.5586 15.3027 24.5586 15.8083V19.3083C24.5586 19.8138 24.3836 20.2416 24.0336 20.5916C23.7225 20.9027 23.3142 21.0583 22.8086 21.0583C22.303 21.0583 21.8753 20.9027 21.5253 20.5916C21.2142 20.2416 21.0586 19.8138 21.0586 19.3083ZM24.5586 43.2249H41.8253L40.5419 36.8083H24.5586V43.2249ZM24.5586 33.3083H39.8419L38.5586 26.8916H24.5586V33.3083ZM35.9336 15.0499L33.4253 12.5999C33.0753 12.2499 32.9003 11.8416 32.9003 11.3749C32.9003 10.9083 33.0753 10.4999 33.4253 10.1499C33.7753 9.79993 34.1836 9.64438 34.6503 9.68327C35.1169 9.68327 35.5253 9.83882 35.8753 10.1499L38.3836 12.5999C38.7336 12.9499 38.9086 13.3583 38.9086 13.8249C38.9475 14.2916 38.7919 14.6999 38.4419 15.0499C38.0919 15.3999 37.6642 15.5749 37.1586 15.5749C36.6919 15.5749 36.2836 15.3999 35.9336 15.0499ZM42.0586 3.55827H38.5586C38.053 3.55827 37.6253 3.40271 37.2753 3.0916C36.9642 2.7416 36.8086 2.31382 36.8086 1.80827C36.8086 1.30271 36.9642 0.894377 37.2753 0.583266C37.6253 0.233267 38.053 0.0582671 38.5586 0.0582671H42.0586C42.5642 0.0582671 42.9725 0.233267 43.2836 0.583266C43.6336 0.894377 43.8086 1.30271 43.8086 1.80827C43.8086 2.31382 43.6336 2.7416 43.2836 3.0916C42.9725 3.40271 42.5642 3.55827 42.0586 3.55827ZM0.291927 42.5249L3.55859 26.1916C3.75304 25.3749 4.16137 24.7138 4.78359 24.2083C5.40582 23.6638 6.14471 23.3916 7.00026 23.3916H38.6169C39.4725 23.3916 40.2114 23.6638 40.8336 24.2083C41.4558 24.7138 41.8642 25.3749 42.0586 26.1916L45.3253 42.5249C45.5197 43.6138 45.2669 44.586 44.5669 45.4416C43.9058 46.2972 43.0114 46.7249 41.8836 46.7249H3.73359C2.60582 46.7249 1.69193 46.2972 0.991927 45.4416C0.330816 44.586 0.097483 43.6138 0.291927 42.5249Z"
-              fill="currentColor"
-            />
+            <path d={cardContent.iconPath} fill="currentColor" />
           </svg>
         </div>
         <div className="flex min-w-0 flex-1 flex-col items-start justify-between gap-4 self-stretch p-5">
@@ -1445,6 +1531,33 @@ export function Panel() {
           </div>
         </div>
       </div>
+      )}
+
+      {/* Figma: Heading (node 4332:20249), /scroll-only — the page's own
+          top-left title block, same "always visible, not tied to
+          panelPhase, z-0 under the control panels" treatment as the
+          bottom-left info card above, and the same 24px-off-both-edges
+          corner convention (top-6 left-6 mirrors that card's bottom-6
+          left-6). Ellipse 4 (the green dot) is a plain solid-fill circle in
+          the design (#44d62c, no gradient/stroke), so it's a styled span
+          here rather than an imported SVG asset. */}
+      {state.isScrollRoute && (
+        <div className="fixed top-6 left-6 z-0 flex max-w-[calc(100vw-3rem)] flex-col items-start gap-6">
+          <div className="flex shrink-0 items-center gap-6">
+            <span className="size-[10px] shrink-0 rounded-full bg-[#44d62c]" />
+            <p className="font-mono font-semibold text-[#7c868e] text-[12px] uppercase tracking-[-0.24px] whitespace-nowrap">
+              At your site
+            </p>
+          </div>
+          <div className="w-max max-w-[calc(100vw-3rem)] font-sans font-medium text-[48px] leading-none tracking-[-1.44px]">
+            <p className="mb-0 leading-none whitespace-nowrap text-[#7c868e]">What SG{" "}Connect</p>
+            <p className="leading-none whitespace-nowrap text-[#041c2c]">does at your site</p>
+          </div>
+          <p className="max-w-full w-[481px] font-sans text-[#7c868e] text-[16px] leading-[1.5]">
+            SG Connect links your devices, app and meter. Data moves up to the app, control moves down to the
+            devices, and energy moves where it helps most.
+          </p>
+        </div>
       )}
     </>
   );
