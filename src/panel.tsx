@@ -147,7 +147,7 @@ function useTextSwap<T>(value: T, exitMs: number): { displayed: T; phase: TextSw
   return { displayed, phase };
 }
 
-type TextsRevealPhase = "shown" | "hiding" | "enterStart";
+type TextsRevealPhase = "hidden" | "shown" | "hiding" | "enterStart";
 type TextsRevealDirection = "up" | "down";
 const TEXTS_REVEAL_HIDE_MS = 300; // keep in sync with .t-stagger.is-hiding's --stagger-exit-dur in index.css
 
@@ -164,16 +164,31 @@ const TEXTS_REVEAL_HIDE_MS = 300; // keep in sync with .t-stagger.is-hiding's --
 // deliberate departure from the reference snippet's own "quiet fade, no
 // Y-return" exit (which exists there specifically so *dismissing* something
 // doesn't read as a reversed reveal) — here the whole point is to tie the
-// motion's direction to the scroll gesture that caused it. Starts already
-// "shown" (no animate-in on first mount) — same convention as useTextSwap's
-// "rest".
+// motion's direction to the scroll gesture that caused it.
+//
+// `revealed` gates the very first entrance (contrast useTextSwap, which has
+// no such thing and always starts at rest): while false, phase sits at
+// "hidden" — same pre-enter offset/opacity/blur as "enterStart" (see the
+// CSS's is-entering selectors, which "hidden" maps to as well), just without
+// the auto-advance-to-"shown" rAF that "enterStart" gets, so it holds there
+// indefinitely instead of immediately playing. The moment `revealed` flips
+// true, it's treated exactly like an index change — enterStart, then shown a
+// frame later — so the bottom-left info card's first appearance plays the
+// same staggered blurred-rise entrance a later step change does, timed to
+// whatever caller-chosen moment `revealed` flips at, not simply on mount.
 function useTextsReveal(
   index: number,
   hideMs: number,
+  revealed: boolean,
 ): { displayedIndex: number; phase: TextsRevealPhase; direction: TextsRevealDirection } {
   const [displayedIndex, setDisplayedIndex] = useState(index);
-  const [phase, setPhase] = useState<TextsRevealPhase>("shown");
+  const [phase, setPhase] = useState<TextsRevealPhase>(() => (revealed ? "shown" : "hidden"));
   const [direction, setDirection] = useState<TextsRevealDirection>("down");
+
+  useEffect(() => {
+    if (phase !== "hidden" || !revealed) return;
+    setPhase("enterStart");
+  }, [phase, revealed]);
 
   useEffect(() => {
     if (index === displayedIndex) return;
@@ -351,7 +366,14 @@ export function Panel() {
     return acc;
   }, []);
   const activeTargetPosition = Math.max(0, assignedSlotIndices.indexOf(state.cameraTargetActiveIndex ?? -1));
-  const cardContentReveal = useTextsReveal(activeTargetPosition, TEXTS_REVEAL_HIDE_MS);
+  // Flips true once (see the card's own physical-entrance effect below,
+  // which sets this the moment scroll first moves off 0) so the card's
+  // first appearance plays the same staggered content entrance a later step
+  // change does, starting alongside the card's own scroll-driven fade/rise
+  // rather than only after it finishes — instead of just sitting there
+  // already fully visible underneath the card's own fade-in.
+  const [cardContentRevealed, setCardContentRevealed] = useState(false);
+  const cardContentReveal = useTextsReveal(activeTargetPosition, TEXTS_REVEAL_HIDE_MS, cardContentRevealed);
   const cardContent = CARD_CONTENT[cardContentReveal.displayedIndex] ?? CARD_CONTENT[0];
 
   // Card's own physical entrance: starts 32px below its resting position,
@@ -381,6 +403,15 @@ export function Panel() {
     const card = introCardRef.current;
     if (!card) return;
     let raf = 0;
+    // Fires the content stagger-entrance (see cardContentRevealed above)
+    // exactly once, the moment scroll first moves off 0 — so it starts
+    // alongside the card's own physical reveal instead of only after that
+    // finishes, and the two read as one concurrent motion rather than a
+    // sequence. Guarded so it only ever calls setState once — every scroll
+    // tick after that (this effect keeps handling scroll for the rest of
+    // the page) just keeps re-writing the settled style directly, cheaply,
+    // without routing back through React.
+    let contentRevealFired = false;
     const update = () => {
       raf = 0;
       const introFraction =
@@ -392,6 +423,10 @@ export function Panel() {
       card.style.transform = `translateY(${(1 - eased) * CARD_INTRO_OFFSET_PX}px)`;
       card.style.opacity = String(eased);
       card.style.filter = `blur(${(1 - eased) * CARD_INTRO_BLUR_PX}px)`;
+      if (!contentRevealFired && introProgress > 0) {
+        contentRevealFired = true;
+        setCardContentRevealed(true);
+      }
     };
     const onScroll = () => {
       if (raf) return;
@@ -1476,9 +1511,10 @@ export function Panel() {
           stays put — only the glyph inside it moves. Its own fill crossfades
           white <-> #44d62c off cardContentReveal.phase instead of sitting
           green all the time: white for as long as the copy is mid-transition
-          ("hiding"/"enterStart"), green once it settles back to "shown" —
-          same signal the copy's own exit/enter already uses, just read
-          directly rather than threaded through main.js/notifyModelState. */}
+          or hasn't appeared yet ("hiding"/"enterStart"/"hidden"), green once
+          it settles into "shown" — same signal the copy's own exit/enter
+          already uses, just read directly rather than threaded through
+          main.js/notifyModelState. */}
       {state.isScrollRoute && (
       <div
         ref={introCardRef}
@@ -1486,7 +1522,7 @@ export function Panel() {
           "t-stagger fixed bottom-6 left-6 z-0 flex w-[727px] max-w-[calc(100vw-3rem)] items-start gap-2 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-3 shadow-lg",
           cardContentReveal.phase === "shown" && "is-shown",
           cardContentReveal.phase === "hiding" && "is-hiding",
-          cardContentReveal.phase === "enterStart" && "is-entering",
+          (cardContentReveal.phase === "enterStart" || cardContentReveal.phase === "hidden") && "is-entering",
         )}
         style={{ transform: "translateY(64px)", opacity: 0, filter: "blur(4px)" }}
         data-direction={cardContentReveal.direction}
