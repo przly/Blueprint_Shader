@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bluprint Models — Scroll Preview</title>
+<link rel="icon" type="image/png" href="/favicon.png" />
+<style>
+  html, body {
+    margin: 0;
+    background: #000;
+  }
+  /* Same scroll-driven-height mechanism as scroll.html — see that file's
+     own #scroll-track comment for the full explanation. Kept identical here
+     since main.js's updateScrollTrackHeight/scroll-listener logic (driven
+     by IS_SCROLL_ROUTE, not a preview-specific flag) expects it regardless
+     of which /scroll* page it's running on. */
+  #scroll-track {
+    height: 300vh;
+  }
+  canvas#canvas {
+    display: block;
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+  }
+  /* #perf-monitor and #axis-gizmo stay in the DOM — main.js looks them up
+     unconditionally whenever it isn't the __HERO__-stripped build (see
+     perfMonitorEl/axisGizmoCanvas in main.js, both gated only on IS_HERO)
+     and calls .getContext('2d')/.textContent on them with no null-check, so
+     omitting the elements entirely would throw at runtime. visibility:
+     hidden (not display:none) hides them without zeroing their
+     clientWidth/clientHeight, so main.js's own resize math takes the same
+     path it would with them visible — just never actually painted. This is
+     the quick, same-bundle way to get a debug-free preview; the eventual
+     FE-team export (see canvas.html) tree-shakes this code out of the
+     bundle entirely instead. */
+  #perf-monitor,
+  #axis-gizmo {
+    visibility: hidden;
+  }
+  #perf-monitor {
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    padding: 6px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    color: rgba(255, 255, 255, 0.85);
+    font-family: "Geist Mono Variable", ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    user-select: none;
+  }
+  #perf-monitor-text {
+    white-space: pre;
+  }
+  #perf-history {
+    display: block;
+    width: 140px;
+    height: 32px;
+    margin-top: 6px;
+  }
+  #axis-gizmo {
+    display: block;
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 10;
+    width: 84px;
+    height: 84px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <!--
+    A debug-free preview of scroll.html — same /main.js and /src/main.tsx,
+    same data-scroll="true" IS_SCROLL_ROUTE behavior (scroll-driven camera
+    through the assigned Camera Targets, the bottom-left info card, hover
+    parallax), but with the editing/debug surface stripped out of view:
+
+    - No control panel chrome — data-preview="true" below becomes
+      state.isPreviewRoute in panel.tsx, which keeps the panel permanently
+      hidden with no "H" toggle to bring it back (unlike scroll.html, where
+      H still works). React itself still mounts, same as scroll.html,
+      because the bottom-left info card and its content-swap animation are
+      also part of that same component tree — only the actual panel chrome
+      is suppressed, not the route's own presentational content.
+    - No FPS/perf monitor, no axis-orientation gizmo — both elements stay in
+      the DOM (main.js needs them, see the CSS comment above) but are
+      visually hidden.
+
+    Camera Target assignments themselves come from the bundled model's own
+    "Target_N" object naming (see loadBundledDefaultModel/cameraTargetSlots
+    in main.js) — nothing here depends on the panel having run first.
+  -->
+  <canvas id="canvas" data-scroll="true" data-preview="true"></canvas>
+  <div id="perf-monitor">
+    <div id="perf-monitor-text"></div>
+    <canvas height="32" id="perf-history" width="140"></canvas>
+  </div>
+  <canvas height="84" id="axis-gizmo" width="84"></canvas>
+  <div id="react-controls-root"></div>
+  <div id="scroll-track"></div>
+  <script type="module" src="/src/main.tsx"></script>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

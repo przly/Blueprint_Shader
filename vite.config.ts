@@ -24,10 +24,13 @@ export default defineConfig({
       // one like hero.html/canvas.html (which tree-shake a different,
       // __HERO__-stripped bundle). Without an explicit entry here it never
       // made it into dist/, which is why it 404'd once deployed even though
-      // `pnpm dev` could always serve it directly from disk.
+      // `pnpm dev` could always serve it directly from disk. scroll-preview
+      // .html is the same story — same main.js, just its own HTML with no
+      // panel/perf-monitor/axis-gizmo — so it needs the same explicit entry.
       input: {
         main: path.resolve(__dirname, "index.html"),
         scroll: path.resolve(__dirname, "scroll.html"),
+        scrollPreview: path.resolve(__dirname, "scroll-preview.html"),
       },
     },
   },

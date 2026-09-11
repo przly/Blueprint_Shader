@@ -41,6 +41,19 @@ const canvas = document.getElementById('canvas');
 // (updateParallaxTargetFromPointer) is unaffected either way; it doesn't
 // route through the intro tweens or photo/video mode.
 const IS_SCROLL_ROUTE = canvas?.dataset.scroll === 'true';
+// scroll-preview.html sets both data-scroll and data-preview — it's the
+// same IS_SCROLL_ROUTE experience (scroll-driven camera, bottom-left info
+// card), just with the React control panel forced permanently hidden (see
+// the panel's own isPreviewRoute usage in panel.tsx: unlike scroll.html's
+// H-key toggle, there's no escape hatch here). Not read anywhere else in
+// this module — the FPS monitor/axis-gizmo stay visually hidden via
+// scroll-preview.html's own CSS instead of a JS branch here, since both are
+// unconditionally required (non-null-checked) elements whenever this isn't
+// the separate __HERO__-stripped build (see perfMonitorEl/axisGizmoCanvas
+// below) and adding a real branch for them would only matter once a
+// tree-shaken preview build (mirroring canvas.html) replaces this
+// same-bundle approach.
+const IS_PREVIEW_ROUTE = canvas?.dataset.preview === 'true';
 
 // #scroll-track (scroll.html) is the only thing giving the /scroll route's
 // document real scroll height — see its own CSS comment. Sized dynamically
@@ -6526,6 +6539,10 @@ export const controls = {
       // Panel.tsx uses it to hide the photo/video mode indicator pills
       // entirely on the /scroll route, where P/V are wired up to nothing.
       isScrollRoute: IS_SCROLL_ROUTE,
+      // Same "fixed across the page's lifetime" treatment — panel.tsx uses
+      // this to keep the control panel permanently hidden with no H-key
+      // escape hatch, see IS_PREVIEW_ROUTE's own comment above.
+      isPreviewRoute: IS_PREVIEW_ROUTE,
       pulseWidth: pulseWidthValue,
       flowPulseFrequency: flowPulseFrequencyValue,
       flowPulseFrequencyMin: FLOW_PULSE_FREQUENCY_MIN,
