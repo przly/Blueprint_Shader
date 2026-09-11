@@ -29,8 +29,9 @@ const CONTROLS_HIDDEN_KEY = "iconMosaic.controlsHidden";
 // state.cameraTargetActiveIndex so the card tracks whichever target is
 // currently framed (manual 1-7 press, or the /scroll route easing through
 // them on scroll). Placeholder copy throughout — only the step number/
-// title/text change per target; the icon and layout stay fixed on desktop
-// (the icon tile is dropped below sm, see the card's own JSX). Steps 4-7
+// title/text change per target; the icon and layout stay fixed (the icon
+// tile sits above the text below sm, beside it at sm and up — see the
+// card's own JSX). Steps 4-7
 // are generic placeholders (no real content yet, unlike 1-3) since only 3
 // of the 7 slots are actually assigned on the current placeholder model.
 // One real icon per assigned target so far (1.svg-4.svg, 56x56 viewBox,
@@ -555,23 +556,6 @@ export function Panel() {
 
   return (
     <>
-      {/* /scroll-only wash behind the top-left title and bottom-left info
-          card, so their dark text stays legible over whatever's rendered on
-          the 3D canvas underneath. Sits above the canvas purely by DOM
-          order (the canvas is a plain position:fixed element that comes
-          before #react-controls-root in scroll.html, and this fragment is
-          this component's very first child, so among the z-0-level
-          elements here it's the first to paint — everything else in this
-          tree, including the z-0 title/card below, stacks on top of it) —
-          no explicit z-index needed, and using one here would only risk
-          out-ranking the z-0 elements it's meant to sit under. Below sm the
-          top-left title block is hidden entirely (see its own hidden sm:flex
-          below), so this wash has nothing left to sit behind there and is
-          hidden too; sm: and up brings both back, title block visible and
-          wash switched to the left-side version that sits behind it. */}
-      {state.isScrollRoute && (
-        <div className="pointer-events-none fixed inset-x-0 top-0 hidden h-1/2 bg-gradient-to-b from-white to-transparent sm:inset-x-auto sm:inset-y-0 sm:left-0 sm:block sm:h-auto sm:w-1/2 sm:bg-gradient-to-r" />
-      )}
       {overlayPhase !== "closed" && (
         <div
           className={cn(
@@ -1618,9 +1602,10 @@ export function Panel() {
           bottom-left-corner treatment: fixed 727px width, 24px off the
           left/bottom edges, icon tile beside the text. Below sm it's
           full-width (left-6 right-6, sm:right-auto cancels that) and stacks
-          vertically with the icon tile dropped (see its own hidden sm:flex
-          below) since there's no room for it next to the text at that
-          width. No project token matches these NGEN brand colors yet (see
+          vertically instead, icon tile above the text (its own row wrapper
+          switches from flex-row to flex-col — see cardRowRef's classes)
+          since there's no room for it beside the text at that width. No
+          project token matches these NGEN brand colors yet (see
           BLUEPRINT_THEMES/BLUEPRINT_FILL_COLOR_GREEN in main.js for the same
           palette on the 3D side), so they're literal hex here rather than a
           token.
@@ -1628,18 +1613,23 @@ export function Panel() {
           .t-stagger lives on this outer row (not just the text column) so
           the icon can be a .t-stagger-line too — same directional enter/exit
           as the text below it. The tile itself isn't a stagger line, so it
-          stays put — only the glyph inside it moves. Its own fill crossfades
-          white <-> #44d62c off cardContentReveal.phase instead of sitting
-          green all the time: white for as long as the copy is mid-transition
-          or hasn't appeared yet ("hiding"/"enterStart"/"hidden"), green once
-          it settles into "shown" — same signal the copy's own exit/enter
-          already uses, just read directly rather than threaded through
-          main.js/notifyModelState. */}
+          stays put — only the glyph inside it moves. Three elements crossfade
+          together off the same cardContentReveal.phase signal, swapping
+          which one wears the brand green: settled on "shown", the card is
+          its resting #f4f6f7 grey, the tile is green (#44d62c), and the
+          glyph is dark (#041c2c) for contrast on that green. For as long as
+          the copy is mid-transition or hasn't appeared yet
+          ("hiding"/"enterStart"/"hidden"), that inverts — card goes white,
+          tile goes to the same grey (#e6eaed, the card's own border tone) the
+          card just vacated, and the glyph itself picks up the green instead
+          — same signal the copy's own exit/enter already uses, just read
+          directly rather than threaded through main.js/notifyModelState. */}
       {state.isScrollRoute && (
       <div
         ref={introCardRef}
         className={cn(
-          "t-stagger fixed left-6 right-6 bottom-6 z-0 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-6 shadow-lg transition-[height] ease-out sm:right-auto sm:w-[727px] sm:max-w-[calc(100vw-3rem)] sm:p-3",
+          "t-stagger fixed left-6 right-6 bottom-6 z-0 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] p-6 transition-[height,background-color] ease-out sm:right-auto sm:w-[727px] sm:max-w-[calc(100vw-3rem)] sm:p-3",
+          cardContentReveal.phase === "shown" ? "bg-[#f4f6f7]" : "bg-white",
           cardContentReveal.phase === "shown" && "is-shown",
           cardContentReveal.phase === "hiding" && "is-hiding",
           (cardContentReveal.phase === "enterStart" || cardContentReveal.phase === "hidden") && "is-entering",
@@ -1660,23 +1650,29 @@ export function Panel() {
         <div ref={cardRowRef} className="flex w-full flex-col items-start gap-6 sm:flex-row sm:items-start sm:gap-2">
           <div
             className={cn(
-              "relative hidden size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] transition-colors duration-300 sm:flex",
-              cardContentReveal.phase === "shown" ? "bg-[#44d62c]" : "bg-white",
+              "relative flex size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] transition-colors duration-300",
+              cardContentReveal.phase === "shown" ? "bg-[#44d62c]" : "bg-[#e6eaed]",
             )}
           >
             {/* Per-step icon (see CARD_ICON_PATHS, sourced from 1.svg-4.svg —
                 56x56 viewBox, single fill path each, matching this SVG's own
                 size/viewBox exactly) — currentColor instead of each one's
-                original hardcoded #041C2C fill so it stays in sync with the
-                text-[#041c2c] set here. Centered via the flex parent (not its
-                own absolute+translate) specifically so transform stays free
-                for .t-stagger-line's own translateY. Keyed by displayedIndex
-                so swapping icons is part of the same exit/enter cycle as the
-                text next to it, not a mid-transition snap. */}
+                original hardcoded #041C2C fill so it can crossfade with the
+                tile's own bg color (see this card's outer comment): dark
+                (#041c2c) for contrast once the tile settles green, green
+                itself while the tile's mid-transition and grey. Centered via
+                the flex parent (not its own absolute+translate) specifically
+                so transform stays free for .t-stagger-line's own
+                translateY. Keyed by displayedIndex so swapping icons is part
+                of the same exit/enter cycle as the text next to it, not a
+                mid-transition snap. */}
             <svg
               key={cardContentReveal.displayedIndex}
               aria-hidden="true"
-              className="t-stagger-line t-stagger-line--1 size-[56px] text-[#041c2c]"
+              className={cn(
+                "t-stagger-line t-stagger-line--1 size-[56px] transition-colors duration-300",
+                cardContentReveal.phase === "shown" ? "text-[#041c2c]" : "text-[#44d62c]",
+              )}
               fill="none"
               viewBox="0 0 56 56"
               xmlns="http://www.w3.org/2000/svg"
@@ -1699,33 +1695,6 @@ export function Panel() {
           </div>
         </div>
       </div>
-      )}
-
-      {/* Figma: Heading (node 4332:20249), /scroll-only — the page's own
-          top-left title block, same "always visible, not tied to
-          panelPhase, z-0 under the control panels" treatment as the
-          bottom-left info card above, and the same 24px-off-both-edges
-          corner convention (top-6 left-6 mirrors that card's bottom-6
-          left-6). Ellipse 4 (the green dot) is a plain solid-fill circle in
-          the design (#44d62c, no gradient/stroke), so it's a styled span
-          here rather than an imported SVG asset. */}
-      {state.isScrollRoute && (
-        <div className="fixed top-6 left-6 z-0 hidden max-w-[calc(100vw-3rem)] flex-col items-start gap-6 sm:flex">
-          <div className="flex shrink-0 items-center gap-6">
-            <span className="size-[10px] shrink-0 rounded-full bg-[#44d62c]" />
-            <p className="font-mono font-semibold text-[#7c868e] text-[12px] uppercase tracking-[-0.24px] whitespace-nowrap">
-              At your site
-            </p>
-          </div>
-          <div className="w-max max-w-[calc(100vw-3rem)] font-sans font-medium text-[36px] leading-none tracking-[-1.44px] sm:text-[48px]">
-            <p className="mb-0 leading-none whitespace-nowrap text-[#7c868e]">What SG{" "}Connect</p>
-            <p className="leading-none whitespace-nowrap text-[#041c2c]">does at your site</p>
-          </div>
-          <p className="max-w-full w-[481px] font-sans text-[#7c868e] text-[14px] leading-[1.5] sm:text-[16px]">
-            SG Connect links your devices, app and meter. Data moves up to the app, control moves down to the
-            devices, and energy moves where it helps most.
-          </p>
-        </div>
       )}
     </>
   );
