@@ -491,23 +491,27 @@ export function Panel() {
     };
   }, [state.isScrollRoute]);
 
-  // Animates the card's own height across a step change, below sm only —
-  // full-width there, so its content wraps to a different number of lines
-  // depending on the step's copy length, and a step change can make the
-  // card noticeably taller or shorter. At sm and up the card is back to a
-  // fixed 727px width with the icon tile beside the text (see the card's
-  // own JSX), and the icon's fixed 200px height comfortably fits the text
-  // in every step, so no measured-height animation is needed there —
-  // isNarrowViewport gates cardHeight out of the style prop at that
-  // breakpoint so the card falls back to natural/auto height instead.
-  // cardContentRef sits on the inner content stack, which is left
-  // unconstrained (no explicit height of its own) so it always reports its
-  // true natural height; CARD_VERTICAL_PADDING_PX (the outer card's own
-  // p-6 below sm, top+bottom) is added back on top since the outer card is
-  // what actually gets the animated height. null (measured only after
-  // mount) falls back to the outer card's own natural/auto height in the
-  // style prop below, so there's no jump on first paint before
-  // ResizeObserver's first callback fires.
+  // Animates the card's own height across a step change — its content wraps
+  // to a different number of lines depending on the step's copy length, so
+  // a step change can make the card noticeably taller or shorter at *any*
+  // width, not just below sm: at sm and up the icon tile only sets a
+  // *floor* (200px + the row's own gap/padding), and long copy (e.g. Step
+  // 2's three-sentence body) still pushes the row taller than that floor,
+  // so desktop needs this animation too. cardRowRef sits on the flex row
+  // that holds both the icon tile and the text stack (see the card's own
+  // JSX) — not just the text — specifically so the icon's fixed height is
+  // part of what gets measured; measuring the text stack alone would report
+  // a too-small height on desktop whenever the icon is the taller sibling.
+  // It's left unconstrained (no explicit height of its own) so it always
+  // reports its true natural height; the padding added back on top varies
+  // by breakpoint (checked live off window.innerWidth in the observer
+  // callback below, not cached, since a resize across the sm boundary can
+  // itself be what triggers the row's next measurement) since the outer
+  // card is what actually gets the animated height and its own padding
+  // shrinks from p-6 to sm:p-3. null (measured only after mount) falls back
+  // to the outer card's own natural/auto height in the style prop below, so
+  // there's no jump on first paint before ResizeObserver's first callback
+  // fires.
   //
   // A flat duration made grow and shrink feel different even at the same
   // number of ms, since they're rarely the same number of pixels — so
@@ -520,23 +524,22 @@ export function Panel() {
   // height (not React state, which only commits after this render) purely
   // so the very next ResizeObserver callback can compare against it
   // synchronously.
-  const CARD_VERTICAL_PADDING_PX = 48; // keep in sync with the outer card's p-6 below sm
+  const CARD_VERTICAL_PADDING_MOBILE_PX = 48; // keep in sync with the outer card's p-6 below sm
+  const CARD_VERTICAL_PADDING_DESKTOP_PX = 24; // keep in sync with the outer card's sm:p-3
   const CARD_HEIGHT_PX_PER_MS = 0.6; // ~360px in 600ms, the old flat duration's rough default case
   const CARD_HEIGHT_MIN_MS = 150;
   const CARD_HEIGHT_MAX_MS = 500;
-  const cardContentRef = useRef<HTMLDivElement>(null);
+  const cardRowRef = useRef<HTMLDivElement>(null);
   const [cardHeight, setCardHeight] = useState<number | null>(null);
   const [cardHeightDurationMs, setCardHeightDurationMs] = useState(CARD_HEIGHT_MAX_MS);
   const prevCardHeightRef = useRef<number | null>(null);
-  const [isNarrowViewport, setIsNarrowViewport] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches,
-  );
   useEffect(() => {
     if (!state.isScrollRoute) return;
-    const content = cardContentRef.current;
-    if (!content) return;
+    const row = cardRowRef.current;
+    if (!row) return;
     const observer = new ResizeObserver(([entry]) => {
-      const nextHeight = Math.round(entry.contentRect.height) + CARD_VERTICAL_PADDING_PX;
+      const padding = window.innerWidth < 640 ? CARD_VERTICAL_PADDING_MOBILE_PX : CARD_VERTICAL_PADDING_DESKTOP_PX;
+      const nextHeight = Math.round(entry.contentRect.height) + padding;
       const prevHeight = prevCardHeightRef.current;
       if (prevHeight !== null && nextHeight !== prevHeight) {
         const delta = Math.abs(nextHeight - prevHeight);
@@ -546,15 +549,8 @@ export function Panel() {
       prevCardHeightRef.current = nextHeight;
       setCardHeight(nextHeight);
     });
-    observer.observe(content);
+    observer.observe(row);
     return () => observer.disconnect();
-  }, [state.isScrollRoute]);
-  useEffect(() => {
-    if (!state.isScrollRoute) return;
-    const mq = window.matchMedia("(max-width: 639px)");
-    const onChange = () => setIsNarrowViewport(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
   }, [state.isScrollRoute]);
 
   return (
@@ -1643,7 +1639,7 @@ export function Panel() {
       <div
         ref={introCardRef}
         className={cn(
-          "t-stagger fixed left-6 right-6 bottom-6 z-0 flex flex-col items-start gap-6 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-6 shadow-lg transition-[height] ease-out sm:right-auto sm:w-[727px] sm:max-w-[calc(100vw-3rem)] sm:flex-row sm:items-start sm:gap-2 sm:p-3",
+          "t-stagger fixed left-6 right-6 bottom-6 z-0 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] bg-[#f4f6f7] p-6 shadow-lg transition-[height] ease-out sm:right-auto sm:w-[727px] sm:max-w-[calc(100vw-3rem)] sm:p-3",
           cardContentReveal.phase === "shown" && "is-shown",
           cardContentReveal.phase === "hiding" && "is-hiding",
           (cardContentReveal.phase === "enterStart" || cardContentReveal.phase === "hidden") && "is-entering",
@@ -1652,51 +1648,54 @@ export function Panel() {
           transform: "translateY(64px)",
           opacity: 0,
           filter: "blur(4px)",
-          height: isNarrowViewport && cardHeight !== null ? `${cardHeight}px` : undefined,
+          height: cardHeight !== null ? `${cardHeight}px` : undefined,
           transitionDuration: `${cardHeightDurationMs}ms`,
         }}
         data-direction={cardContentReveal.direction}
       >
-        <div
-          className={cn(
-            "relative hidden size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] transition-colors duration-300 sm:flex",
-            cardContentReveal.phase === "shown" ? "bg-[#44d62c]" : "bg-white",
-          )}
-        >
-          {/* Per-step icon (see CARD_ICON_PATHS, sourced from 1.svg-4.svg —
-              56x56 viewBox, single fill path each, matching this SVG's own
-              size/viewBox exactly) — currentColor instead of each one's
-              original hardcoded #041C2C fill so it stays in sync with the
-              text-[#041c2c] set here. Centered via the flex parent (not its
-              own absolute+translate) specifically so transform stays free
-              for .t-stagger-line's own translateY. Keyed by displayedIndex
-              so swapping icons is part of the same exit/enter cycle as the
-              text next to it, not a mid-transition snap. */}
-          <svg
-            key={cardContentReveal.displayedIndex}
-            aria-hidden="true"
-            className="t-stagger-line t-stagger-line--1 size-[56px] text-[#041c2c]"
-            fill="none"
-            viewBox="0 0 56 56"
-            xmlns="http://www.w3.org/2000/svg"
+        {/* The measured row — icon + text together, see cardRowRef's own
+            comment above for why the icon has to be part of what's
+            measured. No explicit sizing of its own; it's exactly as tall as
+            its children need, which is what the outer card's height chases. */}
+        <div ref={cardRowRef} className="flex w-full flex-col items-start gap-6 sm:flex-row sm:items-start sm:gap-2">
+          <div
+            className={cn(
+              "relative hidden size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] transition-colors duration-300 sm:flex",
+              cardContentReveal.phase === "shown" ? "bg-[#44d62c]" : "bg-white",
+            )}
           >
-            <path d={cardContent.iconPath} fill="currentColor" />
-          </svg>
-        </div>
-        <div
-          ref={cardContentRef}
-          className="flex w-full min-w-0 flex-1 flex-col items-start gap-3 sm:justify-between sm:gap-4 sm:self-stretch sm:p-5"
-        >
-          <p className="t-stagger-line t-stagger-line--2 font-mono font-medium text-[#7c868e] text-[12px] uppercase tracking-[-0.24px]">
-            {cardContent.step}
-          </p>
-          <div className="flex w-full flex-col items-start gap-1.5">
-            <p className="t-stagger-line t-stagger-line--3 text-[#041c2c] text-[24px] leading-[1.2] font-medium tracking-[-0.48px]">
-              {cardContent.title}
+            {/* Per-step icon (see CARD_ICON_PATHS, sourced from 1.svg-4.svg —
+                56x56 viewBox, single fill path each, matching this SVG's own
+                size/viewBox exactly) — currentColor instead of each one's
+                original hardcoded #041C2C fill so it stays in sync with the
+                text-[#041c2c] set here. Centered via the flex parent (not its
+                own absolute+translate) specifically so transform stays free
+                for .t-stagger-line's own translateY. Keyed by displayedIndex
+                so swapping icons is part of the same exit/enter cycle as the
+                text next to it, not a mid-transition snap. */}
+            <svg
+              key={cardContentReveal.displayedIndex}
+              aria-hidden="true"
+              className="t-stagger-line t-stagger-line--1 size-[56px] text-[#041c2c]"
+              fill="none"
+              viewBox="0 0 56 56"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path d={cardContent.iconPath} fill="currentColor" />
+            </svg>
+          </div>
+          <div className="flex w-full min-w-0 flex-1 flex-col items-start gap-3 sm:justify-between sm:gap-4 sm:self-stretch sm:p-5">
+            <p className="t-stagger-line t-stagger-line--2 font-mono font-medium text-[#7c868e] text-[12px] uppercase tracking-[-0.24px]">
+              {cardContent.step}
             </p>
-            <p className="t-stagger-line t-stagger-line--4 text-[#7c868e] text-[14px] leading-[1.5] font-medium">
-              {cardContent.text}
-            </p>
+            <div className="flex w-full flex-col items-start gap-1.5">
+              <p className="t-stagger-line t-stagger-line--3 text-[#041c2c] text-[24px] leading-[1.2] font-medium tracking-[-0.48px]">
+                {cardContent.title}
+              </p>
+              <p className="t-stagger-line t-stagger-line--4 text-[#7c868e] text-[14px] leading-[1.5] font-medium">
+                {cardContent.text}
+              </p>
+            </div>
           </div>
         </div>
       </div>
