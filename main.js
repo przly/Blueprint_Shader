@@ -6029,8 +6029,16 @@ async function captureVideo() {
   // In preference order: H.264 first, since it's the format most readily
   // droppable straight into a deck/editor without transcoding; VP9/AV1 as
   // fallbacks for browsers that can't encode it. All three are valid inside
-  // Mp4OutputFormat.
-  const codec = await getFirstEncodableVideoCodec(['avc', 'vp9', 'av1'], { width, height });
+  // Mp4OutputFormat. hardwareAcceleration is forced here because without it
+  // WebCodecs can silently pick a software AVC encoder that caps out well
+  // below this function's ~4K export size (Level 4.1, ~1920x1088) and get
+  // reported as "can't encode avc" — which used to fall through to VP9, a
+  // codec Premiere Pro/Media Encoder can't open even inside an mp4 container.
+  const codec = await getFirstEncodableVideoCodec(['avc', 'vp9', 'av1'], {
+    width,
+    height,
+    hardwareAcceleration: 'prefer-hardware',
+  });
   if (!codec) {
     videoRecording = false;
     return;
@@ -6046,6 +6054,7 @@ async function captureVideo() {
   const videoSource = new CanvasSource(canvas, {
     codec,
     quality: new Quality({ bitrate: VIDEO_EXPORT_BITS_PER_SECOND }),
+    hardwareAcceleration: 'prefer-hardware',
   });
   output.addVideoTrack(videoSource);
   await output.start();
