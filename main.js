@@ -5882,11 +5882,19 @@ function applyCanvasSize() {
 // every export frames identically to whatever's on screen, just at a fixed
 // resolution instead of whatever DPR/renderScale the live canvas happens to
 // be running at. Shared by capturePhoto/captureVideo/capturePngSequence.
+// Rounds to the nearest even integer — video codecs (AVC/HEVC, via WebCodecs)
+// reject odd frame dimensions outright, and every other export path is
+// indifferent to being off by at most 1px, so it's applied unconditionally
+// rather than only for captureVideo.
+function roundToEven(n) {
+  return 2 * Math.round(n / 2);
+}
+
 function computeExportDimensions(maxDimension) {
   const aspect = window.innerWidth / window.innerHeight;
   return aspect >= 1
-    ? { width: maxDimension, height: Math.round(maxDimension / aspect) }
-    : { width: Math.round(maxDimension * aspect), height: maxDimension };
+    ? { width: maxDimension, height: roundToEven(maxDimension / aspect) }
+    : { width: roundToEven(maxDimension * aspect), height: maxDimension };
 }
 
 // Photo mode export (see photoMode/capturePhoto).
@@ -5967,12 +5975,17 @@ function capturePhoto(maxDimension = PHOTO_EXPORT_MAX_DIMENSION) {
 }
 
 // Video mode export (see videoMode/captureVideo): fixed clip length,
-// long-edge resolution, and frame rate for every capture. Kept as its own
-// constants rather than reusing PNG_SEQUENCE_MAX_DIMENSION (below) so the
-// two can be tuned independently even though they currently match — neither
-// export's *performance* depends on this resolution anymore (see
-// captureVideo's own comment), so this is just a quality choice.
-const VIDEO_EXPORT_MAX_DIMENSION = 3840; // UHD 4K, long edge
+// resolution, and frame rate for every capture. Kept as its own constants
+// rather than reusing PNG_SEQUENCE_MAX_DIMENSION (below) so the two can be
+// tuned independently — neither export's *performance* depends on this
+// resolution anymore (see captureVideo's own comment), so this is just a
+// quality choice.
+// Fixed UHD 4K 16:9, unlike capturePhoto/capturePngSequence which match
+// whatever aspect ratio the current window happens to be — a deliverable
+// video benefits from a standard, predictable frame size more than it does
+// from matching the live viewport.
+const VIDEO_EXPORT_WIDTH = 3840;
+const VIDEO_EXPORT_HEIGHT = 2160;
 // The tilt loop (see advanceVideoTilt) always takes exactly this long, so
 // this is also what sets its angular speed — raising it both lengthens the
 // clip and slows the circling motion down, same lever for both. Shared by
@@ -6025,20 +6038,33 @@ async function captureVideo() {
   // same canvas.
   videoRecording = true;
 
-  const { width, height } = computeExportDimensions(VIDEO_EXPORT_MAX_DIMENSION);
+  const width = VIDEO_EXPORT_WIDTH;
+  const height = VIDEO_EXPORT_HEIGHT;
   // In preference order: H.264 first, since it's the format most readily
   // droppable straight into a deck/editor without transcoding; VP9/AV1 as
   // fallbacks for browsers that can't encode it. All three are valid inside
-  // Mp4OutputFormat. hardwareAcceleration is forced here because without it
-  // WebCodecs can silently pick a software AVC encoder that caps out well
-  // below this function's ~4K export size (Level 4.1, ~1920x1088) and get
-  // reported as "can't encode avc" — which used to fall through to VP9, a
-  // codec Premiere Pro/Media Encoder can't open even inside an mp4 container.
-  const codec = await getFirstEncodableVideoCodec(['avc', 'vp9', 'av1'], {
+  // Mp4OutputFormat.
+  //
+  // AVC is checked twice: once with hardwareAcceleration forced, because
+  // without that hint WebCodecs can silently pick a software AVC encoder
+  // that caps out well below this function's ~4K export size (Level 4.1,
+  // ~1920x1088) and report "can't encode avc" — which used to fall through
+  // to VP9, a codec Premiere Pro/Media Encoder can't open even inside an mp4
+  // container. But forcing hardwareAcceleration on *every* codec in one call
+  // is wrong: most GPUs expose hardware AVC encode but not hardware VP9/AV1,
+  // so that would make the whole lookup fail (and this function silently
+  // bail) on any machine whose only hardware encoder is AVC. So: try AVC
+  // hardware-only first, then fall back to the original unconstrained
+  // detection across all three if that didn't pan out.
+  let codec = await getFirstEncodableVideoCodec(['avc'], {
     width,
     height,
     hardwareAcceleration: 'prefer-hardware',
   });
+  const hardwareAvc = codec === 'avc';
+  if (!codec) {
+    codec = await getFirstEncodableVideoCodec(['avc', 'vp9', 'av1'], { width, height });
+  }
   if (!codec) {
     videoRecording = false;
     return;
@@ -6046,6 +6072,12 @@ async function captureVideo() {
 
   canvas.width = width;
   canvas.height = height;
+  // Unlike capturePhoto/capturePngSequence (which keep the live window's own
+  // aspect ratio, so cubeProjectionHalfX/Y already match), this export's
+  // fixed 16:9 frame generally doesn't match the window — recompute the
+  // projection for it here, and back to the window's own aspect in the
+  // resize() call during cleanup below.
+  updateCubeProjection(width / height);
   videoExportInProgress = true;
   cubeRotResetStartTime = null; // hand cubeParallaxX/Y to this function's own advanceVideoTilt calls below
   notifyModelState(); // drives the panel's video-mode indicator into its "Recording…" text
@@ -6054,7 +6086,7 @@ async function captureVideo() {
   const videoSource = new CanvasSource(canvas, {
     codec,
     quality: new Quality({ bitrate: VIDEO_EXPORT_BITS_PER_SECOND }),
-    hardwareAcceleration: 'prefer-hardware',
+    ...(hardwareAvc ? { hardwareAcceleration: 'prefer-hardware' } : {}),
   });
   output.addVideoTrack(videoSource);
   await output.start();
@@ -6081,7 +6113,10 @@ async function captureVideo() {
   // neutral framed angle now that advanceVideoTilt no longer owns
   // cubeParallaxX/Y, so a retake starts clean.
   resetCubeRotation();
-  applyCanvasSize();
+  // videoExportInProgress is already false at this point, so this runs its
+  // full body — restoring canvas size *and* cubeProjectionHalfX/Y to the
+  // live window's own aspect, undoing the fixed 16:9 projection set above.
+  resize();
   renderCubeFrame();
 
   const url = URL.createObjectURL(new Blob([output.target.buffer], { type: 'video/mp4' }));
@@ -6104,9 +6139,10 @@ async function captureVideo() {
 // each PNG encode before starting the next — just producing loose files
 // instead of a muxed video.
 
-// Its own constant rather than reusing VIDEO_EXPORT_MAX_DIMENSION so the two
-// stay independently tunable even though they currently match at 4K — see
-// VIDEO_EXPORT_MAX_DIMENSION's own comment.
+// Its own constant rather than reusing VIDEO_EXPORT_WIDTH/HEIGHT so the two
+// stay independently tunable — this one still follows the window's own
+// aspect ratio (see computeExportDimensions), unlike the fixed-16:9 video
+// export.
 const PNG_SEQUENCE_MAX_DIMENSION = 3840; // UHD 4K, long edge
 
 // CRC-32 (the zlib/PNG/ZIP polynomial) — the one piece of real "format" math
