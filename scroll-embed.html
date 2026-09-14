@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bluprint Models — Scroll Embed (FE handover)</title>
+<link rel="icon" type="image/png" href="/favicon.png" />
+<style>
+  html, body {
+    margin: 0;
+  }
+  /* #scroll-track is what gives this SECTION its scroll range — one
+     viewport-height span per assigned Camera Target, plus a short leading
+     intro span, all computed and written to this element's own height by
+     main.js's updateScrollTrackHeight (called once the bundled model's
+     Camera Target slots are known, and again on any change) — the 300vh
+     here is only the placeholder value for the brief window before that
+     runs. Unlike scroll.html/scroll-preview.html (where this element
+     spans the *entire* document, so it doesn't matter), here it's sized to
+     wrap only this one section: your own content lives in normal document
+     flow before and after it, exactly like the two placeholder <section>s
+     below. renderCubeFrame's own IS_SCROLL_ROUTE branch (main.js) reads
+     this element's live position on the page (getBoundingClientRect + the
+     current window.scrollY) rather than the whole document's scroll
+     height, so the camera's scroll progress is always relative to THIS
+     section, regardless of how much content sits above or below it. */
+  #scroll-track {
+    position: relative;
+    height: 300vh;
+  }
+  /* The sticky "stage": pins to the top of the viewport for exactly as
+     long as you're scrolling through #scroll-track's height, then
+     continues in normal flow once you scroll past it — a pure-CSS pin/
+     unpin, no JS toggling needed. Also given a `transform` (translateZ(0)
+     is a visual no-op, chosen only for this effect): per spec, that makes
+     this element a containing block for any `position: fixed` descendant,
+     which is exactly what the bottom-left info card (src/panel.tsx) is.
+     Without this, that card — and every other fixed-positioned overlay in
+     that same React tree — would stay glued to the browser viewport for
+     the ENTIRE page's scroll instead of only this section's, since `fixed`
+     normally ignores `sticky`/`relative` ancestors. With it, the card pins
+     and unpins in lockstep with the 3D canvas itself. */
+  #scroll-stage {
+    position: sticky;
+    top: 0;
+    width: 100%;
+    height: 100vh;
+    overflow: hidden;
+    background: #000;
+    transform: translateZ(0);
+  }
+  canvas#canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  /* #perf-monitor/#axis-gizmo stay in the DOM — main.js looks them up
+     unconditionally whenever it isn't the __HERO__-stripped build (see
+     perfMonitorEl/axisGizmoCanvas in main.js) and calls .getContext('2d')/
+     .textContent on them with no null-check, so omitting the elements
+     entirely would throw at runtime. visibility: hidden (not display:none)
+     hides them without zeroing their clientWidth/clientHeight, so main.js's
+     own resize math takes the same path it would with them visible — just
+     never actually painted. Same approach as scroll-preview.html. */
+  #perf-monitor,
+  #axis-gizmo {
+    visibility: hidden;
+  }
+  #perf-monitor {
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    padding: 6px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    color: rgba(255, 255, 255, 0.85);
+    font-family: "Geist Mono Variable", ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    user-select: none;
+  }
+  #perf-monitor-text {
+    white-space: pre;
+  }
+  #perf-history {
+    display: block;
+    width: 140px;
+    height: 32px;
+    margin-top: 6px;
+  }
+  #axis-gizmo {
+    display: block;
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 10;
+    width: 84px;
+    height: 84px;
+    pointer-events: none;
+  }
+  .demo-placeholder {
+    min-height: 60vh;
+    background: #041c2c;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: sans-serif;
+    font-size: 20px;
+    text-align: center;
+    padding: 2rem;
+  }
+</style>
+</head>
+<body>
+  <!--
+    Integration notes for the FE team — this is the scroll-driven sibling of
+    canvas.html (the button-triggered hero embed): drop the whole block below
+    (#scroll-track through its closing tag) into your page wherever the 3D
+    scroll section belongs, with your own content in normal flow before and
+    after it, same as the two dark placeholder sections here.
+
+    1. Structure: #scroll-track wraps #scroll-stage (sticky-pinned, holds the
+       canvas + the bottom-left info card) — copy this nesting as-is, it's
+       load-bearing (see both elements' own CSS comments above for why).
+
+    2. Unlike canvas.html's build, this one is NOT tree-shaken — it ships the
+       full tool bundle (React/Tailwind/Base UI included) because the
+       bottom-left info card ships pre-built rather than something you
+       build yourselves. Load both the JS bundle (built from this same
+       /src/main.tsx + /main.js pair via `pnpm build`) and its CSS bundle
+       (Tailwind output, auto-emitted alongside — Vite injects the <link>
+       automatically in the built HTML; if you're copying the DOM into your
+       own template rather than serving this file directly, keep that
+       generated <link rel="stylesheet"> tag too).
+
+    3. Camera Target assignments and card copy are already baked in — the
+       bundled model's own "Target_N" object naming (main.js) drives the
+       camera, and src/content/cardSteps.ts drives the card text/icons.
+       Nothing here needs wiring up from your side; scrolling through the
+       section is the entire interaction.
+
+    4. Host the 3D model: copy the `models/` folder as-is so it's served at
+       /models/sg_connect_scroll_explainer.obj and .mtl relative to your
+       site root — that exact path is hardcoded in the script, same
+       constraint as canvas.html's own model.
+
+    5. No data-hero-content-selector is needed here (that's a hero.html/
+       canvas.html-only concern for excluding overlapping UI from
+       touch-drag) — this route has no touch-drag-to-tilt gesture at all,
+       only the scroll-driven camera and passive hover-parallax.
+  -->
+  <section class="demo-placeholder">Your own page content — above the 3D section</section>
+
+  <div id="scroll-track">
+    <div id="scroll-stage">
+      <canvas id="canvas" data-scroll="true" data-preview="true"></canvas>
+      <div id="perf-monitor">
+        <div id="perf-monitor-text"></div>
+        <canvas height="32" id="perf-history" width="140"></canvas>
+      </div>
+      <canvas height="84" id="axis-gizmo" width="84"></canvas>
+      <div id="react-controls-root"></div>
+    </div>
+  </div>
+
+  <section class="demo-placeholder">Your own page content — below the 3D section</section>
+
+  <script type="module" src="/src/main.tsx"></script>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

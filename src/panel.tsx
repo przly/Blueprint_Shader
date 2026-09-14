@@ -423,8 +423,19 @@ export function Panel() {
       raf = 0;
       const introFraction =
         SCROLL_INTRO_SPAN_VH_UNITS / (Math.max(1, numTargetsRef.current) + SCROLL_INTRO_SPAN_VH_UNITS);
-      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-      const progress = maxScroll > 0 ? Math.max(0, Math.min(1, window.scrollY / maxScroll)) : 0;
+      // Section-relative, via #scroll-track's own document position, rather
+      // than the whole document's scrollHeight — kept in sync with main.js's
+      // own copy of this same formula (see its IS_SCROLL_ROUTE branch) so
+      // the card's entrance and the camera's intro-span move land together
+      // whether #scroll-track spans the entire page (scroll.html/scroll-
+      // preview.html) or is embedded as one section of a longer page
+      // (scroll-embed.html) with unrelated content before/after it.
+      const scrollTrackEl = document.getElementById("scroll-track");
+      const sectionScrollTop = scrollTrackEl
+        ? scrollTrackEl.getBoundingClientRect().top + window.scrollY
+        : 0;
+      const maxScroll = (scrollTrackEl?.offsetHeight ?? document.documentElement.scrollHeight) - window.innerHeight;
+      const progress = maxScroll > 0 ? Math.max(0, Math.min(1, (window.scrollY - sectionScrollTop) / maxScroll)) : 0;
       const introProgress = Math.max(0, Math.min(1, progress / introFraction));
       const eased = 1 - (1 - introProgress) ** 3; // ease-out cubic
       card.style.transform = `translateY(${(1 - eased) * CARD_INTRO_OFFSET_PX}px)`;
@@ -1567,11 +1578,12 @@ export function Panel() {
           full-width (left-6 right-6, sm:right-auto cancels that) and stacks
           vertically instead, icon tile above the text (its own row wrapper
           switches from flex-row to flex-col — see cardRowRef's classes)
-          since there's no room for it beside the text at that width. No
-          project token matches these NGEN brand colors yet (see
-          BLUEPRINT_THEMES/BLUEPRINT_FILL_COLOR_GREEN in main.js for the same
-          palette on the 3D side), so they're literal hex here rather than a
-          token.
+          since there's no room for it beside the text at that width. These
+          NGEN brand colors are real project tokens (gray-50/100/500/900,
+          green-600 — see src/index.css's @theme block, ported from
+          170-1-ngen-spletna-stran's own theme.css; BLUEPRINT_THEMES/
+          BLUEPRINT_FILL_COLOR_GREEN in main.js carry the same palette on the
+          3D side, as literal values there since that's WebGL, not CSS).
 
           .t-stagger lives on this outer row (not just the text column) so
           the icon can be a .t-stagger-line too — same directional enter/exit
@@ -1579,20 +1591,20 @@ export function Panel() {
           stays put — only the glyph inside it moves. Three elements crossfade
           together off the same cardContentReveal.phase signal, swapping
           which one wears the brand green: settled on "shown", the card is
-          its resting #f4f6f7 grey, the tile is green (#44d62c), and the
-          glyph is dark (#041c2c) for contrast on that green. For as long as
-          the copy is mid-transition or hasn't appeared yet
+          its resting gray-50, the tile is green-600, and the glyph is
+          gray-900 for contrast on that green. For as long as the copy is
+          mid-transition or hasn't appeared yet
           ("hiding"/"enterStart"/"hidden"), that inverts — card goes white,
-          tile goes to the same grey (#e6eaed, the card's own border tone) the
-          card just vacated, and the glyph itself picks up the green instead
-          — same signal the copy's own exit/enter already uses, just read
-          directly rather than threaded through main.js/notifyModelState. */}
+          tile goes to gray-100 (the card's own border tone) the card just
+          vacated, and the glyph itself picks up green-600 instead — same
+          signal the copy's own exit/enter already uses, just read directly
+          rather than threaded through main.js/notifyModelState. */}
       {state.isScrollRoute && (
       <div
         ref={introCardRef}
         className={cn(
-          "t-stagger fixed left-6 right-6 bottom-6 z-0 overflow-hidden rounded-[36px] border-[0.5px] border-[#e6eaed] p-6 transition-[height,background-color] ease-out sm:right-auto sm:w-[727px] sm:max-w-[calc(100vw-3rem)] sm:p-3",
-          cardContentReveal.phase === "shown" ? "bg-[#f4f6f7]" : "bg-white",
+          "t-stagger fixed left-6 right-6 bottom-6 z-0 overflow-hidden rounded-[36px] border-[0.5px] border-gray-100 p-6 transition-[height,background-color] ease-out sm:right-auto sm:w-[727px] sm:max-w-[calc(100vw-3rem)] sm:p-3",
+          cardContentReveal.phase === "shown" ? "bg-gray-50" : "bg-white",
           cardContentReveal.phase === "shown" && "is-shown",
           cardContentReveal.phase === "hiding" && "is-hiding",
           (cardContentReveal.phase === "enterStart" || cardContentReveal.phase === "hidden") && "is-entering",
@@ -1614,16 +1626,16 @@ export function Panel() {
           <div
             className={cn(
               "relative flex size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] transition-colors duration-300",
-              cardContentReveal.phase === "shown" ? "bg-[#44d62c]" : "bg-[#e6eaed]",
+              cardContentReveal.phase === "shown" ? "bg-green-600" : "bg-gray-100",
             )}
           >
             {/* Per-step icon (cardContent.iconPath, from CARD_STEPS in
                 src/content/cardSteps.ts — CMS-editable along with the copy,
                 56x56 viewBox, single fill path) — currentColor instead of a
                 hardcoded fill so it can crossfade with the tile's own bg
-                color (see this card's outer comment): dark
-                (#041c2c) for contrast once the tile settles green, green
-                itself while the tile's mid-transition and grey. Centered via
+                color (see this card's outer comment): gray-900 for contrast
+                once the tile settles green, green-600 itself while the
+                tile's mid-transition and grey. Centered via
                 the flex parent (not its own absolute+translate) specifically
                 so transform stays free for .t-stagger-line's own
                 translateY. Keyed by displayedIndex so swapping icons is part
@@ -1634,7 +1646,7 @@ export function Panel() {
               aria-hidden="true"
               className={cn(
                 "t-stagger-line t-stagger-line--1 size-[56px] transition-colors duration-300",
-                cardContentReveal.phase === "shown" ? "text-[#041c2c]" : "text-[#44d62c]",
+                cardContentReveal.phase === "shown" ? "text-gray-900" : "text-green-600",
               )}
               fill="none"
               viewBox="0 0 56 56"
@@ -1644,14 +1656,14 @@ export function Panel() {
             </svg>
           </div>
           <div className="flex w-full min-w-0 flex-1 flex-col items-start gap-3 sm:justify-between sm:gap-4 sm:self-stretch sm:p-5">
-            <p className="t-stagger-line t-stagger-line--2 font-mono font-medium text-[#7c868e] text-[12px] uppercase tracking-[-0.24px]">
+            <p className="t-stagger-line t-stagger-line--2 font-mono font-medium text-[12px] text-gray-500 uppercase tracking-[-0.24px]">
               {cardContent.step}
             </p>
             <div className="flex w-full flex-col items-start gap-1.5">
-              <p className="t-stagger-line t-stagger-line--3 text-[#041c2c] text-[24px] leading-[1.2] font-medium tracking-[-0.48px]">
+              <p className="t-stagger-line t-stagger-line--3 font-medium text-2xl text-gray-900 leading-[1.2] tracking-[-0.48px]">
                 {cardContent.title}
               </p>
-              <p className="t-stagger-line t-stagger-line--4 text-[#7c868e] text-[14px] leading-[1.5] font-medium">
+              <p className="t-stagger-line t-stagger-line--4 text-[14px] text-gray-500 leading-[1.5] font-medium">
                 {cardContent.text}
               </p>
             </div>

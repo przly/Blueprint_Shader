@@ -20,6 +20,35 @@
     --font-heading: 'Inter Variable', sans-serif;
     --font-mono: 'Geist Mono Variable', monospace;
     --font-sans: 'Inter Variable', sans-serif;
+    /* NGEN brand palette (from the 170-1-ngen-spletna-stran repo, its own
+       src/styles/theme.css) — overrides the Tailwind default gray and green
+       scales with the brand ones, so every gray-N/green-N utility (and the
+       semantic tokens below, which now source from these instead of the
+       default neutral/emerald scales) picks it up. */
+    --color-gray-10: oklch(0.93 0.0035 247.86);
+    --color-gray-50: oklch(0.9719 0.0025 228.78);
+    --color-gray-100: oklch(0.9349 0.0059 239.82);
+    --color-gray-200: oklch(0.8575 0.0096 242.86);
+    --color-gray-300: oklch(0.7745 0.0142 241.01);
+    --color-gray-400: oklch(0.6897 0.0172 239.23);
+    --color-gray-500: oklch(0.6145 0.0169 241.93);
+    --color-gray-600: oklch(0.5212 0.0215 243.26);
+    --color-gray-700: oklch(0.4267 0.0275 242.47);
+    --color-gray-800: oklch(0.3304 0.0391 242.21);
+    --color-gray-900: oklch(0.2168 0.0436 240.97);
+    --color-gray-950: oklch(0.1554 0.0269 234.59);
+    --color-green-50: oklch(0.9783 0.0223 141.24);
+    --color-green-100: oklch(0.9551 0.0431 141.02);
+    --color-green-200: oklch(0.9136 0.0887 141.49);
+    --color-green-300: oklch(0.8677 0.137 141.02);
+    --color-green-400: oklch(0.833 0.1775 140.94);
+    --color-green-500: oklch(0.7994 0.2106 140.96);
+    --color-green-600: oklch(0.769 0.2358 141.24);
+    --color-green-700: oklch(0.6254 0.1909 141.26);
+    --color-green-800: oklch(0.4646 0.1385 141.18);
+    --color-green-900: oklch(0.3018 0.0841 141.16);
+    --color-green-950: oklch(0.1956 0.0473 140.22);
+    --color-validation-failed: var(--ngen-validation-failed);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
     --color-sidebar-primary: var(--sidebar-primary);
@@ -145,32 +174,51 @@
     }
 }
 
+/* NGEN brand semantic single-values (from theme.css, its own @theme block)
+   — flat, not graduated scales like gray/green above, and NGEN does not
+   split them by light/dark theme either (site.css only swaps the page
+   background/text color via body.theme-dark, not these). Kept under their
+   own --ngen- names (not --color-, so Tailwind does not turn them into
+   standalone utilities) purely as the source of truth the semantic tokens
+   below reference — mirrors how --destructive/--success/etc already work
+   as plain custom properties, exposed to Tailwind separately via the
+   --color-X: var(--X) mappings in the @theme inline block above. */
 :root {
-    --destructive-foreground: var(--color-red-700);
-    --info: var(--color-blue-500);
-    --info-foreground: var(--color-blue-700);
-    --success: var(--color-emerald-500);
-    --success-foreground: var(--color-emerald-700);
-    --warning: var(--color-amber-500);
-    --warning-foreground: var(--color-amber-700);
+    --ngen-validation-failed: oklch(0.628 0.2577 29.23);
+    --ngen-border: oklch(0.2211 0.0455 249.47);
+    --ngen-success: oklch(0.6401 0.1751 146.74);
+    --ngen-danger: oklch(0.5401 0.1978 22.84);
+    --ngen-warning: oklch(0.8442 0.172159 84.9338);
+    --ngen-info: oklch(0.6552 0.1105 212.17);
+    --ngen-focus: oklch(0.6746 0.1414 261.34);
+}
+
+:root {
+    --destructive-foreground: color-mix(in srgb, var(--ngen-danger) 70%, var(--color-black));
+    --info: var(--ngen-info);
+    --info-foreground: color-mix(in srgb, var(--ngen-info) 70%, var(--color-black));
+    --success: var(--ngen-success);
+    --success-foreground: color-mix(in srgb, var(--ngen-success) 70%, var(--color-black));
+    --warning: var(--ngen-warning);
+    --warning-foreground: color-mix(in srgb, var(--ngen-warning) 70%, var(--color-black));
     --accent: --alpha(var(--color-black) / 4%);
-    --accent-foreground: var(--color-neutral-800);
+    --accent-foreground: var(--color-gray-800);
     --background: var(--color-white);
     --border: --alpha(var(--color-black) / 8%);
     --card: var(--color-white);
-    --card-foreground: var(--color-neutral-800);
-    --destructive: var(--color-red-500);
-    --foreground: var(--color-neutral-800);
+    --card-foreground: var(--color-gray-800);
+    --destructive: var(--ngen-danger);
+    --foreground: var(--color-gray-800);
     --input: --alpha(var(--color-black) / 10%);
     --muted: --alpha(var(--color-black) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-black));
+    --muted-foreground: color-mix(in srgb, var(--color-gray-500) 90%, var(--color-black));
     --popover: var(--color-white);
-    --popover-foreground: var(--color-neutral-800);
-    --primary: var(--color-neutral-800);
-    --primary-foreground: var(--color-neutral-50);
-    --ring: var(--color-neutral-400);
+    --popover-foreground: var(--color-gray-800);
+    --primary: var(--color-gray-800);
+    --primary-foreground: var(--color-gray-50);
+    --ring: var(--ngen-focus);
     --secondary: --alpha(var(--color-black) / 4%);
-    --secondary-foreground: var(--color-neutral-800);
+    --secondary-foreground: var(--color-gray-800);
     --chart-1: var(--color-orange-600);
     --chart-2: var(--color-teal-600);
     --chart-3: var(--color-cyan-900);
@@ -180,43 +228,43 @@
     --code-foreground: var(--foreground);
     --code-highlight: --alpha(var(--color-black) / 4%);
     --radius: 0.625rem;
-    --sidebar: var(--color-neutral-50);
+    --sidebar: var(--color-gray-50);
     --sidebar-accent: --alpha(var(--color-black) / 4%);
-    --sidebar-accent-foreground: var(--color-neutral-800);
+    --sidebar-accent-foreground: var(--color-gray-800);
     --sidebar-border: --alpha(var(--color-black) / 6%);
-    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-800) 64%, var(--sidebar));
-    --sidebar-primary: var(--color-neutral-800);
-    --sidebar-primary-foreground: var(--color-neutral-50);
-    --sidebar-ring: var(--color-neutral-400);
+    --sidebar-foreground: color-mix(in srgb, var(--color-gray-800) 64%, var(--sidebar));
+    --sidebar-primary: var(--color-gray-800);
+    --sidebar-primary-foreground: var(--color-gray-50);
+    --sidebar-ring: var(--ngen-focus);
 }
 
 .dark {
     color-scheme: dark;
-    --destructive-foreground: var(--color-red-400);
-    --info: var(--color-blue-500);
-    --info-foreground: var(--color-blue-400);
-    --success: var(--color-emerald-500);
-    --success-foreground: var(--color-emerald-400);
-    --warning: var(--color-amber-500);
-    --warning-foreground: var(--color-amber-400);
+    --destructive-foreground: color-mix(in srgb, var(--ngen-danger) 70%, var(--color-white));
+    --info: var(--ngen-info);
+    --info-foreground: color-mix(in srgb, var(--ngen-info) 70%, var(--color-white));
+    --success: var(--ngen-success);
+    --success-foreground: color-mix(in srgb, var(--ngen-success) 70%, var(--color-white));
+    --warning: var(--ngen-warning);
+    --warning-foreground: color-mix(in srgb, var(--ngen-warning) 70%, var(--color-white));
     --accent: --alpha(var(--color-white) / 4%);
-    --accent-foreground: var(--color-neutral-100);
-    --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-white));
+    --accent-foreground: var(--color-gray-100);
+    --background: color-mix(in srgb, var(--color-gray-950) 95%, var(--color-white));
     --border: --alpha(var(--color-white) / 6%);
     --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
-    --card-foreground: var(--color-neutral-100);
-    --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-    --foreground: var(--color-neutral-100);
+    --card-foreground: var(--color-gray-100);
+    --destructive: color-mix(in srgb, var(--ngen-danger) 90%, var(--color-white));
+    --foreground: var(--color-gray-100);
     --input: --alpha(var(--color-white) / 8%);
     --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
+    --muted-foreground: color-mix(in srgb, var(--color-gray-500) 90%, var(--color-white));
     --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
-    --popover-foreground: var(--color-neutral-100);
-    --primary: var(--color-neutral-100);
-    --primary-foreground: var(--color-neutral-800);
-    --ring: var(--color-neutral-500);
+    --popover-foreground: var(--color-gray-100);
+    --primary: var(--color-gray-100);
+    --primary-foreground: var(--color-gray-800);
+    --ring: var(--ngen-focus);
     --secondary: --alpha(var(--color-white) / 4%);
-    --secondary-foreground: var(--color-neutral-100);
+    --secondary-foreground: var(--color-gray-100);
     --chart-1: var(--color-blue-700);
     --chart-2: var(--color-emerald-500);
     --chart-3: var(--color-amber-500);
@@ -225,14 +273,14 @@
     --code: color-mix(in srgb, var(--background) 98%, var(--color-white));
     --code-foreground: var(--foreground);
     --code-highlight: --alpha(var(--color-white) / 4%);
-    --sidebar: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-white));
+    --sidebar: color-mix(in srgb, var(--color-gray-950) 97%, var(--color-white));
     --sidebar-accent: --alpha(var(--color-white) / 4%);
-    --sidebar-accent-foreground: var(--color-neutral-100);
+    --sidebar-accent-foreground: var(--color-gray-100);
     --sidebar-border: --alpha(var(--color-white) / 5%);
-    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-100) 64%, var(--sidebar));
-    --sidebar-primary: var(--color-neutral-100);
-    --sidebar-primary-foreground: var(--color-neutral-800);
-    --sidebar-ring: var(--color-neutral-400);
+    --sidebar-foreground: color-mix(in srgb, var(--color-gray-100) 64%, var(--sidebar));
+    --sidebar-primary: var(--color-gray-100);
+    --sidebar-primary-foreground: var(--color-gray-800);
+    --sidebar-ring: var(--ngen-focus);
 }
 
 @layer base {

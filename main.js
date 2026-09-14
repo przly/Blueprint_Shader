@@ -5248,8 +5248,18 @@ function renderCubeFrame() {
     // (skips the rest of this branch entirely) rather than blending toward
     // slot 0 the way treating an empty name as a valid stop would.
     if (numTargets > 0) {
-    const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-    const progress = maxScroll > 0 ? Math.max(0, Math.min(1, window.scrollY / maxScroll)) : 0;
+    // Section-relative, via scrollTrackEl's own document position, rather
+    // than the whole document's scrollHeight — so this same math works both
+    // when #scroll-track spans the entire page (scroll.html/scroll-preview
+    // .html today: sectionScrollTop is just 0, reducing to the old formula
+    // exactly) and when it's embedded as one section of a longer FE page
+    // with unrelated content before/after it (see scroll-embed.html). Reads
+    // getBoundingClientRect fresh each frame instead of caching an offset —
+    // cheap for one element, and stays correct across reflows (resize,
+    // content above changing height, etc.) with no separate listener needed.
+    const sectionScrollTop = scrollTrackEl.getBoundingClientRect().top + window.scrollY;
+    const maxScroll = scrollTrackEl.offsetHeight - window.innerHeight;
+    const progress = maxScroll > 0 ? Math.max(0, Math.min(1, (window.scrollY - sectionScrollTop) / maxScroll)) : 0;
     // The track reserves one leading SCROLL_INTRO_SPAN_VH_UNITS-tall span,
     // ahead of Target 1's own span, for the intro (see
     // updateScrollTrackHeight) — introFraction is that span's share of the

@@ -26,11 +26,16 @@ export default defineConfig({
       // made it into dist/, which is why it 404'd once deployed even though
       // `pnpm dev` could always serve it directly from disk. scroll-preview
       // .html is the same story — same main.js, just its own HTML with no
-      // panel/perf-monitor/axis-gizmo — so it needs the same explicit entry.
+      // panel/perf-monitor/axis-gizmo. scroll-embed.html (the FE-team
+      // handover reference, see its own comments and HANDOVER.md) is the
+      // same story again — same bundle, not tree-shaken (the info card
+      // ships as-is), just its own HTML demonstrating the sticky-section
+      // embed structure.
       input: {
         main: path.resolve(__dirname, "index.html"),
         scroll: path.resolve(__dirname, "scroll.html"),
         scrollPreview: path.resolve(__dirname, "scroll-preview.html"),
+        scrollEmbed: path.resolve(__dirname, "scroll-embed.html"),
       },
     },
   },
