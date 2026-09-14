@@ -1984,11 +1984,16 @@ function scheduleWheelZoomSync() {
     notifyModelState();
   });
 }
-// IS_SCROLL_ROUTE also excludes this listener (on top of !IS_HERO) — that
-// route's whole point is a normal scrollable page around the canvas, so the
-// wheel is left to the browser's native scroll instead of being captured
-// (and preventDefault'd) for 3D zoom.
-if (!IS_HERO && !IS_SCROLL_ROUTE) {
+// IS_SCROLL_ROUTE mostly excludes this listener's actual zoom behavior (on
+// top of !IS_HERO) — that route's whole point is a normal scrollable page
+// around the canvas, so the wheel is normally left to the browser's native
+// scroll (driving renderCubeFrame's Camera Target blend) instead of being
+// captured (and preventDefault'd) for 3D zoom. The one exception is arrow
+// draw mode (modelFlowDrawMode, checked inside the handler below): drawing
+// needs scroll-to-zoom to frame the model, not page-scroll stepping between
+// targets mid-trace, so the listener is still attached here — it just no-ops
+// (leaving the wheel to native scroll) whenever draw mode isn't active.
+if (!IS_HERO) {
 // Scroll-to-zoom: the mouse wheel (or trackpad scroll) zooms the camera in
 // and out, reusing the exact same underlying scale as the "Model size"
 // slider (see applyCubeSizePercent) — so it zooms into the pivot crosshair
@@ -2003,6 +2008,7 @@ const CUBE_WHEEL_ZOOM_SPEED = 0.0018; // tuned so one typical mouse-wheel notch 
 canvas.addEventListener(
   'wheel',
   (event) => {
+    if (IS_SCROLL_ROUTE && !modelFlowDrawMode) return; // let native page scroll through — renderCubeFrame's IS_SCROLL_ROUTE branch reads window.scrollY to blend Camera Targets instead
     event.preventDefault();
     const factor = Math.exp(-event.deltaY * CUBE_WHEEL_ZOOM_SPEED);
     applyCubeSizePercent(cubeSizePercent * factor);
@@ -2010,7 +2016,7 @@ canvas.addEventListener(
   },
   { passive: false },
 );
-} // end if (!IS_HERO && !IS_SCROLL_ROUTE) — wheel zoom
+} // end if (!IS_HERO) — wheel zoom
 
 // The camera itself needs no 'scroll' listener for IS_SCROLL_ROUTE —
 // renderCubeFrame reads window.scrollY directly, once per rendered frame, to
@@ -3039,6 +3045,24 @@ function seedCameraTargetPosFromManualPan() {
 function computeCameraTargetGoal(slotIndex) {
   const targetName = cameraTargetSlots[slotIndex];
   const target = targetName ? customModelObjects.find((o) => o.name === targetName) : null;
+  return computeCameraTargetGoalForObject(target);
+}
+
+// Optional "Target_Start" marker object (case-insensitive; not a numbered
+// Target_N, so it never claims a Camera Target slot via TARGET_NAME_RE
+// above) — when a model names one, the /scroll route (IS_SCROLL_ROUTE)
+// treats it as the animation's starting framing instead of opening already
+// on Target 1 (see loadBundledDefaultModel's initial snap and
+// renderCubeFrame's intro-span blend below).
+const TARGET_START_NAME_RE = /^target_start$/i;
+function findTargetStartObject() {
+  return customModelObjects.find((o) => TARGET_START_NAME_RE.test(o.name)) ?? null;
+}
+
+// Shared by computeCameraTargetGoal (numbered slots) and the Target_Start
+// lookup above — both just need "frame to fit" math for an arbitrary named
+// object, not specifically one sitting in a Camera Target slot.
+function computeCameraTargetGoalForObject(target) {
   const center = target ? target.center : [0, 0, 0];
   let zoomGoal = 1;
   if (target && target.bounds) {
@@ -3474,12 +3498,24 @@ async function loadBundledDefaultModel() {
     // at scrollY 0 anyway, that easing has nothing to do on the first frame.
     if (IS_SCROLL_ROUTE) {
       const goal = computeCameraTargetGoal(0);
-      cameraTargetCurrent = goal.center;
-      // Starts at (1 - SCROLL_INTRO_ZOOM_OUT_FRACTION) of Target 1's own
-      // zoom — matches renderCubeFrame's introZoomMultiplier at progress 0
-      // exactly, so there's no jump once scroll starts driving that same
-      // multiplier back up to 1.
-      cameraTargetZoomCurrent = goal.zoomGoal * (1 - SCROLL_INTRO_ZOOM_OUT_FRACTION);
+      // When the model names a Target_Start marker object, that's the
+      // animation's actual starting framing (see findTargetStartObject) —
+      // scrolling then eases from here into Target 1 over the intro span
+      // (renderCubeFrame's own IS_SCROLL_ROUTE branch below). Falls back to
+      // the old zoom-only pull-in for models with no Target_Start: starts at
+      // (1 - SCROLL_INTRO_ZOOM_OUT_FRACTION) of Target 1's own zoom, same
+      // position as Target 1 throughout — matches renderCubeFrame's
+      // introZoomMultiplier at progress 0 exactly, so there's no jump once
+      // scroll starts driving that same multiplier back up to 1.
+      const startObj = findTargetStartObject();
+      if (startObj) {
+        const startGoal = computeCameraTargetGoalForObject(startObj);
+        cameraTargetCurrent = startGoal.center;
+        cameraTargetZoomCurrent = startGoal.zoomGoal;
+      } else {
+        cameraTargetCurrent = goal.center;
+        cameraTargetZoomCurrent = goal.zoomGoal * (1 - SCROLL_INTRO_ZOOM_OUT_FRACTION);
+      }
     }
     // suppressParallax: false — keep ambient hover tilt live through the
     // whole drop instead of freezing it (see cubeRotResetSuppressParallax).
@@ -3602,7 +3638,7 @@ const MODEL_FLOW_STORAGE_KEY = 'iconMosaic.modelFlowPath';
 // timing, see buildModelFlowPathsFromData), just applied unconditionally on
 // startup instead. Specific to the bundled model's geometry/scale — re-capture
 // and replace if the model ever changes again.
-const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[-33.67333602905275,0.6334688513144009,-5.099300492059335],[-33.673336029052734,0.6339370829337714,-5.179315505773158],[-33.673336029052734,0.10385314082481045,-5.178646390804898],[-34.33642197886703,0.09333333373069763,-5.17300515430707],[-34.336034799862055,0.09333333373069763,-6.6424453440926]],"touchedObjectIndices":[502],"enabledObjectIndices":[502],"sourceOffset":0,"masterTotalLen":2.742734374529774},{"points":[[-34.833863038597045,0.09333333373069763,-4.990590645997877],[-33.68693837931779,0.09333333373069763,-4.9914932159016985],[-33.67333602905275,0.4826526655058707,-4.993658371678258]],"touchedObjectIndices":[471],"enabledObjectIndices":[471],"sourceOffset":0,"masterTotalLen":1.536487915533214},{"points":[[-33.78354617495815,0.2800000011920787,-4.123070418601841],[-33.67767859420686,0.2800000011920787,-4.124411198391016],[-33.67333602905274,0.6302302259155255,-4.124307431025137],[-33.67333602905274,0.6295758712951454,-4.878244125480762]],"touchedObjectIndices":[454],"enabledObjectIndices":[454],"sourceOffset":0,"masterTotalLen":1.2100702102757512},{"points":[[-33.32420476002098,1.2577114491708272,-5.285326013957132],[-33.32296006593586,1.2583338584281734,-4.995782500557958],[-33.657797496354306,1.090916293413585,-4.994099790208907],[-33.669162634621344,1.0733935068405174,-4.986517049287329],[-33.67333221435546,0.7885513701981637,-4.994376147461708]],"touchedObjectIndices":[457],"enabledObjectIndices":[457],"sourceOffset":0,"masterTotalLen":0.9711104332982854},{"points":[[-3.545370438687139,0.0889253318309784,-4.02120909084195],[-2.3039824711500287,0.0889253318309926,-4.022964701175553],[-2.307952797638868,0.0889253318309926,-5.128014704598215],[-1.6991531674456155,0.0889253318309784,-5.127725425432118],[-1.6936733722686768,0.4806781991282705,-5.130003931825662]],"touchedObjectIndices":[466],"enabledObjectIndices":[466],"sourceOffset":0,"masterTotalLen":3.3470438599599985},{"points":[[-1.2446098828058325,2.8791640714992326,-6.6464924812316895],[-1.2434510702200967,2.9714566618539493,-6.646492481231682],[-1.2362821235638108,2.989035367965684,-6.5128454175166155],[-1.2455523082880262,1.9655008783336427,-6.499578475952148],[-1.243214283300901,1.9481827020645284,-5.137658892077695],[-1.560959332080536,1.9481827020645284,-5.139350339433168],[-1.5664444792017136,2.0933260917663716,-5.129035598032328],[-1.6844905121384706,2.0933260917663574,-5.132020131464714],[-1.693333387374878,0.7782431359708681,-5.130084734400263]],"touchedObjectIndices":[272,274],"enabledObjectIndices":[272,274],"sourceOffset":0,"masterTotalLen":4.509542884635783},{"points":[[-0.5052271805852371,0.0889253318309784,-4.183513742795114],[-0.5110608126283864,0.0889253318309784,-4.026547851175067],[-0.9624689833783862,0.0889253318309784,-4.024944936016851]],"touchedObjectIndices":[456],"enabledObjectIndices":[456],"sourceOffset":0,"masterTotalLen":3.568297247388635},{"points":[[-0.9593934528637931,0.0889253318309926,-4.189260081557322],[-0.9624689833783862,0.0889253318309784,-4.024944936016851]],"touchedObjectIndices":[456],"enabledObjectIndices":[456],"sourceOffset":0.6084852742361518,"masterTotalLen":3.568297247388635},{"points":[[-0.9624689833783862,0.0889253318309784,-4.024944936016851],[-1.4159273931998086,0.08892533183096418,-4.030957359749507]],"touchedObjectIndices":[456],"enabledObjectIndices":[456],"sourceOffset":0.6084852742361518,"masterTotalLen":3.568297247388635},{"points":[[-1.4036374297271124,0.0889253318309784,-4.187952105857235],[-1.4159273931998086,0.08892533183096418,-4.030957359749507]],"touchedObjectIndices":[456],"enabledObjectIndices":[456],"sourceOffset":1.0619835417928363,"masterTotalLen":3.568297247388635},{"points":[[-1.4159273931998086,0.08892533183096418,-4.030957359749507],[-2.0966853166633825,0.0889253318309784,-4.024516778344889],[-2.1049183626496557,0.0889253318309784,-5.049078083369096],[-1.6952627329553849,0.08892533183096418,-5.051043516499163],[-1.693673372268691,0.48014507145907004,-5.057147795352122]],"touchedObjectIndices":[456],"enabledObjectIndices":[456],"sourceOffset":1.0619835417928363,"masterTotalLen":3.568297247388635},{"points":[[-3.014371155879864,0.08868800103665819,-8.063377333100462],[-2.508953709940149,0.08868800103662977,-8.062679889324755],[-2.5107751005562715,0.08868800103662977,-6.641391648079718]],"touchedObjectIndices":[519],"enabledObjectIndices":[519],"sourceOffset":0,"masterTotalLen":4.561781532348327},{"points":[[-2.5107751005562715,0.08868800103662977,-6.641391648079718],[-3.019299699296553,0.08868800103664398,-6.637623239598327]],"touchedObjectIndices":[519],"enabledObjectIndices":[519],"sourceOffset":1.9267073354602382,"masterTotalLen":4.561781532348327},{"points":[[-2.5107751005562715,0.08868800103662977,-6.641391648079718],[-2.512596986987414,0.08868800103664398,-5.20532039295415]],"touchedObjectIndices":[519],"enabledObjectIndices":[519],"sourceOffset":1.9267073354602382,"masterTotalLen":4.561781532348327},{"points":[[-2.512596986987414,0.08868800103664398,-5.20532039295415],[-3.0151256508047664,0.08868800103664398,-5.209381583373798]],"touchedObjectIndices":[519],"enabledObjectIndices":[519],"sourceOffset":3.362779746262735,"masterTotalLen":4.561781532348327},{"points":[[-2.512596986987414,0.08868800103664398,-5.20532039295415],[-1.701865099401573,0.08868800103662977,-5.2064795508370025],[-1.6936733722686483,0.47687063124877227,-5.20658818051011]],"touchedObjectIndices":[519],"enabledObjectIndices":[519],"sourceOffset":3.362779746262735,"masterTotalLen":4.561781532348327},{"points":[[56.64267714550567,4.968986209546813,-12.126598031036224],[27.523574865830284,4.967351936525006,-12.131152901015355]],"touchedObjectIndices":[255,526],"enabledObjectIndices":[255,526],"sourceOffset":0,"masterTotalLen":29.119102681777225},{"points":[[56.639257384320956,4.972883906455081,-14.18441350946614],[27.683999898248885,4.948396873634977,-14.176995998733673]],"touchedObjectIndices":[252,525],"enabledObjectIndices":[252,525],"sourceOffset":0,"masterTotalLen":28.955268790307827},{"points":[[56.59511154597794,3.960689692842152,-14.175570766584428],[27.712595036696314,3.938394158777214,-14.169512149511888]],"touchedObjectIndices":[253,523],"enabledObjectIndices":[253,523],"sourceOffset":0,"masterTotalLen":28.882525750124515},{"points":[[56.62485130331089,2.9628874175188002,-14.176398252495716],[27.615066068317844,2.947036058732351,-14.171930787410304]],"touchedObjectIndices":[254,521],"enabledObjectIndices":[254,521],"sourceOffset":0,"masterTotalLen":29.009789909688077},{"points":[[56.60939563623336,3.9604482056058146,-12.120713853240204],[27.662967160182006,3.9488361380687707,-12.122798679489222]],"touchedObjectIndices":[256,524],"enabledObjectIndices":[256,524],"sourceOffset":0,"masterTotalLen":28.946430880261726},{"points":[[56.580646683000566,2.9630913259489375,-12.125700416702443],[27.589015513606,2.957438173277069,-12.126803350970505]],"touchedObjectIndices":[257,522],"enabledObjectIndices":[257,522],"sourceOffset":0,"masterTotalLen":28.99163174153552},{"points":[[26.702889461814053,0.48938447734039414,-13.156804209939772],[26.629931553299897,0.10012843737730037,-13.15624756887133],[26.099485969574538,0.0948086678981852,-13.162904139678389],[26.10098189159153,0.094808667898171,-10.946355917461183],[26.627926738888952,0.0948086678981852,-10.955670015562845]],"touchedObjectIndices":[469],"enabledObjectIndices":[469],"sourceOffset":0,"masterTotalLen":3.6701245394262725},{"points":[[26.63094535254865,0.094808667898171,-10.837164729838705],[25.556571453468763,0.0948086678981781,-10.835559514474838],[25.551508571763442,0.0948086678981852,-9.670081876977626]],"touchedObjectIndices":[520],"enabledObjectIndices":[520],"sourceOffset":0,"masterTotalLen":10.90267950043367},{"points":[[25.551508571763442,0.0948086678981852,-9.670081876977626],[25.552221611326566,0.0948086678981781,-9.315084216802937]],"touchedObjectIndices":[520],"enabledObjectIndices":[520],"sourceOffset":2.239863732376519,"masterTotalLen":10.90267950043367},{"points":[[25.551508571763442,0.0948086678981852,-9.670081876977626],[33.844104082957955,0.0948086678981852,-9.71162043695659],[33.83814635565336,0.0948086678981781,-9.34155216874678]],"touchedObjectIndices":[520],"enabledObjectIndices":[520],"sourceOffset":2.239863732376519,"masterTotalLen":10.90267950043367},{"points":[[33.84013891067453,0.0948086678981781,-8.612637530990646],[33.84052216104054,0.094808667898171,-7.923875042596943]],"touchedObjectIndices":[531],"enabledObjectIndices":[531],"sourceOffset":0,"masterTotalLen":0.6887625950203233},{"points":[[33.843547026275836,0.0948086678981852,-7.177972647955603],[33.839323405959924,0.0948086678981852,-6.512914662659418]],"touchedObjectIndices":[530],"enabledObjectIndices":[530],"sourceOffset":0,"masterTotalLen":0.665071396749848},{"points":[[33.5561593599526,0.09336933493614197,-6.097066672414521],[33.00008397068226,0.09336933493613486,-6.0959972397190505],[33.001008896437554,0.09336933493612776,-5.970430913361219],[32.77604210412262,0.12071466445922852,-5.966940748732361]],"touchedObjectIndices":[430],"enabledObjectIndices":[430],"sourceOffset":0,"masterTotalLen":0.9082956727126772},{"points":[[33.47422256200509,0.09336933493612776,-6.176403052918243],[33.0030388426357,0.09336933493614197,-6.175757784827053],[33.003963050551604,0.09336933493613486,-6.325207934479132],[32.76859981158998,0.12071466445922852,-6.320114847679658]],"touchedObjectIndices":[429],"enabledObjectIndices":[429],"sourceOffset":0,"masterTotalLen":0.8576383516970716},{"points":[[33.47595932257196,0.09336933493614197,-7.5093493894576255],[33.004845213307625,0.09336933493614197,-7.508294379635415],[33.0055499068346,0.09336933493613486,-7.378371671184648],[32.774475361240874,0.12071466445922852,-7.374453837635869]],"touchedObjectIndices":[361],"enabledObjectIndices":[361],"sourceOffset":0,"masterTotalLen":0.8337598320828127},{"points":[[33.47743926387794,0.09336933493613486,-7.587222117028423],[33.0035173938905,0.09336933493614197,-7.5791694568789945],[33.00440896881824,0.09336933493613486,-7.726269631507278],[32.770306080176695,0.12071466445922852,-7.731668607332408]],"touchedObjectIndices":[360],"enabledObjectIndices":[360],"sourceOffset":0,"masterTotalLen":0.856849551531731},{"points":[[33.476681201714925,0.09336933493614197,-9.009880168323981],[33.004765023574926,0.09336933493614197,-9.011691697654651],[33.00420764408614,0.09336933493613486,-9.152100624320573],[32.77127923318871,0.12071466445922852,-9.154369000953528]],"touchedObjectIndices":[383],"enabledObjectIndices":[383],"sourceOffset":0,"masterTotalLen":0.8468687192852006},{"points":[[33.47899528138069,0.09336933493614197,-8.935319304603224],[32.99287904076515,0.09336933493614907,-8.934994651040851],[32.996545069571305,0.09336933493613486,-8.804234025750223],[32.77299155397665,0.12071466445922852,-8.802572480073657]],"touchedObjectIndices":[384],"enabledObjectIndices":[384],"sourceOffset":0,"masterTotalLen":0.8421542462567777},{"points":[[25.555624676521393,0.0948086678981852,-8.576366331515706],[25.55873393993857,0.094808667898171,-7.917995535178209]],"touchedObjectIndices":[528],"enabledObjectIndices":[528],"sourceOffset":0,"masterTotalLen":0.6583781382982482},{"points":[[25.550015806157173,0.0948086678981781,-7.17873453005429],[25.54999844507648,0.0948086678981852,-6.537975261961543]],"touchedObjectIndices":[529],"enabledObjectIndices":[529],"sourceOffset":0,"masterTotalLen":0.6407592683279415},{"points":[[25.841287509677116,0.09336933493614197,-8.989760054410024],[26.40927208512327,0.09336933493614907,-8.984641874082614],[26.399043672361934,0.09336933493613486,-9.122077792282537],[26.627899324151944,0.12071466445923562,-9.122611424539093]],"touchedObjectIndices":[337],"enabledObjectIndices":[337],"sourceOffset":0,"masterTotalLen":0.9363078317197809},{"points":[[25.844260286948394,0.09336933493615618,-8.911679003098609],[26.395098837335013,0.09336933493614197,-8.912205403765018],[26.398594247163405,0.09336933493614907,-8.767530111917507],[26.611770332433146,0.12071466445922141,-8.76732241082537]],"touchedObjectIndices":[338],"enabledObjectIndices":[338],"sourceOffset":0,"masterTotalLen":0.9104792141428489},{"points":[[25.86863690588295,0.09336933493614907,-7.592943547379436],[26.403673552833915,0.09336933493615618,-7.59277892855316],[26.401491278293747,0.09336933493615618,-7.730870732635107],[26.622202535407236,0.12071466445922852,-7.725840801850269]],"touchedObjectIndices":[314],"enabledObjectIndices":[314],"sourceOffset":0,"masterTotalLen":0.8956013911896795},{"points":[[25.862139697855902,0.09336933493613486,-7.5224858506586205],[26.406818854032085,0.09336933493615618,-7.521693768594748],[26.408680856399595,0.09336933493614907,-7.377864186292422],[26.634794684842756,0.12071466445923562,-7.374748403467135]],"touchedObjectIndices":[315],"enabledObjectIndices":[315],"sourceOffset":0,"masterTotalLen":0.9163040229577386},{"points":[[25.868928816897714,0.09336933493614907,-6.1796607497829],[26.399127203696043,0.09336933493614197,-6.188344970234791],[26.402831673390146,0.09336933493614907,-6.312434377158447],[26.634555151441567,0.12071466445923562,-6.312567973143766]],"touchedObjectIndices":[406],"enabledObjectIndices":[406],"sourceOffset":0,"masterTotalLen":0.8877456198313817},{"points":[[25.87837914132087,0.09336933493614197,-6.1052600381899085],[26.397076042267102,0.09336933493614907,-6.104628375877571],[26.405110454385312,0.09336933493614907,-5.9627140522099396],[26.622408764318163,0.12071466445924273,-5.958620580626187]],"touchedObjectIndices":[407],"enabledObjectIndices":[407],"sourceOffset":0,"masterTotalLen":0.879889262497587}];
+const DEFAULT_MODEL_FLOW_PATH_DATA = [{"points":[[-3.638244250341998,0.18667866289617052,4.63795967847733],[1.030863656776127,0.1866786628961421,4.629312405162665],[1.045934677123995,0.9683643833215179,4.62199527009335]],"touchedObjectIndices":[39],"enabledObjectIndices":[39],"sourceOffset":0,"masterTotalLen":5.4509811469661225},{"points":[[1.0459306240081787,1.2738937639339838,4.414235479699798],[1.0459306240081787,1.269945146483309,4.250002070418635],[1.0280788024849414,0.1866786628961421,4.245310190867352],[-0.2622834147244788,0.18667866289617052,4.253390702729575],[-0.263043203899457,0.18667866289617052,1.2986092230271566]],"touchedObjectIndices":[38],"enabledObjectIndices":[38],"sourceOffset":0,"masterTotalLen":5.492873694044112},{"points":[[1.0459346771240376,1.2676289306586455,4.858531121684365],[1.0459346771240092,1.26662199657126,6.347898192320372],[1.045235482523296,0.5600119829177856,6.341217711499567],[0.8180378927734164,0.5600119829177856,6.358790022023271]],"touchedObjectIndices":[37],"enabledObjectIndices":[37],"sourceOffset":0,"masterTotalLen":2.4238854799853495},{"points":[[1.736335670632613,2.5115073440370708,4.022709926716956],[1.7359487599655097,2.511313882418733,4.626719075380876],[1.0578712240059787,2.152598492850103,4.627678503481647],[1.0459346771240092,1.5658075598685315,4.622156262030117]],"touchedObjectIndices":[40],"enabledObjectIndices":[40],"sourceOffset":0,"masterTotalLen":1.9580635045647528},{"points":[[-3.146667209447486,1.4660096786199972,-11.597534737840249],[-3.3246360199095477,0.1889258605837938,-11.595726966857882],[-4.3663062906906305,0.20181199908259373,-11.613808421360517],[-4.335787660019292,0.20181199908253689,4.62461341241999],[-4.015497280000176,0.2018119990825653,4.629549905958669]],"touchedObjectIndices":[35],"enabledObjectIndices":[35],"sourceOffset":0,"masterTotalLen":18.890111746802464}];
 const MODEL_FLOW_PULSE_BAND_FRACTION = 0.15; // sigma as a fraction of each path's own normalized (0-1) length
 // Fixed reference length (world units) the head's, tail's, and core's reach
 // are all computed against instead of each arrow's own masterTotalLen, so
@@ -4627,7 +4663,13 @@ function setModelFlowDraw(value) {
     // Start every drawing session from a clean, centered, default-angle
     // view — same as holding Space does — since panned off-center or held
     // at a leftover angle makes tracing a path accurately onto the green
-    // surface harder than it needs to be.
+    // surface harder than it needs to be. Also drops any active Camera
+    // Target (relevant on the /scroll route, where renderCubeFrame's own
+    // IS_SCROLL_ROUTE branch excludes draw mode — see its condition — and
+    // falls back to the plain spring branch below it, which reads this) so
+    // the camera centers on the model itself rather than staying locked onto
+    // whichever target the scroll position last landed on.
+    cameraTargetActiveIndex = null;
     resetModelPosition();
     resetCubeRotation();
     // Freezes the camera-target frame-to-fit zoom goal at today's "Model
@@ -5174,13 +5216,17 @@ function renderCubeFrame() {
       cameraTargetSpringLastTime = null;
     }
     cameraTargetAtRest = false; // a target is active (or just finished activating) — never the manual-pan "at rest" state while this branch runs
-  } else if (IS_SCROLL_ROUTE) {
+  } else if (IS_SCROLL_ROUTE && !modelFlowDrawMode) {
     // Continuous scroll-scrubbed camera: instead of springing toward one
     // discrete Camera Target's goal (the else branch below, used by manual
-    // 1/2/3 presses etc. — never reached on this route since nothing here
-    // ever sets cameraTargetActiveIndex through goToCameraTarget), blend
-    // between the two targets straddling the current scroll position — see
-    // #scroll-track in scroll.html — driven by scroll position every
+    // 1/2/3 presses etc. — normally never reached on this route since
+    // nothing here ever sets cameraTargetActiveIndex through
+    // goToCameraTarget, EXCEPT arrow draw mode, excluded above — see
+    // setModelFlowDraw's cameraTargetActiveIndex reset and the wheel
+    // listener's own modelFlowDrawMode check: drawing needs scroll-to-zoom
+    // and a still camera, not page-scroll stepping between targets mid-trace),
+    // blend between the two targets straddling the current scroll position —
+    // see #scroll-track in scroll.html — driven by scroll position every
     // rendered frame, however often that is; not tied to how often 'scroll'
     // events happen to fire.
     //
@@ -5250,14 +5296,33 @@ function renderCubeFrame() {
     const introEased = 1 - (1 - introProgress) ** 3; // ease-out cubic, matches panel.tsx's card entrance
     const goalLower = computeCameraTargetGoal(lowerIndex);
     const goalUpper = computeCameraTargetGoal(upperIndex);
-    const goalCenter = [0, 1, 2].map((i) => goalLower.center[i] + (goalUpper.center[i] - goalLower.center[i]) * frac);
-    // 1 - SCROLL_INTRO_ZOOM_OUT_FRACTION at scrollY 0, easing up to exactly 1
-    // by the end of the intro span, then pinned at 1 for the rest of the
-    // scroll, so it never touches the ordinary target-to-target zoom blend
-    // above. Applied only to zoom, not goalCenter, so position never moves
-    // during the intro span, only the initial pull-in.
-    const introZoomMultiplier = 1 - SCROLL_INTRO_ZOOM_OUT_FRACTION * (1 - introEased);
-    const goalZoom = (goalLower.zoomGoal + (goalUpper.zoomGoal - goalLower.zoomGoal) * frac) * introZoomMultiplier;
+    const targetToTargetCenter = [0, 1, 2].map((i) => goalLower.center[i] + (goalUpper.center[i] - goalLower.center[i]) * frac);
+    const targetToTargetZoom = goalLower.zoomGoal + (goalUpper.zoomGoal - goalLower.zoomGoal) * frac;
+    // Target_Start (see findTargetStartObject): when the model names one,
+    // the intro span eases the camera from ITS framing into Target 1's
+    // (position and zoom both), using the same introEased curve that drives
+    // the bottom-left info card's entrance, so the first scroll's camera
+    // move and the card's slide-in land together. During the intro span,
+    // lowerIndex/upperIndex/frac above are pinned to Target 1 (frac === 0 —
+    // see blendProgress), so targetToTargetCenter/Zoom are just Target 1's
+    // own goal here, and this blend is purely Target_Start -> Target 1;
+    // introEased pinned at 1 for the rest of the scroll hands off seamlessly
+    // to the ordinary target-to-target blend above. Falls back to the old
+    // zoom-only pull-in — position pinned at Target 1 throughout the intro
+    // span, only zoom easing in from (1 - SCROLL_INTRO_ZOOM_OUT_FRACTION) —
+    // for models with no Target_Start, so untouched models keep their exact
+    // previous behavior.
+    const startObj = findTargetStartObject();
+    let goalCenter, goalZoom;
+    if (startObj) {
+      const startGoal = computeCameraTargetGoalForObject(startObj);
+      goalCenter = [0, 1, 2].map((i) => startGoal.center[i] + (targetToTargetCenter[i] - startGoal.center[i]) * introEased);
+      goalZoom = startGoal.zoomGoal + (targetToTargetZoom - startGoal.zoomGoal) * introEased;
+    } else {
+      const introZoomMultiplier = 1 - SCROLL_INTRO_ZOOM_OUT_FRACTION * (1 - introEased);
+      goalCenter = targetToTargetCenter;
+      goalZoom = targetToTargetZoom * introZoomMultiplier;
+    }
     // Eased toward the scroll-driven goal rather than snapped straight to it
     // — same lightweight per-frame exponential smoothing advanceParallax
     // uses for ambient hover tilt (see CUBE_PARALLAX_SMOOTHING), just
