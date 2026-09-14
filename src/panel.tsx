@@ -1625,7 +1625,21 @@ export function Panel() {
         <div ref={cardRowRef} className="flex w-full flex-col items-start gap-6 sm:flex-row sm:items-start sm:gap-2">
           <div
             className={cn(
-              "relative flex size-[200px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] transition-colors duration-300",
+              // Sizing (aspect-square w-30 sm:w-50 = 120px mobile, 200px at
+              // sm+) matches the NGEN ScrambleCard molecule's own "default"
+              // variant image tile (170-1-ngen-spletna-stran's
+              // src/components/molecules/ScrambleCard/ScrambleCard.tsx) —
+              // this card is styled off that component. Colors/radius stay
+              // this card's own already brand-token-matched values (see the
+              // outer comment) rather than ScrambleCard's own defaults,
+              // since those were verified exact hex matches to this card's
+              // specific Figma node, a distinct (larger) variant.
+              // hidden below sm: the tile costs real vertical room stacked
+              // above the text on narrow screens (see cardRowRef's own
+              // flex-col -> sm:flex-row switch above) — dropping it there
+              // buys the card more room without touching the sm+ desktop
+              // layout, which keeps it exactly as before.
+              "relative hidden aspect-square w-30 shrink-0 items-center justify-center overflow-hidden rounded-[24px] transition-colors duration-300 sm:flex sm:w-50",
               cardContentReveal.phase === "shown" ? "bg-green-600" : "bg-gray-100",
             )}
           >
@@ -1656,14 +1670,30 @@ export function Panel() {
             </svg>
           </div>
           <div className="flex w-full min-w-0 flex-1 flex-col items-start gap-3 sm:justify-between sm:gap-4 sm:self-stretch sm:p-5">
-            <p className="t-stagger-line t-stagger-line--2 font-mono font-medium text-[12px] text-gray-500 uppercase tracking-[-0.24px]">
+            {/* super-title (src/index.css, ported from NGEN's headings.css)
+                is exactly this set of utilities — matches ScrambleCard's own
+                tag styling too, since that is what super-title is. */}
+            <p className="t-stagger-line t-stagger-line--2 super-title">
               {cardContent.step}
             </p>
             <div className="flex w-full flex-col items-start gap-1.5">
-              <p className="t-stagger-line t-stagger-line--3 font-medium text-2xl text-gray-900 leading-[1.2] tracking-[-0.48px]">
+              {/* leading-tight resolves to 1.2 (see its @theme override in
+                  src/index.css, ported from theme.css) — same value as
+                  ScrambleCard's own title, which relies on that same
+                  override. font-sans made explicit here (and on the body
+                  text below) rather than left to inherit from html's own
+                  base rule — matches ScrambleCard's title/body, which also
+                  render with no explicit font class, inheriting the same
+                  font-primary/Inter default from body in site.css. */}
+              <p className="t-stagger-line t-stagger-line--3 font-medium font-sans text-2xl text-gray-900 leading-tight tracking-tight">
                 {cardContent.title}
               </p>
-              <p className="t-stagger-line t-stagger-line--4 text-[14px] text-gray-500 leading-[1.5] font-medium">
+              {/* text-sm/leading-normal match ScrambleCard's own body-text
+                  sizing exactly (text-sm = 14px, leading-normal = 1.5 — same
+                  values as the previous arbitrary text-[14px]/leading-[1.5]
+                  here). No font-weight class, matching ScrambleCard's own
+                  body text too — regular weight, not font-medium. */}
+              <p className="t-stagger-line t-stagger-line--4 font-sans text-sm text-gray-500 leading-normal">
                 {cardContent.text}
               </p>
             </div>

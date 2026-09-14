@@ -1,8 +1,34 @@
 @import "tailwindcss";
 @import "@fontsource-variable/inter";
-@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
+
+/* Geist Mono, self-hosted as NGEN's own two real static weight cuts
+   (170-1-ngen-spletna-stran's src/styles/webfonts.css) instead of a
+   Fontsource variable font interpolated at runtime. Only weights 500/600
+   are ever actually used via font-mono in this project (checked every
+   usage), and interpolating a "600" from a variable font's Regular/Bold
+   masters can visibly diverge from the type foundry's own hand-tuned
+   SemiBold cut — which is what a Figma file referencing the real family
+   would show, and what this now matches exactly. Inter stays the Fontsource
+   variable font above (unchanged) — NGEN's own project does the same,
+   self-hosting Geist Mono as static cuts while keeping Inter fully
+   variable, so this mirrors their actual choice rather than applying the
+   static-cut treatment universally. */
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Medium.woff2') format('woff2');
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
 
 @theme inline {
     --animate-skeleton: skeleton 2s -1s infinite linear;
@@ -11,14 +37,17 @@
     --animate-toast-error-odd: toast-error-odd 0.28s cubic-bezier(0.5, 1, 0.89, 1);
     --animate-toast-error-even: toast-error-even 0.28s cubic-bezier(0.5, 1, 0.89, 1);
     --animate-caret-blink: 1s ease-out infinite caret-blink;
-    /* Must say "Variable", not just "Inter"/"Geist Mono" — that's the
-       @font-face family name the @fontsource-variable packages imported
-       above actually declare. The plain names silently fell back to the
-       browser's default sans/mono the whole time, which is why weight
-       utilities (font-medium etc.) never visibly changed anything: there
-       was no real variable font backing them to apply a weight axis to. */
+    /* --font-heading/--font-sans must say "Inter Variable", not just
+       "Inter" — that's the @font-face family name the @fontsource-variable
+       package imported above actually declares. The plain name silently
+       fell back to the browser's default sans the whole time, which is why
+       weight utilities (font-medium etc.) never visibly changed anything:
+       there was no real variable font backing them to apply a weight axis
+       to. --font-mono says plain "Geist Mono" instead, on purpose — see the
+       @font-face rules above, it is self-hosted as real static weight cuts
+       now, not a variable font, so there is no "Variable" suffix to match. */
     --font-heading: 'Inter Variable', sans-serif;
-    --font-mono: 'Geist Mono Variable', monospace;
+    --font-mono: 'Geist Mono', monospace;
     --font-sans: 'Inter Variable', sans-serif;
     /* NGEN brand palette (from the 170-1-ngen-spletna-stran repo, its own
        src/styles/theme.css) — overrides the Tailwind default gray and green
@@ -49,6 +78,11 @@
     --color-green-900: oklch(0.3018 0.0841 141.16);
     --color-green-950: oklch(0.1956 0.0473 140.22);
     --color-validation-failed: var(--ngen-validation-failed);
+    /* Exposes --ngen-focus as a real Tailwind color utility (outline-focus,
+       ring-focus, text-focus, etc.) — needed for the global focus-ring rule
+       ported below, which uses outline-focus directly, matching NGEN's own
+       site.css rule. */
+    --color-focus: var(--ngen-focus);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
     --color-sidebar-primary: var(--sidebar-primary);
@@ -97,6 +131,33 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    /* NGEN theme.css also overrides this (Tailwind default is 1.25) — ported
+       so leading-tight matches the brand tokens above instead of leaving it
+       at the Tailwind stock value. Not used anywhere before this, so this
+       has no effect outside where it is now deliberately applied. */
+    --leading-tight: 1.2;
+    /* Ported from theme.css — Tailwind has no default tracking-tight value
+       of its own to override (unlike leading-tight above), so this just
+       adds the token. -0.02em is the exact value the info card's title/tag
+       tracking-[-0.48px]/tracking-[-0.24px] already computed to at their
+       own font sizes (24px/12px * -0.02 = -0.48px/-0.24px) — now expressed
+       as the real shared token instead of two separate arbitrary values. */
+    --tracking-tight: -0.02em;
+    /* NGEN's own named motion curves, ported as-is (theme.css) — added here
+       purely as available ease-* utilities (Tailwind generates a real
+       transition-timing-function class per name), not applied to anything
+       yet. This project's existing animations (.t-stagger/.t-panel/.t-modal
+       etc. in this file) keep their own already-tuned cubic-bezier values —
+       these are additive, for future use or for the FE team to reuse
+       directly, not a swap of anything currently running. */
+    --ease-ease: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-ease-in-out: cubic-bezier(0.55, 0, 0.45, 1);
+    --ease-slow-down: cubic-bezier(0.25, 0.49, 0.31, 1);
+    --ease-long-slow-down: cubic-bezier(0.13, 0.63, 0.4, 0.97);
+    --ease-ease-motion: cubic-bezier(0.66, 0.19, 0.29, 0.79);
+    --ease-expressive-in-out: cubic-bezier(0.76, 0.09, 0.03, 0.96);
+    --ease-fly-in: cubic-bezier(0.08, 0.69, 0.07, 1);
+    --ease-fly-out: cubic-bezier(0.54, 0.01, 0.99, 0.26);
   @keyframes skeleton {
   to {
     background-position: -200% 0;
@@ -295,6 +356,12 @@
     }
   html {
     @apply font-sans font-mono;
+    /* Matches NGEN's own site.css (170-1-ngen-spletna-stran) html/body base
+       rule — smoother/thinner glyph rendering on WebKit/Gecko instead of
+       each engine's default (sub)pixel-hinted weight. */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-smooth: never;
     }
 }
 
@@ -643,4 +710,201 @@
 }
 .panel-scrollbar::-webkit-scrollbar-thumb:hover {
   background-color: --alpha(var(--color-white) / 32%);
+}
+
+/* Everything below is ported from the 170-1-ngen-spletna-stran repo (site
+   .css/headings.css/utilities.css) — same reasoning as the tokens above:
+   giving the FE team the least possible integration work, since these are
+   the exact class names and values their own codebase already uses. Adapted
+   only where it depends on infrastructure this project does not have (their
+   CMS rich-text editor-text wrapper, their theme-dark class name, where this
+   project uses dark instead — see @custom-variant dark above). */
+
+/* NGEN site.css own global focus-ring pattern: a visible ring on any
+   focus, but only the browser default outline suppressed for a mouse click
+   (:not(:focus-visible)) — keyboard/programmatic focus still gets the ring.
+   outline-focus resolves via --color-focus above; the bare ring utility
+   already resolves through --ring (this project own --ngen-focus remap,
+   done earlier), so it needed no separate mapping. */
+*:focus {
+  @apply outline-focus ring;
+}
+*:focus:not(:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* NGEN site.css own body base typography — the default text size/color any
+   unstyled text falls back to. Every text element in this project own
+   control panel already sets its own explicit size/color class, so this is
+   a fallback default rather than a visible change to anything currently on
+   screen. font-primary maps to font-sans (this project own name for the
+   same Inter Variable token). Deliberately not porting site.css own
+   body.theme-dark rule (a flat, forced gray-900 background) alongside this
+   — this project own dark class already sets --background via the semantic
+   token remap done earlier (color-mix against gray-950), and layering a
+   second, forced flat gray-900 on top would fight that working mechanism
+   rather than match it. */
+body {
+  @apply p-0! font-sans text-sm text-gray-500 md:text-base;
+}
+
+/* NGEN utilities.css own container widths — max-w-200/240/371 are
+   Tailwind v4 dynamic spacing-scale utilities (200 times --spacing = 50rem,
+   etc.), not arbitrary values, so they carry over unchanged with no
+   dependency on anything else in this file. */
+.container {
+  @apply mx-auto max-w-full px-5 md:max-w-200! lg:max-w-240! lg:px-2.5 xl:max-w-7xl! 2xl:max-w-371!;
+}
+.container-large {
+  @apply px-5 lg:px-2.5 xl:px-6;
+}
+
+/* NGEN headings.css own heading scale — ported as plain classes
+   (heading-1 etc.) without its editor-text h1 / editor-text :is(h1...)
+   companion selectors, since those target their CMS rich-text wrapper,
+   which this project has no equivalent of. The info card (src/panel.tsx)
+   does not use these itself — it already matches the equivalent values
+   directly on its own p tags — but they are here ready for any future
+   heading this project or the FE team adds around it. */
+@layer components {
+  .heading {
+    @apply font-medium text-gray-500 leading-none [&_strong]:text-gray-900 [&>u]:decoration-1 lg:[&>u]:decoration-2 dark:[&_strong]:text-white;
+  }
+  .heading-1 {
+    @apply text-4xl tracking-tight lg:text-5xl lg:tracking-[-0.04em] xl:text-6xl 2xl:text-7xl;
+  }
+  .heading-2 {
+    @apply text-3xl tracking-[-0.03em] md:text-4xl lg:text-5xl xl:text-6xl;
+  }
+  .heading-3 {
+    @apply text-3xl tracking-tight leading-tight lg:text-4xl lg:tracking-[-0.03em] xl:text-5xl xl:leading-none;
+  }
+  .heading-4 {
+    @apply text-xl tracking-tight md:text-2xl lg:text-3xl xl:text-4xl;
+  }
+  .heading-5 {
+    @apply text-lg tracking-tight leading-tight sm:text-xl xl:text-2xl;
+  }
+  .heading-6 {
+    @apply text-base tracking-tight md:text-lg;
+  }
+  /* Matches the info card step/tag label exactly (src/panel.tsx) — that
+     label now uses this class directly instead of duplicating these same
+     utilities inline. */
+  .super-title {
+    @apply font-mono font-semibold text-xs text-gray-500 uppercase leading-none tracking-tight;
+  }
+}
+
+/* NGEN utilities.css own scrollbar treatments — separate from this
+   project own .panel-scrollbar above (tuned for the dark dev-panel surface
+   via a white-alpha thumb) rather than replacing it, since these use NGEN
+   own gray-300/400 thumb colors for a light surface instead. */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-gray-300) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 0.375rem;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 0.25rem;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--color-gray-300);
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gray-400);
+}
+
+/* NGEN utilities.css own gradient-border utilities, ported verbatim — all
+   the --color-green-N, --color-gray-N, and --color-white tokens they reference
+   already exist in this project own @theme block above, so these work
+   unmodified. Not used anywhere in this project yet; available for the FE
+   team or any future button/card treatment that needs one. */
+@utility border-green-gradient {
+  border: 1px solid transparent;
+  background-image:
+    linear-gradient(var(--color-green-600), var(--color-green-600)),
+    linear-gradient(to bottom, var(--color-green-400), var(--color-green-500));
+  background-clip: padding-box, border-box;
+  background-origin: border-box;
+}
+@utility green-gradient-hover {
+  &:hover {
+    background-image:
+      linear-gradient(var(--color-green-500), var(--color-green-500)),
+      linear-gradient(to bottom, var(--color-green-300), var(--color-green-400));
+  }
+}
+@utility border-gray-gradient {
+  border: 1px solid transparent;
+  background-image:
+    linear-gradient(var(--color-gray-900), var(--color-gray-900)),
+    linear-gradient(to bottom, var(--color-gray-700), var(--color-gray-800));
+  background-clip: padding-box, border-box;
+  background-origin: border-box;
+}
+@utility gray-gradient-hover {
+  &:hover {
+    background-image:
+      linear-gradient(var(--color-gray-800), var(--color-gray-800)),
+      linear-gradient(to bottom, var(--color-gray-600), var(--color-gray-700));
+  }
+}
+@utility border-transparent-gradient {
+  border: 1px solid transparent;
+  background-image:
+    linear-gradient(color-mix(in oklch, var(--color-white) 10%, transparent), color-mix(in oklch, var(--color-white) 10%, transparent)),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklch, var(--color-white) 20%, transparent),
+      color-mix(in oklch, var(--color-white) 10%, transparent)
+    );
+  background-clip: padding-box, border-box;
+  background-origin: border-box;
+}
+@utility transparent-gradient-hover {
+  &:hover {
+    background-image:
+      linear-gradient(color-mix(in oklch, var(--color-white) 20%, transparent), color-mix(in oklch, var(--color-white) 20%, transparent)),
+      linear-gradient(
+        to bottom,
+        color-mix(in oklch, var(--color-white) 20%, transparent),
+        color-mix(in oklch, var(--color-white) 10%, transparent)
+      );
+  }
+}
+@utility border-white-gradient {
+  border: 1px solid transparent;
+  background-image:
+    linear-gradient(var(--color-white), var(--color-white)),
+    linear-gradient(to bottom, var(--color-gray-50), var(--color-gray-100));
+  background-clip: padding-box, border-box;
+  background-origin: border-box;
+}
+@utility white-gradient-hover {
+  &:hover {
+    background-image:
+      linear-gradient(var(--color-gray-50), var(--color-gray-50)),
+      linear-gradient(to bottom, var(--color-gray-100), var(--color-gray-200));
+  }
+}
+@utility bg-btn-white-hover {
+  background-image:
+    linear-gradient(var(--color-gray-50), var(--color-gray-50)),
+    linear-gradient(to bottom, var(--color-gray-100), var(--color-gray-200));
+}
+@utility bg-benefits-image-gradient {
+  background-image: linear-gradient(270deg, transparent 50%, color-mix(in oklch, var(--color-gray-900) 50%, transparent) 100%);
 }

@@ -1,8 +1,39 @@
 /* Hero overlay (Figma: N-GEN Web Design, node 2873:11159) — plain CSS, no
-   Tailwind, so the hero bundle stays lean. Only the two font packages the
-   design needs get pulled in; nothing else from src/index.css. */
+   Tailwind, so the hero bundle stays lean. Only the one font package the
+   design needs gets pulled in; nothing else from src/index.css. */
 @import "@fontsource-variable/inter";
-@import "@fontsource-variable/geist-mono";
+
+/* Geist Mono, self-hosted as NGEN's own two real static weight cuts
+   (170-1-ngen-spletna-stran's src/styles/webfonts.css) instead of a
+   Fontsource variable font interpolated at runtime — same reasoning and
+   same files as src/index.css's own copy of these two rules. Both weights
+   this file actually uses (500 below, 600 in .hero-eyebrow-label) are
+   covered. */
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Medium.woff2') format('woff2');
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Matches NGEN's own site.css (170-1-ngen-spletna-stran) html/body base
+   rule — smoother/thinner glyph rendering on WebKit/Gecko instead of each
+   engine's default (sub)pixel-hinted weight. hero.html sets html/body's
+   other base rules (margin/background) inline; this is the one that
+   belongs with the font rules above instead. */
+html, body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
+}
 
 .hero-overlay {
   /* absolute (not fixed) so this scrolls away with the canvas and the rest
@@ -60,7 +91,7 @@
 
 .hero-eyebrow-label {
   margin: 0;
-  font-family: "Geist Mono Variable", monospace;
+  font-family: "Geist Mono", monospace;
   font-weight: 600;
   font-size: 12px;
   line-height: 1;
@@ -179,7 +210,7 @@
   flex-direction: column;
   gap: 8px;
   min-width: 0;
-  font-family: "Geist Mono Variable", monospace;
+  font-family: "Geist Mono", monospace;
   font-weight: 500;
   font-size: 12px;
   line-height: 1;
