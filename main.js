@@ -5809,9 +5809,10 @@ function renderCubeFrame() {
     // pivot), or the active camera target's centroid when one's selected,
     // since that's what camera-target mode locks to screen-center instead.
     // Skipped outright while the panels are hidden (see panelsHidden) or
-    // while photo mode is active — a presenter-facing dev aid, not something
-    // that belongs in an otherwise clean shot or a captured photo.
-    if (!panelsHidden && !photoMode) {
+    // while photo/video mode is active — a presenter-facing dev aid, not
+    // something that belongs in an otherwise clean shot or a captured
+    // photo/video.
+    if (!panelsHidden && !photoMode && !videoMode) {
       const activeTargetName = cameraTargetActiveIndex !== null ? cameraTargetSlots[cameraTargetActiveIndex] : null;
       const pivotObj = activeTargetName ? cameraTargetCurrent : [-panX / s, -panY / s, -panZ / s];
       gl.uniformMatrix4fv(uLineModelView, false, IDENTITY_MAT4);
